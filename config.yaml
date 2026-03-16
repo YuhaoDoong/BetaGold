@@ -1,0 +1,19 @@
+# GoldDash - 数据路径配置
+#
+# 方式1: 指向 Gold 项目的数据目录 (本地开发)
+# data_root: "/Users/yhdong/Gold/data"
+#
+# 方式2: 使用 GoldDash 自带数据 (通过 setup_data.py 下载)
+# data_root: "data"
+
+data_root: "/Users/yhdong/Gold/data"
+
+# 以下路径相对于 data_root
+paths:
+  features: "processed/features_all.parquet"
+  labels: "processed/labels.parquet"
+  gld_csv: "raw/market/gld.csv"
+  gold_futures_csv: "raw/market/gold_futures.csv"
+  oos_predictions: "models/dl_range_v2_oos.parquet"
+  usdcny_csv: "raw/market/usdcny.csv"
+  eod_snapshots: "raw/options_history"

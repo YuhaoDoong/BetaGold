@@ -1,0 +1,14 @@
+streamlit>=1.30
+pandas>=2.0
+numpy
+matplotlib
+pyyaml
+
+# 数据下载 (setup_data.py)
+yfinance
+fredapi
+requests
+
+# 模型训练 (可选, 仅 --train 模式需要)
+torch
+scikit-learn
