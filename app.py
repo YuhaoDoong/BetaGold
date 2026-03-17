@@ -752,120 +752,122 @@ def compute_next_day_band(close, range_df, bp_dates, today):
 
 
 # ══════════════════════════════════════════════════════════
-# v2.1 盘中信号模式
+# v2.2 盘中信号模式
 # ══════════════════════════════════════════════════════════
 def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                           regime, rv_pctile, bp_dates, bp_s,
                           gc_gld_ratio, usdcny_rate, today_sgt):
-    """v2.1: v1.0 Band + GLD 盘中价格 + 1h 确认."""
-    from core.signals_v2 import generate_daily_signals, run_backtest
-    from datetime import timezone as _tz
+    """v2.2: v1.0 Band + 盘中H/L入场 + 12h止盈."""
+    from core.signals_v2 import (generate_daily_signals, run_backtest,
+                                  EXIT_TIMEFRAME, PULLBACK_GAIN, PULLBACK_DD)
 
     # 时区
     tz_name = st.sidebar.selectbox("时区", list(TZ_OPTIONS.keys()),
                                     index=list(TZ_OPTIONS.keys()).index(TZ_DEFAULT))
-    tz_offset = TZ_OPTIONS[tz_name]
 
-    def to_local(dt):
-        """ET → 本地时区显示."""
-        if dt is None:
-            return ""
-        # 假设数据是 ET (UTC-5), 转为目标时区
-        utc = dt + timedelta(hours=5)
-        local = utc + timedelta(hours=tz_offset)
-        return local.strftime("%Y-%m-%d %H:%M") + f" {tz_name.split()[0]}"
-
-    # GLD 1h (含盘前盘后)
+    # GLD 1h
     gld_1h_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                "..", "Gold", "data", "raw", "market", "gld_1h.csv")
     gld_1h_path = os.path.normpath(gld_1h_path)
     gld_1h = pd.read_csv(gld_1h_path, index_col=0, parse_dates=True) \
         if os.path.exists(gld_1h_path) else None
 
-    # v2.2 历史信号 (v1.0 Band + H/L 触发)
+    # 信号 (同 v1.0 的 Band, H/L 触发)
     sig_df = generate_daily_signals(
         close_d, high_d, low_d, upper_band, lower_band,
         regime, rv_pctile)
 
-    # 最新状态
+    # 回测 (12h 止盈)
+    trades = run_backtest(
+        close_d, high_d, low_d, upper_band, lower_band,
+        regime, rv_pctile, gld_1h=gld_1h,
+        start_date=pd.Timestamp(today_sgt) - timedelta(days=180))
+
+    # 下一交易日阈值 (与 v1.0 完全一致)
+    from core.data import load_config, load_oos_predictions
+    range_df = load_oos_predictions(load_config())
     last_date = bp_dates[-1]
     last_close = close_d.get(last_date, 0)
     last_regime = regime.get(last_date, "?")
-    last_rv = rv_pctile.get(last_date, 0)
-    last_row = sig_df.loc[last_date] if last_date in sig_df.index else None
-
-    # *** 下一交易日阈值 (与 v1.0 一致) ***
-    from core.data import load_config, load_oos_predictions
-    range_df = load_oos_predictions(load_config())
+    last_bp = bp_s.get(last_date, 0)
     next_upper, next_lower, next_bp030, next_bp090 = \
         compute_next_day_band(close_d, range_df, bp_dates, last_date)
 
-    last_bp_close = last_row["bp_close"] if last_row is not None else bp_s.get(last_date, 0)
+    gc_gld_r = gc_gld_ratio if gc_gld_ratio else 10.9
+    rt = _get_realtime_prices()
+    _cny = rt["usdcny"] if rt else (usdcny_rate if usdcny_rate else 7.0)
+    _g = 31.1035
 
-    # ── 顶部指标 ──
+    # 止盈预测: 如果有未平仓交易
+    last_trade = trades[-1] if trades else None
+    has_open_position = False
+    entry_price_open = peak_open = pullback_stop = 0
+    if last_trade and last_trade["exit_date"] == last_date:
+        # 最近一笔刚平仓
+        pass
+    elif sig_df.loc[last_date]["buy_signal"] if last_date in sig_df.index else False:
+        # 可能有未平仓 (简化: 最后一个买入信号后没有退出)
+        buy_dates = sig_df[sig_df["buy_signal"]].index
+        exit_dates = sig_df[sig_df["exit_signal"]].index
+        if len(buy_dates) > 0:
+            last_buy = buy_dates[-1]
+            exits_after = exit_dates[exit_dates > last_buy]
+            if len(exits_after) == 0:
+                has_open_position = True
+                entry_price_open = sig_df.loc[last_buy, "bp030_price"]
+                # 从入场到现在的峰值
+                post_entry = high_d[high_d.index >= last_buy]
+                peak_open = post_entry.max() if len(post_entry) > 0 else entry_price_open
+                gain_pct = (peak_open / entry_price_open - 1) * 100
+                if gain_pct > PULLBACK_GAIN:
+                    pullback_stop = peak_open * (1 - PULLBACK_DD / 100)
+
+    # ════════════════════════════════════════
+    # 醒目顶部: 核心价位
+    # ════════════════════════════════════════
+    if next_bp030 > 0:
+        st.markdown("### 交易价位")
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.metric("买入 (bp<0.30)", f"< ${next_bp030:.2f}",
+                      delta=f"COMEX < ${next_bp030*gc_gld_r:.0f} | 沪金 < ¥{next_bp030*gc_gld_r*_cny/_g:.1f}")
+        with c2:
+            st.metric("平仓 (bp>0.90)", f"> ${next_bp090:.2f}",
+                      delta=f"COMEX > ${next_bp090*gc_gld_r:.0f} | 沪金 > ¥{next_bp090*gc_gld_r*_cny/_g:.1f}")
+        with c3:
+            if has_open_position and pullback_stop > 0:
+                st.metric("止盈 (Pullback)", f"< ${pullback_stop:.2f}",
+                          delta=f"入场${entry_price_open:.1f} 峰值${peak_open:.1f} 回撤{PULLBACK_DD}%")
+            elif has_open_position:
+                st.metric("止盈", "未触发",
+                          delta=f"入场${entry_price_open:.1f} 涨幅未达{PULLBACK_GAIN}%")
+            else:
+                st.metric("止盈", "无持仓", delta="等待买入信号")
+
+        # 实时价格
+        if rt:
+            gc_now = rt["gc_price"]
+            gld_est = gc_now / gc_gld_r
+            bp_est = (gld_est - next_lower) / (next_upper - next_lower) \
+                if next_upper > next_lower else 0
+            zone = "买入区" if bp_est < 0.30 else ("退出区" if bp_est > 0.90 else "观望")
+            st.info(f"**实时** GC=${gc_now:.0f} → GLD≈${gld_est:.1f} → "
+                    f"bp≈{bp_est:.2f} ({zone}) | {rt['timestamp']}")
+
+    # 顶部指标行
     m1, m2, m3, m4, m5 = st.columns(5)
     with m1:
-        delta_pct = None
-        if len(close_d) > 1:
-            delta_pct = f"{(last_close / close_d.iloc[-2] - 1) * 100:+.2f}%"
-        st.metric("GLD", f"${last_close:.2f}", delta=delta_pct)
+        delta_pct = f"{(last_close/close_d.iloc[-2]-1)*100:+.2f}%" if len(close_d)>1 else None
+        st.metric("GLD 收盘", f"${last_close:.2f}", delta=delta_pct)
     with m2:
         st.metric("Regime", last_regime)
     with m3:
-        st.metric("bp (close)", f"{last_bp_close:.3f}")
+        st.metric("bp", f"{last_bp:.3f}")
     with m4:
-        zone = "买入区" if last_bp_close < 0.30 \
-            else ("退出区" if last_bp_close > 0.90 else "观望区")
-        zone_icon = {"买入区": "🟢", "退出区": "🔴", "观望区": "⚪"}
-        st.metric("区域", f"{zone_icon[zone]} {zone}")
+        st.metric("RV%", f"{rv_pctile.get(last_date,0):.0%}")
     with m5:
-        sig_text = last_row["signal_text"] if last_row is not None else ""
-        st.metric("最新信号", sig_text if sig_text else "无信号")
-
-    # ── 下一交易日阈值 (与 v1.0 完全一致) ──
-    st.divider()
-    col_a, col_b = st.columns(2)
-
-    with col_a:
-        st.subheader("下一交易日阈值")
-        if next_bp030 > 0:
-            gc_gld_r = gc_gld_ratio if gc_gld_ratio else 10.9
-            rt = _get_realtime_prices()
-            gc_now = rt["gc_price"] if rt else 0
-            gld_from_gc = gc_now / gc_gld_r if gc_now > 0 else 0
-
-            st.markdown(f"""
-| 指标 | GLD ($) | COMEX 等价 ($/oz) |
-|------|---------|-----------------|
-| Band 上界 | ${next_upper:.2f} | ${next_upper * gc_gld_r:.0f} |
-| Band 下界 | ${next_lower:.2f} | ${next_lower * gc_gld_r:.0f} |
-| **买入 (bp<0.30)** | **< ${next_bp030:.2f}** | **< ${next_bp030 * gc_gld_r:.0f}** |
-| **平仓 (bp>0.90)** | **> ${next_bp090:.2f}** | **> ${next_bp090 * gc_gld_r:.0f}** |
-| 基准收盘 | ${last_close:.2f} ({last_date.date()}) | |
-""")
-            if gc_now > 0:
-                gld_est_bp = (gld_from_gc - next_lower) / \
-                    (next_upper - next_lower) \
-                    if next_upper > next_lower else 0
-                st.markdown(f"**实时**: GC=${gc_now:.0f} → GLD≈${gld_from_gc:.1f}"
-                            f" → bp≈{gld_est_bp:.2f} ({rt['timestamp']})")
-
-    with col_b:
-        st.subheader("跨市场价位")
-        if not rt:
-            rt = _get_realtime_prices()
-        _cny = rt["usdcny"] if rt else (usdcny_rate if usdcny_rate else 7.0)
-        _g = 31.1035
-
-        if next_bp030 > 0:
-            st.markdown(f"""
-| 价位 | GLD ($) | COMEX ($/oz) | 沪金 (¥/g) |
-|------|---------|-------------|-----------|
-| **买入** | **${next_bp030:.2f}** | **${next_bp030*gc_gld_r:.0f}** | **¥{next_bp030*gc_gld_r*_cny/_g:.2f}** |
-| **平仓** | **${next_bp090:.2f}** | **${next_bp090*gc_gld_r:.0f}** | **¥{next_bp090*gc_gld_r*_cny/_g:.2f}** |
-| 当前 | ${last_close:.2f} | ${last_close*gc_gld_r:.0f} | ¥{last_close*gc_gld_r*_cny/_g:.2f} |
-""")
-            st.caption(f"USD/CNY={_cny:.4f} | GC/GLD={gc_gld_r:.4f}")
+        sig_text = sig_df.loc[last_date]["signal_text"] if last_date in sig_df.index else ""
+        st.metric("最新信号", sig_text if sig_text else "—")
 
     # ── 信号历史图 ──
     st.divider()
@@ -911,36 +913,50 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         ax.plot(xi_arr(cidx), bp030_line.values, color="#2196F3", lw=0.8, ls="--", alpha=0.5)
         ax.plot(xi_arr(cidx), bp090_line.values, color="#F44336", lw=0.8, ls="--", alpha=0.5)
 
-    # 信号标注 (标记在触发价位上, 不是收盘价)
+    # 信号标注 (标记在触发价位上)
     for d, r in sig_viz.iterrows():
         if xi(d) is None:
             continue
         if r["buy_signal"]:
-            # 买入标记在 bp=0.30 价位 (盘中 low 触及的位置)
             buy_price = r["bp030_price"]
             color = "#2196F3" if r["buy_type"] == "BUY CALL" else "#FF9800"
             ax.scatter([xi(d)], [buy_price], marker="^", s=120, color=color,
                        edgecolors="black", lw=0.7, zorder=6)
         if r["exit_signal"]:
-            # 退出标记在 bp=0.90 价位 (盘中 high 触及的位置)
             exit_price = r["bp090_price"]
             ax.scatter([xi(d)], [exit_price], marker="v", s=100, color="#F44336",
                        edgecolors="black", lw=0.7, zorder=5)
 
+    # 回测止盈标注 (淡色)
+    tdf_viz = pd.DataFrame(trades) if trades else pd.DataFrame()
+    if len(tdf_viz) > 0:
+        for _, t in tdf_viz.iterrows():
+            if t["exit_date"] in d2i and t["exit_type"] != "BandExit":
+                cx = {"Pullback": "#FF6600", "MACD": "#9C27B0", "Timeout": "gray"}
+                mk = {"Pullback": "s", "MACD": "D", "Timeout": "X"}
+                ax.scatter([xi(t["exit_date"])], [t["exit_price"]],
+                           marker=mk.get(t["exit_type"], "o"), s=80,
+                           color=cx.get(t["exit_type"], "gray"),
+                           edgecolors="black", lw=0.5, alpha=0.5, zorder=4)
+                ax.annotate(f"{t['gain']:+.1f}%", xy=(xi(t["exit_date"]), t["exit_price"]),
+                            xytext=(3, 6), textcoords="offset points", fontsize=6,
+                            color=cx.get(t["exit_type"], "gray"), alpha=0.7)
+
     legend_el = [
         Line2D([0],[0], color="k", lw=1.5, label="GLD Close"),
         Line2D([0],[0], color="green", lw=1, alpha=0.5, label="Band"),
-        Line2D([0],[0], color="#2196F3", lw=0.8, ls="--", label="Buy (bp=0.30)"),
-        Line2D([0],[0], color="#F44336", lw=0.8, ls="--", label="Exit (bp=0.90)"),
+        Line2D([0],[0], color="#2196F3", lw=0.8, ls="--", label="Buy bp=0.30"),
+        Line2D([0],[0], color="#F44336", lw=0.8, ls="--", label="Exit bp=0.90"),
         Line2D([0],[0], marker="^", color="w", markerfacecolor="#2196F3", markersize=9, label="BUY CALL"),
         Line2D([0],[0], marker="^", color="w", markerfacecolor="#FF9800", markersize=9, label="SELL PUT"),
-        Line2D([0],[0], marker="v", color="w", markerfacecolor="#F44336", markersize=9, label="EXIT"),
+        Line2D([0],[0], marker="v", color="w", markerfacecolor="#F44336", markersize=9, label="BandExit"),
+        Line2D([0],[0], marker="s", color="w", markerfacecolor="#FF6600", markersize=8, alpha=0.5, label="Pullback"),
+        Line2D([0],[0], marker="D", color="w", markerfacecolor="#9C27B0", markersize=8, alpha=0.5, label="MACD止盈"),
     ]
-    ax.legend(handles=legend_el, loc="upper left", fontsize=7, ncol=4)
-    now_local = to_local(pd.Timestamp.now())
-    ax.set_title(f"v2.1 盘中信号 (v1.0 Band + H/L触发) | 数据至 {last_date.date()} | "
-                 f"Regime: {last_regime} | {now_local}",
-                 fontsize=13, fontweight="bold")
+    ax.legend(handles=legend_el, loc="upper left", fontsize=6, ncol=5)
+    ax.set_title(f"v2.2 盘中信号 (v1.0 Band + H/L入场 + {EXIT_TIMEFRAME}止盈) | "
+                 f"数据至 {last_date.date()} | Regime: {last_regime}",
+                 fontsize=12, fontweight="bold")
     ax.set_ylabel("GLD ($)")
     ax.grid(True, alpha=0.3)
     ax.xaxis.set_major_formatter(FuncFormatter(_fmt_tick))
