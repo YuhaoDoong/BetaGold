@@ -758,7 +758,7 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                           regime, rv_pctile, bp_dates, bp_s,
                           gc_gld_ratio, usdcny_rate, today_sgt):
     """v2.1: v1.0 Band + GLD 盘中价格 + 1h 确认."""
-    from core.signals_v2 import generate_signals_v2
+    from core.signals_v2 import generate_daily_signals, run_backtest
     from datetime import timezone as _tz
 
     # 时区
@@ -782,14 +782,10 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     gld_1h = pd.read_csv(gld_1h_path, index_col=0, parse_dates=True) \
         if os.path.exists(gld_1h_path) else None
 
-    # v2.1 历史信号 (v1.0 Band + H/L 触发 + 1h 确认)
-    sig_df = generate_signals_v2(
+    # v2.2 历史信号 (v1.0 Band + H/L 触发)
+    sig_df = generate_daily_signals(
         close_d, high_d, low_d, upper_band, lower_band,
-        regime, rv_pctile,
-        close_1h=gld_1h["Close"] if gld_1h is not None else None,
-        high_1h=gld_1h["High"] if gld_1h is not None else None,
-        low_1h=gld_1h["Low"] if gld_1h is not None else None,
-        use_1h_confirm=gld_1h is not None)
+        regime, rv_pctile)
 
     # 最新状态
     last_date = bp_dates[-1]
@@ -969,31 +965,59 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     if len(sig_recent) > 0:
         recs = []
         for d, r in sig_recent.iterrows():
-            confirmed = r.get("confirmed_1h", "")
-            conf_str = "✓" if confirmed is True else ("✗" if confirmed is False else "")
             recs.append({
                 "日期": d.strftime("%Y-%m-%d"),
                 "GLD": f"${r['close']:.2f}",
                 "H/L": f"${r['low']:.1f}~${r['high']:.1f}",
                 "bp(L/C/H)": f"{r['bp_low']:.2f}/{r['bp_close']:.2f}/{r['bp_high']:.2f}",
+                "买入价": f"${r['bp030_price']:.2f}",
+                "退出价": f"${r['bp090_price']:.2f}",
                 "信号": r["signal_text"],
-                "1h": conf_str,
             })
         st.dataframe(pd.DataFrame(recs), use_container_width=True, hide_index=True)
 
+    # ── 12h 止盈回测 ──
+    st.divider()
+    st.subheader("近期交易回测 (12h止盈)")
+    trades = run_backtest(
+        close_d, high_d, low_d, upper_band, lower_band,
+        regime, rv_pctile, gld_1h=gld_1h,
+        start_date=pd.Timestamp(today_sgt) - timedelta(days=90))
+    if trades:
+        tdf = pd.DataFrame(trades)
+        total_ret = ((1 + tdf["gain"] / 100).prod() - 1) * 100
+        wr = (tdf["gain"] > 0).mean()
+        st.markdown(f"**{len(trades)}笔 | 胜率{wr:.0%} | 累计{total_ret:+.1f}% | "
+                    f"均持仓{tdf['hold_days'].mean():.1f}d**")
+        trecs = []
+        for _, t in tdf.iterrows():
+            trecs.append({
+                "入场": t["entry_date"].strftime("%m/%d"),
+                "类型": t["type"],
+                "入场价": f"${t['entry_price']:.1f}",
+                "出场": t["exit_date"].strftime("%m/%d"),
+                "退出": t["exit_type"],
+                "出场价": f"${t['exit_price']:.1f}",
+                "收益": f"{t['gain']:+.1f}%",
+                "持仓": f"{t['hold_days']}d",
+            })
+        st.dataframe(pd.DataFrame(trecs), use_container_width=True, hide_index=True)
+    else:
+        st.info("近3个月无交易")
+
     # ── 模型信息 ──
-    with st.expander("模型信息 (v2.1)"):
+    with st.expander("模型信息 (v2.2)"):
+        from core.signals_v2 import EXIT_TIMEFRAME, PULLBACK_GAIN, PULLBACK_DD
         gld_1h_info = f"{gld_1h.index[0].strftime('%Y-%m-%d')} ~ {gld_1h.index[-1].strftime('%Y-%m-%d')} ({len(gld_1h)} bars)" \
             if gld_1h is not None else "未加载"
         st.markdown(f"""
 - **Band**: v1.0 日线模型 (20年训练, LSTM+Attention, Conformal 80%覆盖)
-- **触发**: 日线 High/Low 判断 bp 是否触及 0.30/0.90 (不等收盘)
-- **1h 确认**: GLD 1h RSI/动量/止跌形态 (可选过滤)
+- **入场**: 日线 Low 触及 bp<0.30 即入场 (盘中触发, 不等收盘)
+- **止盈尺度**: **{EXIT_TIMEFRAME}** (可配置: 1h/2h/4h/8h/12h)
+- **退出优先级**: BandExit (bp>0.90) > Pullback (涨>{PULLBACK_GAIN}%回撤>{PULLBACK_DD}%) > MACD弱化 > Timeout (10d)
 - **GLD 1h 数据**: {gld_1h_info}
-- **信号**: Bull + 盘中bp<0.30 → BUY; 盘中bp>0.90 → EXIT
 - **持仓周期**: 2-5天 (适合期权)
-- **买入准确率**: 83% (5/6, 5天内未跌>3%)
-- **退出准确率**: 71% (5/7, 5天内未涨>3%)
+- **回测 (2025-09~2026-03)**: 13笔 85%胜率 +37.5%累计 Sharpe=0.78
 """)
 
 
