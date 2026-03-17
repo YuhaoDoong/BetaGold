@@ -2,12 +2,17 @@
 
 架构:
   Band: v1.0 日线模型 (20年训练, 校准可靠)
-  入场: 日线 Low 触及 bp=0.30 即入场 (盘中触发, 不等收盘)
+  入场: 日线 Low 触及 bp < BUY_BP 即入场
   止盈: 在可配置的时间尺度上检测退出 (默认 12h)
-    优先级: BandExit (bp>0.90) > Pullback (峰值回撤) > MACD弱化 > Timeout
-  持仓: 2-5天, 适合期权交易
+    优先级: BandExit (bp>EXIT_BP) > Pullback (峰值回撤) > MACD弱化 > Timeout
+  持仓: 2-5天
 
-参数:
+注意:
+  - 信号基于金价, 不限定交易品种 (期权/期货/现货均可)
+  - 期权策略是独立的推荐层, 不影响核心信号
+  - 时间不限定美盘, GLD 含盘前盘后, GC=F 覆盖全球时段
+
+参数 (全部可配置):
   EXIT_TIMEFRAME = "12h"   # 止盈检测尺度 (1h/2h/4h/8h/12h)
   PULLBACK_GAIN  = 2.0     # Pullback 触发: 持仓期涨幅>N%
   PULLBACK_DD    = 1.5     # Pullback 触发: 从峰值回撤>N%

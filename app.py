@@ -913,34 +913,39 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         ax.plot(xi_arr(cidx), bp030_line.values, color="#2196F3", lw=0.8, ls="--", alpha=0.5)
         ax.plot(xi_arr(cidx), bp090_line.values, color="#F44336", lw=0.8, ls="--", alpha=0.5)
 
-    # 信号标注 (标记在触发价位上)
-    for d, r in sig_viz.iterrows():
+    # 信号标注 (每天一个标记, 在触发价位上)
+    buy_days = sig_viz[sig_viz["buy_signal"]]
+    exit_days = sig_viz[sig_viz["exit_signal"]]
+
+    for d, r in buy_days.iterrows():
         if xi(d) is None:
             continue
-        if r["buy_signal"]:
-            buy_price = r["bp030_price"]
-            color = "#2196F3" if r["buy_type"] == "BUY CALL" else "#FF9800"
-            ax.scatter([xi(d)], [buy_price], marker="^", s=120, color=color,
-                       edgecolors="black", lw=0.7, zorder=6)
-        if r["exit_signal"]:
-            exit_price = r["bp090_price"]
-            ax.scatter([xi(d)], [exit_price], marker="v", s=100, color="#F44336",
-                       edgecolors="black", lw=0.7, zorder=5)
+        color = "#2196F3" if r["buy_type"] == "BUY CALL" else "#FF9800"
+        ax.scatter([xi(d)], [r["bp030_price"]], marker="^", s=120, color=color,
+                   edgecolors="black", lw=0.7, zorder=6)
 
-    # 回测止盈标注 (淡色)
+    for d, r in exit_days.iterrows():
+        if xi(d) is None:
+            continue
+        ax.scatter([xi(d)], [r["bp090_price"]], marker="v", s=100,
+                   color="#F44336", edgecolors="black", lw=0.7, zorder=5)
+
+    # 回测止盈标注 (淡色, 每天一个)
     tdf_viz = pd.DataFrame(trades) if trades else pd.DataFrame()
     if len(tdf_viz) > 0:
         for _, t in tdf_viz.iterrows():
-            if t["exit_date"] in d2i and t["exit_type"] != "BandExit":
-                cx = {"Pullback": "#FF6600", "MACD": "#9C27B0", "Timeout": "gray"}
-                mk = {"Pullback": "s", "MACD": "D", "Timeout": "X"}
-                ax.scatter([xi(t["exit_date"])], [t["exit_price"]],
-                           marker=mk.get(t["exit_type"], "o"), s=80,
-                           color=cx.get(t["exit_type"], "gray"),
-                           edgecolors="black", lw=0.5, alpha=0.5, zorder=4)
-                ax.annotate(f"{t['gain']:+.1f}%", xy=(xi(t["exit_date"]), t["exit_price"]),
-                            xytext=(3, 6), textcoords="offset points", fontsize=6,
-                            color=cx.get(t["exit_type"], "gray"), alpha=0.7)
+            xd = t["exit_date"]
+            if xd not in d2i or t["exit_type"] == "BandExit":
+                continue
+            cx = {"Pullback": "#FF6600", "MACD": "#9C27B0", "Timeout": "gray"}
+            mk = {"Pullback": "s", "MACD": "D", "Timeout": "X"}
+            ax.scatter([xi(xd)], [t["exit_price"]],
+                       marker=mk.get(t["exit_type"], "o"), s=80,
+                       color=cx.get(t["exit_type"], "gray"),
+                       edgecolors="black", lw=0.5, alpha=0.5, zorder=4)
+            ax.annotate(f"{t['gain']:+.1f}%", xy=(xi(xd), t["exit_price"]),
+                        xytext=(3, 6), textcoords="offset points", fontsize=6,
+                        color=cx.get(t["exit_type"], "gray"), alpha=0.7)
 
     legend_el = [
         Line2D([0],[0], color="k", lw=1.5, label="GLD Close"),
