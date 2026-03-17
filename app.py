@@ -719,24 +719,18 @@ def generate_backtest_chart(close, high, low, bp_dates, upper_band,
         ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
         ax.xaxis.set_major_locator(mdates.MonthLocator(interval=2))
 
-        # 买入持有最大回撤
         bh_running_max = buy_hold.cummax()
-        bh_drawdown = (buy_hold - bh_running_max) / bh_running_max * 100
-        bh_max_dd = bh_drawdown.min()
+        bh_max_dd = ((buy_hold - bh_running_max) / bh_running_max * 100).min()
 
-        summary_rows.append({
-            "周期": label,
-            "信号收益": f"{total_ret:+.1f}%",
-            "买入持有": f"{bh_ret:+.1f}%",
-            "超额": f"{total_ret - bh_ret:+.1f}%",
-            "交易数": n_trades,
-            "胜率": f"{win_rate:.0%}",
-            "均收益": f"{avg_gain:+.1f}%",
-            "信号最大回撤": f"{max_dd:.1f}%",
-            "持有最大回撤": f"{bh_max_dd:.1f}%",
-            "最大盈利": f"{max_gain:+.1f}%",
-            "最大亏损": f"{max_loss:+.1f}%",
-        })
+        row = {"周期": label, "买入持有": f"{s2.get('bh', s1.get('bh', 0)):+.1f}%",
+               "持有回撤": f"{bh_max_dd:.1f}%"}
+        for tag, s in [("v1.0", s1), ("v2.2", s2)]:
+            if s:
+                row[f"{tag}收益"] = f"{s['total']:+.1f}%"
+                row[f"{tag}交易"] = s["n"]
+                row[f"{tag}胜率"] = f"{s['wr']:.0%}"
+                row[f"{tag}回撤"] = f"{s['max_dd']:.1f}%"
+        summary_rows.append(row)
 
     plt.tight_layout(rect=[0, 0, 1, 0.96])
     return fig, summary_rows
@@ -1225,8 +1219,14 @@ def main():
         min_d = bp_dates[0].to_pydatetime().date()
         max_d = bp_dates[-1].to_pydatetime().date()
         c1, c2 = st.sidebar.columns(2)
+        presets = {"近2月": 65, "近半年": 180, "近1年": 365,
+                   "近2年": 730, "近5年": 1825, "全部": 9999}
+        preset = st.sidebar.selectbox("快速选择", list(presets.keys()))
+        default_start = max_d - timedelta(days=presets[preset])
+        if default_start < min_d:
+            default_start = min_d
         with c1:
-            start_date = st.date_input("开始", value=max_d - timedelta(days=65),
+            start_date = st.date_input("开始", value=default_start,
                                        min_value=min_d, max_value=max_d)
         with c2:
             end_date = st.date_input("结束", value=max_d,
@@ -1244,14 +1244,27 @@ def main():
             if today_for_chart else 0
         today_rv_chart = rv_pctile.get(today_for_chart, 0) \
             if today_for_chart else 0
+
+        # 长周期 (>120天) 不显示交易信号, 用空信号
+        is_long_range = len(viz_dates) > 120
         sig_type_viz = None
-        if today_for_chart is not None:
+        if not is_long_range and today_for_chart is not None:
             if buy_call.get(today_for_chart, False):
                 sig_type_viz = "BUY_CALL"
             elif sell_put.get(today_for_chart, False):
                 sig_type_viz = "SELL_PUT"
             if exit_sig.get(today_for_chart, False):
                 sig_type_viz = sig_type_viz or "EXIT"
+
+        # 长周期用空信号 dict 禁用信号标注
+        if is_long_range:
+            buy_call_viz = {}
+            sell_put_viz = {}
+            exit_sig_viz = {}
+        else:
+            buy_call_viz = buy_call
+            sell_put_viz = sell_put
+            exit_sig_viz = exit_sig
     else:
         lookback_days = st.sidebar.slider("回看天数", 30, 180, 65)
         lookback = last_date - timedelta(days=lookback_days)
@@ -1348,9 +1361,15 @@ def main():
                 oi_hist_bands = (adj_ub_hist, adj_lb_hist)
 
     # ── 主图表 ──
+    # 历史回看长周期用空信号 (不显示交易标注)
+    _bc = locals().get("buy_call_viz", buy_call)
+    _sp = locals().get("sell_put_viz", sell_put)
+    _ex = locals().get("exit_sig_viz", exit_sig)
+
     fig, trades = generate_chart(
         close, high, viz_dates, upper_band, lower_band,
-        buy_call, sell_put, exit_sig, rv_pctile, regime,
+        _bc, _sp, _ex,
+        rv_pctile, regime,
         pred_u_pct=pred_u_pct, pred_l_pct=pred_l_pct,
         show_future=show_future, today=today_for_chart,
         today_close=today_close_chart,
