@@ -45,6 +45,10 @@ plt.rcParams["axes.unicode_minus"] = False
 st.set_page_config(page_title="GLD 交易仪表板", page_icon="📊",
                    layout="wide", initial_sidebar_state="expanded")
 
+# ── 时区配置 ──
+TZ_OPTIONS = {"SGT (UTC+8)": 8, "ET (UTC-5)": -5, "UTC": 0, "CST (UTC+8)": 8}
+TZ_DEFAULT = "SGT (UTC+8)"
+
 SIG_COLORS = {"BUY CALL": "#2196F3", "SELL PUT": "#FF9800"}
 EXIT_MARKERS = {
     "BandExit": ("v", "#F44336"),
@@ -754,7 +758,22 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                           regime, rv_pctile, bp_dates, bp_s,
                           gc_gld_ratio, usdcny_rate, today_sgt):
     """v2.1: v1.0 Band + GLD 盘中价格 + 1h 确认."""
-    from core.signals_v2 import generate_signals_v2, compute_1h_confirmation
+    from core.signals_v2 import generate_signals_v2
+    from datetime import timezone as _tz
+
+    # 时区
+    tz_name = st.sidebar.selectbox("时区", list(TZ_OPTIONS.keys()),
+                                    index=list(TZ_OPTIONS.keys()).index(TZ_DEFAULT))
+    tz_offset = TZ_OPTIONS[tz_name]
+
+    def to_local(dt):
+        """ET → 本地时区显示."""
+        if dt is None:
+            return ""
+        # 假设数据是 ET (UTC-5), 转为目标时区
+        utc = dt + timedelta(hours=5)
+        local = utc + timedelta(hours=tz_offset)
+        return local.strftime("%Y-%m-%d %H:%M") + f" {tz_name.split()[0]}"
 
     # GLD 1h (含盘前盘后)
     gld_1h_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -763,7 +782,7 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     gld_1h = pd.read_csv(gld_1h_path, index_col=0, parse_dates=True) \
         if os.path.exists(gld_1h_path) else None
 
-    # v2.1 信号 (v1.0 Band + H/L 触发 + 1h 确认)
+    # v2.1 历史信号 (v1.0 Band + H/L 触发 + 1h 确认)
     sig_df = generate_signals_v2(
         close_d, high_d, low_d, upper_band, lower_band,
         regime, rv_pctile,
@@ -776,12 +795,16 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     last_date = bp_dates[-1]
     last_close = close_d.get(last_date, 0)
     last_regime = regime.get(last_date, "?")
+    last_rv = rv_pctile.get(last_date, 0)
     last_row = sig_df.loc[last_date] if last_date in sig_df.index else None
 
-    # 当前阈值
-    bp030 = last_row["bp030_price"] if last_row is not None else 0
-    bp090 = last_row["bp090_price"] if last_row is not None else 0
-    last_bp_close = last_row["bp_close"] if last_row is not None else 0
+    # *** 下一交易日阈值 (与 v1.0 一致) ***
+    from core.data import load_config, load_oos_predictions
+    range_df = load_oos_predictions(load_config())
+    next_upper, next_lower, next_bp030, next_bp090 = \
+        compute_next_day_band(close_d, range_df, bp_dates, last_date)
+
+    last_bp_close = last_row["bp_close"] if last_row is not None else bp_s.get(last_date, 0)
 
     # ── 顶部指标 ──
     m1, m2, m3, m4, m5 = st.columns(5)
@@ -801,52 +824,50 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         st.metric("区域", f"{zone_icon[zone]} {zone}")
     with m5:
         sig_text = last_row["signal_text"] if last_row is not None else ""
-        st.metric("信号", sig_text if sig_text else "无信号")
+        st.metric("最新信号", sig_text if sig_text else "无信号")
 
-    # ── 实时阈值 ──
+    # ── 下一交易日阈值 (与 v1.0 完全一致) ──
     st.divider()
     col_a, col_b = st.columns(2)
 
     with col_a:
-        st.subheader("v2.1 盘中阈值 (v1.0 Band)")
-        if bp030 > 0:
-            # 实时价格
+        st.subheader("下一交易日阈值")
+        if next_bp030 > 0:
+            gc_gld_r = gc_gld_ratio if gc_gld_ratio else 10.9
             rt = _get_realtime_prices()
             gc_now = rt["gc_price"] if rt else 0
-            gc_gld_r = gc_gld_ratio if gc_gld_ratio else 10.9
             gld_from_gc = gc_now / gc_gld_r if gc_now > 0 else 0
 
             st.markdown(f"""
 | 指标 | GLD ($) | COMEX 等价 ($/oz) |
 |------|---------|-----------------|
-| Band 上界 | ${last_row['upper']:.2f} | ${last_row['upper'] * gc_gld_r:.0f} |
-| Band 下界 | ${last_row['lower']:.2f} | ${last_row['lower'] * gc_gld_r:.0f} |
-| **买入 (bp<0.30)** | **< ${bp030:.2f}** | **< ${bp030 * gc_gld_r:.0f}** |
-| **平仓 (bp>0.90)** | **> ${bp090:.2f}** | **> ${bp090 * gc_gld_r:.0f}** |
-| GLD 收盘 | ${last_close:.2f} | |
-| GLD bp(H/L) | {last_row['bp_low']:.2f} ~ {last_row['bp_high']:.2f} | |
+| Band 上界 | ${next_upper:.2f} | ${next_upper * gc_gld_r:.0f} |
+| Band 下界 | ${next_lower:.2f} | ${next_lower * gc_gld_r:.0f} |
+| **买入 (bp<0.30)** | **< ${next_bp030:.2f}** | **< ${next_bp030 * gc_gld_r:.0f}** |
+| **平仓 (bp>0.90)** | **> ${next_bp090:.2f}** | **> ${next_bp090 * gc_gld_r:.0f}** |
+| 基准收盘 | ${last_close:.2f} ({last_date.date()}) | |
 """)
             if gc_now > 0:
-                gld_est_bp = (gld_from_gc - last_row["lower"]) / \
-                    (last_row["upper"] - last_row["lower"]) \
-                    if last_row["upper"] > last_row["lower"] else 0
-                st.markdown(f"**实时**: COMEX GC=${gc_now:.0f} → GLD≈${gld_from_gc:.1f}"
+                gld_est_bp = (gld_from_gc - next_lower) / \
+                    (next_upper - next_lower) \
+                    if next_upper > next_lower else 0
+                st.markdown(f"**实时**: GC=${gc_now:.0f} → GLD≈${gld_from_gc:.1f}"
                             f" → bp≈{gld_est_bp:.2f} ({rt['timestamp']})")
 
     with col_b:
         st.subheader("跨市场价位")
-        rt = _get_realtime_prices()
+        if not rt:
+            rt = _get_realtime_prices()
         _cny = rt["usdcny"] if rt else (usdcny_rate if usdcny_rate else 7.0)
-        gc_gld_r = gc_gld_ratio if gc_gld_ratio else 10.9
         _g = 31.1035
 
-        if bp030 > 0:
+        if next_bp030 > 0:
             st.markdown(f"""
 | 价位 | GLD ($) | COMEX ($/oz) | 沪金 (¥/g) |
 |------|---------|-------------|-----------|
-| **买入** | **${bp030:.2f}** | **${bp030*gc_gld_r:.0f}** | **¥{bp030*gc_gld_r*_cny/_g:.2f}** |
-| **平仓** | **${bp090:.2f}** | **${bp090*gc_gld_r:.0f}** | **¥{bp090*gc_gld_r*_cny/_g:.2f}** |
-| 收盘 | ${last_close:.2f} | ${last_close*gc_gld_r:.0f} | ¥{last_close*gc_gld_r*_cny/_g:.2f} |
+| **买入** | **${next_bp030:.2f}** | **${next_bp030*gc_gld_r:.0f}** | **¥{next_bp030*gc_gld_r*_cny/_g:.2f}** |
+| **平仓** | **${next_bp090:.2f}** | **${next_bp090*gc_gld_r:.0f}** | **¥{next_bp090*gc_gld_r*_cny/_g:.2f}** |
+| 当前 | ${last_close:.2f} | ${last_close*gc_gld_r:.0f} | ¥{last_close*gc_gld_r*_cny/_g:.2f} |
 """)
             st.caption(f"USD/CNY={_cny:.4f} | GC/GLD={gc_gld_r:.4f}")
 
@@ -894,16 +915,20 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         ax.plot(xi_arr(cidx), bp030_line.values, color="#2196F3", lw=0.8, ls="--", alpha=0.5)
         ax.plot(xi_arr(cidx), bp090_line.values, color="#F44336", lw=0.8, ls="--", alpha=0.5)
 
-    # 信号标注
+    # 信号标注 (标记在触发价位上, 不是收盘价)
     for d, r in sig_viz.iterrows():
         if xi(d) is None:
             continue
         if r["buy_signal"]:
+            # 买入标记在 bp=0.30 价位 (盘中 low 触及的位置)
+            buy_price = r["bp030_price"]
             color = "#2196F3" if r["buy_type"] == "BUY CALL" else "#FF9800"
-            ax.scatter([xi(d)], [r["close"]], marker="^", s=120, color=color,
+            ax.scatter([xi(d)], [buy_price], marker="^", s=120, color=color,
                        edgecolors="black", lw=0.7, zorder=6)
         if r["exit_signal"]:
-            ax.scatter([xi(d)], [r["close"]], marker="v", s=100, color="#F44336",
+            # 退出标记在 bp=0.90 价位 (盘中 high 触及的位置)
+            exit_price = r["bp090_price"]
+            ax.scatter([xi(d)], [exit_price], marker="v", s=100, color="#F44336",
                        edgecolors="black", lw=0.7, zorder=5)
 
     legend_el = [
@@ -916,8 +941,10 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         Line2D([0],[0], marker="v", color="w", markerfacecolor="#F44336", markersize=9, label="EXIT"),
     ]
     ax.legend(handles=legend_el, loc="upper left", fontsize=7, ncol=4)
-    ax.set_title(f"v2.1 盘中信号 (v1.0 Band + H/L触发) | {last_date.date()} | "
-                 f"Regime: {last_regime}", fontsize=13, fontweight="bold")
+    now_local = to_local(pd.Timestamp.now())
+    ax.set_title(f"v2.1 盘中信号 (v1.0 Band + H/L触发) | 数据至 {last_date.date()} | "
+                 f"Regime: {last_regime} | {now_local}",
+                 fontsize=13, fontweight="bold")
     ax.set_ylabel("GLD ($)")
     ax.grid(True, alpha=0.3)
     ax.xaxis.set_major_formatter(FuncFormatter(_fmt_tick))
