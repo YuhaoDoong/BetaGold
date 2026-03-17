@@ -748,226 +748,182 @@ def compute_next_day_band(close, range_df, bp_dates, today):
 
 
 # ══════════════════════════════════════════════════════════
-# 1h 盘中模式
+# v2.1 盘中信号模式
 # ══════════════════════════════════════════════════════════
-def _render_1h_mode(regime, rv_pctile, last_close_daily, last_regime,
-                    gc_gld_ratio, usdcny_rate, today_sgt):
-    """渲染 1h 盘中信号模式 (GC=F 为主信号源)."""
-    gc_1h, gld_1h, pred_1h = load_1h_data()
-    if gc_1h is None or pred_1h is None:
-        st.error("1h 数据未找到。请先运行 `python scripts/train_1h_model.py`")
-        return
+def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
+                          regime, rv_pctile, bp_dates, bp_s,
+                          gc_gld_ratio, usdcny_rate, today_sgt):
+    """v2.1: v1.0 Band + GLD 盘中价格 + 1h 确认."""
+    from core.signals_v2 import generate_signals_v2, compute_1h_confirmation
 
-    close_1h = gc_1h["Close"]
-    high_1h = gc_1h["High"]
-    low_1h = gc_1h["Low"]
+    # GLD 1h (含盘前盘后)
+    gld_1h_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "..", "Gold", "data", "raw", "market", "gld_1h.csv")
+    gld_1h_path = os.path.normpath(gld_1h_path)
+    gld_1h = pd.read_csv(gld_1h_path, index_col=0, parse_dates=True) \
+        if os.path.exists(gld_1h_path) else None
 
-    # 95h (5天) Band → 多日持仓, 1h GC=F 价格实时计算 bp
-    ub_1h, lb_1h, bp_1h = build_band_1h(pred_1h, close_1h, horizon="95h")
-    bp_1h = bp_1h.dropna()
-
-    # 信号
-    bc_1h, sp_1h, ex_1h = generate_signals_1h(bp_1h, regime, rv_pctile)
+    # v2.1 信号 (v1.0 Band + H/L 触发 + 1h 确认)
+    sig_df = generate_signals_v2(
+        close_d, high_d, low_d, upper_band, lower_band,
+        regime, rv_pctile,
+        close_1h=gld_1h["Close"] if gld_1h is not None else None,
+        high_1h=gld_1h["High"] if gld_1h is not None else None,
+        low_1h=gld_1h["Low"] if gld_1h is not None else None,
+        use_1h_confirm=gld_1h is not None)
 
     # 最新状态
-    last_1h_dt = bp_1h.index[-1]
-    last_1h_close = close_1h.get(last_1h_dt, 0)
-    last_1h_bp = bp_1h.iloc[-1]
-    last_1h_ub = ub_1h.get(last_1h_dt, 0)
-    last_1h_lb = lb_1h.get(last_1h_dt, 0)
+    last_date = bp_dates[-1]
+    last_close = close_d.get(last_date, 0)
+    last_regime = regime.get(last_date, "?")
+    last_row = sig_df.loc[last_date] if last_date in sig_df.index else None
 
-    # 当前信号
-    sig_now = None
-    if bc_1h.get(last_1h_dt, False):
-        sig_now = "BUY CALL"
-    elif sp_1h.get(last_1h_dt, False):
-        sig_now = "SELL PUT"
-    if ex_1h.get(last_1h_dt, False):
-        sig_now = (sig_now + " + EXIT") if sig_now else "EXIT"
-
-    # 买入/平仓阈值
-    bp030_price = last_1h_lb + 0.30 * (last_1h_ub - last_1h_lb) \
-        if last_1h_ub > last_1h_lb else 0
-    bp090_price = last_1h_lb + 0.90 * (last_1h_ub - last_1h_lb) \
-        if last_1h_ub > last_1h_lb else 0
-
-    # GC → GLD 换算
-    gc_gld_r = gc_gld_ratio if gc_gld_ratio else 10.9
-    gld_equiv = last_1h_close / gc_gld_r
-    bp030_gld = bp030_price / gc_gld_r if bp030_price > 0 else 0
-    bp090_gld = bp090_price / gc_gld_r if bp090_price > 0 else 0
+    # 当前阈值
+    bp030 = last_row["bp030_price"] if last_row is not None else 0
+    bp090 = last_row["bp090_price"] if last_row is not None else 0
+    last_bp_close = last_row["bp_close"] if last_row is not None else 0
 
     # ── 顶部指标 ──
     m1, m2, m3, m4, m5 = st.columns(5)
     with m1:
-        st.metric("COMEX Gold", f"${last_1h_close:.1f}",
-                  delta=f"GLD≈${gld_equiv:.1f} | {last_1h_dt.strftime('%m/%d %H:%M')}")
+        delta_pct = None
+        if len(close_d) > 1:
+            delta_pct = f"{(last_close / close_d.iloc[-2] - 1) * 100:+.2f}%"
+        st.metric("GLD", f"${last_close:.2f}", delta=delta_pct)
     with m2:
         st.metric("Regime", last_regime)
     with m3:
-        st.metric("bp (1h)", f"{last_1h_bp:.3f}")
+        st.metric("bp (close)", f"{last_bp_close:.3f}")
     with m4:
-        zone = "买入区" if last_1h_bp < 0.30 \
-            else ("退出区" if last_1h_bp > 0.90 else "观望区")
-        zone_color = {"买入区": "🟢", "退出区": "🔴", "观望区": "⚪"}
-        st.metric("区域", f"{zone_color[zone]} {zone}")
+        zone = "买入区" if last_bp_close < 0.30 \
+            else ("退出区" if last_bp_close > 0.90 else "观望区")
+        zone_icon = {"买入区": "🟢", "退出区": "🔴", "观望区": "⚪"}
+        st.metric("区域", f"{zone_icon[zone]} {zone}")
     with m5:
-        sig_disp = sig_now if sig_now else "无信号"
-        st.metric("信号", sig_disp)
+        sig_text = last_row["signal_text"] if last_row is not None else ""
+        st.metric("信号", sig_text if sig_text else "无信号")
 
     # ── 实时阈值 ──
     st.divider()
     col_a, col_b = st.columns(2)
-    with col_a:
-        st.subheader("95h Band 实时阈值")
-        if bp030_price > 0:
-            st.markdown(f"""
-| 指标 | COMEX ($/oz) | GLD ($/share) |
-|------|-------------|---------------|
-| Band 上界 | ${last_1h_ub:.1f} | ${last_1h_ub/gc_gld_r:.2f} |
-| Band 下界 | ${last_1h_lb:.1f} | ${last_1h_lb/gc_gld_r:.2f} |
-| **买入 (bp<0.30)** | **< ${bp030_price:.1f}** | **< ${bp030_gld:.2f}** |
-| **平仓 (bp>0.90)** | **> ${bp090_price:.1f}** | **> ${bp090_gld:.2f}** |
-| 当前价 | ${last_1h_close:.1f} | ${gld_equiv:.2f} |
-| bp | {last_1h_bp:.3f} ({zone}) | |
-| K线时间 | {last_1h_dt.strftime('%Y-%m-%d %H:%M')} ET | |
-""")
 
-    # 跨市场换算 (GC=F 已经是 COMEX 价格, 直接换算)
+    with col_a:
+        st.subheader("v2.1 盘中阈值 (v1.0 Band)")
+        if bp030 > 0:
+            # 实时价格
+            rt = _get_realtime_prices()
+            gc_now = rt["gc_price"] if rt else 0
+            gc_gld_r = gc_gld_ratio if gc_gld_ratio else 10.9
+            gld_from_gc = gc_now / gc_gld_r if gc_now > 0 else 0
+
+            st.markdown(f"""
+| 指标 | GLD ($) | COMEX 等价 ($/oz) |
+|------|---------|-----------------|
+| Band 上界 | ${last_row['upper']:.2f} | ${last_row['upper'] * gc_gld_r:.0f} |
+| Band 下界 | ${last_row['lower']:.2f} | ${last_row['lower'] * gc_gld_r:.0f} |
+| **买入 (bp<0.30)** | **< ${bp030:.2f}** | **< ${bp030 * gc_gld_r:.0f}** |
+| **平仓 (bp>0.90)** | **> ${bp090:.2f}** | **> ${bp090 * gc_gld_r:.0f}** |
+| GLD 收盘 | ${last_close:.2f} | |
+| GLD bp(H/L) | {last_row['bp_low']:.2f} ~ {last_row['bp_high']:.2f} | |
+""")
+            if gc_now > 0:
+                gld_est_bp = (gld_from_gc - last_row["lower"]) / \
+                    (last_row["upper"] - last_row["lower"]) \
+                    if last_row["upper"] > last_row["lower"] else 0
+                st.markdown(f"**实时**: COMEX GC=${gc_now:.0f} → GLD≈${gld_from_gc:.1f}"
+                            f" → bp≈{gld_est_bp:.2f} ({rt['timestamp']})")
+
     with col_b:
         st.subheader("跨市场价位")
         rt = _get_realtime_prices()
         _cny = rt["usdcny"] if rt else (usdcny_rate if usdcny_rate else 7.0)
+        gc_gld_r = gc_gld_ratio if gc_gld_ratio else 10.9
         _g = 31.1035
 
-        if bp030_price > 0:
-            shfe_buy = bp030_price * _cny / _g
-            shfe_exit = bp090_price * _cny / _g
-            shfe_now = last_1h_close * _cny / _g
-
+        if bp030 > 0:
             st.markdown(f"""
-| 价位 | COMEX ($/oz) | GLD ($) | 沪金 (¥/g) |
-|------|-------------|---------|-----------|
-| **买入** | **${bp030_price:.0f}** | **${bp030_gld:.2f}** | **¥{shfe_buy:.2f}** |
-| **平仓** | **${bp090_price:.0f}** | **${bp090_gld:.2f}** | **¥{shfe_exit:.2f}** |
-| 当前 | ${last_1h_close:.0f} | ${gld_equiv:.2f} | ¥{shfe_now:.2f} |
+| 价位 | GLD ($) | COMEX ($/oz) | 沪金 (¥/g) |
+|------|---------|-------------|-----------|
+| **买入** | **${bp030:.2f}** | **${bp030*gc_gld_r:.0f}** | **¥{bp030*gc_gld_r*_cny/_g:.2f}** |
+| **平仓** | **${bp090:.2f}** | **${bp090*gc_gld_r:.0f}** | **¥{bp090*gc_gld_r*_cny/_g:.2f}** |
+| 收盘 | ${last_close:.2f} | ${last_close*gc_gld_r:.0f} | ¥{last_close*gc_gld_r*_cny/_g:.2f} |
 """)
-            ts = rt["timestamp"] if rt else "N/A"
-            st.caption(f"USD/CNY={_cny:.4f} | GC/GLD={gc_gld_r:.4f} | {ts}")
+            st.caption(f"USD/CNY={_cny:.4f} | GC/GLD={gc_gld_r:.4f}")
 
-    # ── 1h 图表 ──
+    # ── 信号历史图 ──
     st.divider()
-    lookback_bars = st.sidebar.slider("1h 回看K线数", 50, 500, 168,
-                                       help="168 = 约1个月")
+    lookback_days = st.sidebar.slider("回看天数", 30, 180, 65)
+    lookback = last_date - timedelta(days=lookback_days)
+    viz_dates = close_d.index[(close_d.index >= lookback) & (close_d.index <= last_date)]
+    sig_viz = sig_df.reindex(viz_dates).dropna(subset=["close"])
 
-    fig, ax = plt.subplots(figsize=(18, 8))
+    fig, ax = plt.subplots(figsize=(18, 9))
 
-    # 取最近 N 根 1h K线
-    plot_idx = bp_1h.index[-lookback_bars:]
-    cl_plot = close_1h.reindex(plot_idx).dropna()
-    ub_plot = ub_1h.reindex(plot_idx).dropna()
-    lb_plot = lb_1h.reindex(plot_idx).dropna()
-
-    # index-based x-axis (消除非交易时间断层)
-    d2i = {d: i for i, d in enumerate(plot_idx)}
-
-    def xi(d):
-        return d2i.get(d)
-
-    def xi_arr(dates):
-        return [d2i[d] for d in dates if d in d2i]
-
+    # index-based x-axis
+    plot_dates = list(viz_dates)
+    d2i = {d: i for i, d in enumerate(plot_dates)}
+    def xi(d): return d2i.get(d)
+    def xi_arr(dates): return [d2i[d] for d in dates if d in d2i]
     def _fmt_tick(x, pos):
         idx = int(round(x))
-        if 0 <= idx < len(plot_idx):
-            dt = plot_idx[idx]
-            if dt.hour == 9:
-                return dt.strftime("%m/%d")
-            return dt.strftime("%H:%M")
+        if 0 <= idx < len(plot_dates):
+            return plot_dates[idx].strftime("%m/%d")
         return ""
 
-    # 价格
-    ax.plot(xi_arr(cl_plot.index), cl_plot.values, "k-", lw=1.5, zorder=3)
-
-    # H/L 填充
-    hi_plot = high_1h.reindex(plot_idx).dropna()
-    lo_plot = low_1h.reindex(plot_idx).dropna()
-    common_hl = hi_plot.index.intersection(lo_plot.index)
-    if len(common_hl) > 0:
-        ax.fill_between(xi_arr(common_hl),
-                         lo_plot.reindex(common_hl).values,
-                         hi_plot.reindex(common_hl).values,
-                         alpha=0.06, color="gray")
+    # 价格 + H/L 范围
+    cl_plot = close_d.reindex(viz_dates).dropna()
+    ax.plot(xi_arr(cl_plot.index), cl_plot.values, "k-", lw=1.8, zorder=3)
+    hi_plot = high_d.reindex(viz_dates).dropna()
+    lo_plot = low_d.reindex(viz_dates).dropna()
+    hl_common = hi_plot.index.intersection(lo_plot.index)
+    if len(hl_common) > 0:
+        ax.fill_between(xi_arr(hl_common), lo_plot[hl_common].values,
+                         hi_plot[hl_common].values, alpha=0.08, color="gray")
 
     # Band
-    if len(ub_plot) > 0:
-        ax.plot(xi_arr(ub_plot.index), ub_plot.values,
-                color="green", lw=1, alpha=0.6)
-    if len(lb_plot) > 0:
-        ax.plot(xi_arr(lb_plot.index), lb_plot.values,
-                color="magenta", lw=1, alpha=0.6)
+    ub_plot = upper_band.reindex(viz_dates).dropna()
+    lb_plot = lower_band.reindex(viz_dates).dropna()
     cidx = ub_plot.index.intersection(lb_plot.index)
     if len(cidx) > 0:
-        ax.fill_between(xi_arr(cidx),
-                         lb_plot.reindex(cidx).values,
-                         ub_plot.reindex(cidx).values,
-                         alpha=0.06, color="green")
-
-    # 阈值线
-    bp030_line = lb_plot + 0.30 * (ub_plot.reindex(lb_plot.index) - lb_plot)
-    bp090_line = lb_plot + 0.90 * (ub_plot.reindex(lb_plot.index) - lb_plot)
-    bp030_line = bp030_line.dropna()
-    bp090_line = bp090_line.dropna()
-    if len(bp030_line) > 0:
-        ax.plot(xi_arr(bp030_line.index), bp030_line.values,
-                color="#2196F3", lw=0.8, ls="--", alpha=0.5)
-    if len(bp090_line) > 0:
-        ax.plot(xi_arr(bp090_line.index), bp090_line.values,
-                color="#F44336", lw=0.8, ls="--", alpha=0.5)
+        ax.fill_between(xi_arr(cidx), lb_plot[cidx].values,
+                         ub_plot[cidx].values, alpha=0.06, color="green")
+        ax.plot(xi_arr(cidx), ub_plot[cidx].values, color="green", lw=1, alpha=0.5)
+        ax.plot(xi_arr(cidx), lb_plot[cidx].values, color="magenta", lw=1, alpha=0.5)
+        bp030_line = lb_plot[cidx] + 0.30 * (ub_plot[cidx] - lb_plot[cidx])
+        bp090_line = lb_plot[cidx] + 0.90 * (ub_plot[cidx] - lb_plot[cidx])
+        ax.plot(xi_arr(cidx), bp030_line.values, color="#2196F3", lw=0.8, ls="--", alpha=0.5)
+        ax.plot(xi_arr(cidx), bp090_line.values, color="#F44336", lw=0.8, ls="--", alpha=0.5)
 
     # 信号标注
-    bc_plot = bc_1h.reindex(plot_idx).fillna(False)
-    sp_plot = sp_1h.reindex(plot_idx).fillna(False)
-    ex_plot = ex_1h.reindex(plot_idx).fillna(False)
+    for d, r in sig_viz.iterrows():
+        if xi(d) is None:
+            continue
+        if r["buy_signal"]:
+            color = "#2196F3" if r["buy_type"] == "BUY CALL" else "#FF9800"
+            ax.scatter([xi(d)], [r["close"]], marker="^", s=120, color=color,
+                       edgecolors="black", lw=0.7, zorder=6)
+        if r["exit_signal"]:
+            ax.scatter([xi(d)], [r["close"]], marker="v", s=100, color="#F44336",
+                       edgecolors="black", lw=0.7, zorder=5)
 
-    buy_dates = [d for d in plot_idx if bc_plot.get(d, False) or sp_plot.get(d, False)]
-    exit_dates = [d for d in plot_idx if ex_plot.get(d, False)]
-
-    if buy_dates:
-        ax.scatter(xi_arr(buy_dates),
-                   [close_1h.get(d, np.nan) for d in buy_dates],
-                   marker="^", s=80, color="#2196F3", edgecolors="black",
-                   lw=0.5, zorder=5, label="Buy")
-    if exit_dates:
-        ax.scatter(xi_arr(exit_dates),
-                   [close_1h.get(d, np.nan) for d in exit_dates],
-                   marker="v", s=80, color="#F44336", edgecolors="black",
-                   lw=0.5, zorder=5, label="Exit")
-
-    # 当前位置标注
-    last_xi = xi(last_1h_dt)
-    if last_xi is not None:
-        mc = "#2196F3" if last_1h_bp < 0.30 else (
-            "#F44336" if last_1h_bp > 0.90 else "black")
-        ax.scatter([last_xi], [last_1h_close], marker="D", s=120,
-                   color=mc, edgecolors="black", lw=1.5, zorder=8)
-        ax.annotate(f"${last_1h_close:.1f} bp={last_1h_bp:.2f}",
-                    xy=(last_xi, last_1h_close), xytext=(-50, -22),
-                    textcoords="offset points", fontsize=8, fontweight="bold",
-                    color=mc, bbox=dict(fc="white", ec=mc, alpha=0.9,
-                                        boxstyle="round,pad=0.2"))
-
-    ax.set_title(f"COMEX Gold 1h (95h Band) | {last_1h_dt.strftime('%Y-%m-%d %H:%M')} ET | "
-                 f"Regime: {last_regime} | bp={last_1h_bp:.3f}",
-                 fontsize=13, fontweight="bold")
-    ax.set_ylabel("COMEX Gold ($/oz)")
+    legend_el = [
+        Line2D([0],[0], color="k", lw=1.5, label="GLD Close"),
+        Line2D([0],[0], color="green", lw=1, alpha=0.5, label="Band"),
+        Line2D([0],[0], color="#2196F3", lw=0.8, ls="--", label="Buy (bp=0.30)"),
+        Line2D([0],[0], color="#F44336", lw=0.8, ls="--", label="Exit (bp=0.90)"),
+        Line2D([0],[0], marker="^", color="w", markerfacecolor="#2196F3", markersize=9, label="BUY CALL"),
+        Line2D([0],[0], marker="^", color="w", markerfacecolor="#FF9800", markersize=9, label="SELL PUT"),
+        Line2D([0],[0], marker="v", color="w", markerfacecolor="#F44336", markersize=9, label="EXIT"),
+    ]
+    ax.legend(handles=legend_el, loc="upper left", fontsize=7, ncol=4)
+    ax.set_title(f"v2.1 盘中信号 (v1.0 Band + H/L触发) | {last_date.date()} | "
+                 f"Regime: {last_regime}", fontsize=13, fontweight="bold")
+    ax.set_ylabel("GLD ($)")
     ax.grid(True, alpha=0.3)
     ax.xaxis.set_major_formatter(FuncFormatter(_fmt_tick))
-    ax.xaxis.set_major_locator(MaxNLocator(integer=True, nbins=20))
-    plt.setp(ax.get_xticklabels(), rotation=0, fontsize=8)
-    ax.legend(loc="upper left", fontsize=8)
-    plt.tight_layout()
+    ax.xaxis.set_major_locator(MaxNLocator(integer=True, nbins=15))
 
+    plt.tight_layout()
     st.pyplot(fig, use_container_width=True)
 
     import io
@@ -975,81 +931,42 @@ def _render_1h_mode(regime, rv_pctile, last_close_daily, last_regime,
     fig.savefig(buf, format="png", dpi=150, bbox_inches="tight",
                 facecolor="white", edgecolor="none")
     buf.seek(0)
-    st.download_button("下载 1h 图表", buf.getvalue(),
-                       file_name="gld_1h_dashboard.png", mime="image/png")
+    st.download_button("下载图表", buf.getvalue(),
+                       file_name="gld_v21_dashboard.png", mime="image/png")
     plt.close(fig)
 
-    # ── bp 分布图 ──
+    # ── 信号历史表 ──
     st.divider()
-    st.subheader("Band Position (1h)")
-
-    fig2, ax2 = plt.subplots(figsize=(18, 4))
-    bp_plot = bp_1h.reindex(plot_idx).dropna()
-    ax2.plot(xi_arr(bp_plot.index), bp_plot.values, "k-", lw=1)
-    ax2.axhline(0.30, color="#2196F3", lw=0.8, ls="--", alpha=0.5)
-    ax2.axhline(0.90, color="#F44336", lw=0.8, ls="--", alpha=0.5)
-    ax2.axhspan(0, 0.30, alpha=0.04, color="#2196F3")
-    ax2.axhspan(0.90, 1.5, alpha=0.04, color="#F44336")
-    ax2.set_ylim(-0.2, 1.3)
-    ax2.set_ylabel("bp")
-    ax2.grid(True, alpha=0.3)
-    ax2.xaxis.set_major_formatter(FuncFormatter(_fmt_tick))
-    ax2.xaxis.set_major_locator(MaxNLocator(integer=True, nbins=20))
-    plt.tight_layout()
-    st.pyplot(fig2, use_container_width=True)
-    plt.close(fig2)
-
-    # ── 回测 (近期) ──
-    st.divider()
-    st.subheader("1h 信号回测 (近3个月)")
-
-    three_months_ago = pd.Timestamp(today_sgt) - timedelta(days=90)
-    bp_recent = bp_1h[bp_1h.index >= three_months_ago]
-    bc_r = bc_1h.reindex(bp_recent.index).fillna(False)
-    sp_r = sp_1h.reindex(bp_recent.index).fillna(False)
-    ex_r = ex_1h.reindex(bp_recent.index).fillna(False)
-
-    trades = backtest_1h(close_1h, high_1h, bp_recent,
-                          bc_r, sp_r, ex_r, max_hold_hours=70)
-
-    if trades:
-        tdf = pd.DataFrame(trades)
-        total_ret = ((1 + tdf["gain"] / 100).prod() - 1) * 100
-        wr = (tdf["gain"] > 0).mean()
-
-        st.markdown(f"**{len(trades)} 笔交易 | 累计 {total_ret:+.1f}% | "
-                    f"胜率 {wr:.0%} | 均持仓 {tdf['hold_hours'].mean():.0f}h**")
-
-        trecs = []
-        for _, t in tdf.iterrows():
-            trecs.append({
-                "入场": t["entry_date"].strftime("%m/%d %H:%M"),
-                "类型": t["sig_type"],
-                "入场价": f"${t['entry_price']:.2f}",
-                "出场": t["exit_date"].strftime("%m/%d %H:%M"),
-                "退出": t["exit_type"],
-                "出场价": f"${t['exit_price']:.2f}",
-                "收益": f"{t['gain']:+.1f}%",
-                "持仓": f"{t['hold_hours']}h",
+    st.subheader("近期信号")
+    sig_recent = sig_df[sig_df["signal_text"] != ""].tail(15)
+    if len(sig_recent) > 0:
+        recs = []
+        for d, r in sig_recent.iterrows():
+            confirmed = r.get("confirmed_1h", "")
+            conf_str = "✓" if confirmed is True else ("✗" if confirmed is False else "")
+            recs.append({
+                "日期": d.strftime("%Y-%m-%d"),
+                "GLD": f"${r['close']:.2f}",
+                "H/L": f"${r['low']:.1f}~${r['high']:.1f}",
+                "bp(L/C/H)": f"{r['bp_low']:.2f}/{r['bp_close']:.2f}/{r['bp_high']:.2f}",
+                "信号": r["signal_text"],
+                "1h": conf_str,
             })
-        st.dataframe(pd.DataFrame(trecs), use_container_width=True,
-                     hide_index=True)
-    else:
-        st.info("近3个月无交易信号")
+        st.dataframe(pd.DataFrame(recs), use_container_width=True, hide_index=True)
 
     # ── 模型信息 ──
-    with st.expander("模型信息 (v2.0.1)"):
+    with st.expander("模型信息 (v2.1)"):
+        gld_1h_info = f"{gld_1h.index[0].strftime('%Y-%m-%d')} ~ {gld_1h.index[-1].strftime('%Y-%m-%d')} ({len(gld_1h)} bars)" \
+            if gld_1h is not None else "未加载"
         st.markdown(f"""
-- **主信号源**: GC=F (COMEX黄金期货, ~23h/天, 全球覆盖)
-- **模型**: LSTM+Attention, seq_len=24, hidden=64, 3种子集成
-- **特征**: 58维 (1h技术 + 4h聚合 + 日线Regime + 跨市场GLD/DXY/VIX/SLV/TLT)
-- **预测**: 19h (1天) + 95h (5天) 区间, q95/05, Conformal cal90
-- **Band**: 95h horizon, 上界=Lag1, 下界=Lag1-3均值
-- **信号**: Bull(日线) + bp<0.30 → BUY; bp>0.90 → EXIT
-- **持仓**: 2-10天, 适合期权交易
-- **GC=F 数据**: {gc_1h.index[0].strftime('%Y-%m-%d')} ~ {gc_1h.index[-1].strftime('%Y-%m-%d')} ({len(gc_1h)} bars)
-- **OOS 预测**: {pred_1h.index[0].strftime('%Y-%m-%d')} ~ {pred_1h.index[-1].strftime('%Y-%m-%d')} ({len(pred_1h)} bars)
-- **GC/GLD 比值**: {gc_gld_r:.4f}
+- **Band**: v1.0 日线模型 (20年训练, LSTM+Attention, Conformal 80%覆盖)
+- **触发**: 日线 High/Low 判断 bp 是否触及 0.30/0.90 (不等收盘)
+- **1h 确认**: GLD 1h RSI/动量/止跌形态 (可选过滤)
+- **GLD 1h 数据**: {gld_1h_info}
+- **信号**: Bull + 盘中bp<0.30 → BUY; 盘中bp>0.90 → EXIT
+- **持仓周期**: 2-5天 (适合期权)
+- **买入准确率**: 83% (5/6, 5天内未跌>3%)
+- **退出准确率**: 71% (5/7, 5天内未涨>3%)
 """)
 
 
@@ -1073,7 +990,7 @@ def main():
     with st.spinner("加载数据..."):
         gld, range_df, regime, rv_pctile, gc_gld_ratio, usdcny_rate = load_all()
 
-    close, high = gld["Close"], gld["High"]
+    close, high, low = gld["Close"], gld["High"], gld["Low"]
 
     # 信号计算
     upper_band, lower_band, bp = build_band(
@@ -1092,7 +1009,7 @@ def main():
 
     # ── 侧边栏 ──
     st.sidebar.header("设置")
-    mode = st.sidebar.radio("模式", ["1h 盘中", "今日预测", "历史回看", "回测分析"])
+    mode = st.sidebar.radio("模式", ["盘中信号 v2.1", "今日预测 v1.0", "历史回看", "回测分析"])
 
     # 数据状态
     with st.sidebar.expander("数据状态", expanded=False):
@@ -1128,9 +1045,10 @@ def main():
                    "期权杠杆效应会放大实际收益/亏损.")
         return  # 回测模式不显示其他内容
 
-    if mode == "1h 盘中":
-        _render_1h_mode(regime, rv_pctile, last_close, last_regime,
-                        gc_gld_ratio, usdcny_rate, today_sgt)
+    if mode == "盘中信号 v2.1":
+        _render_intraday_mode(close, high, low, upper_band, lower_band,
+                              regime, rv_pctile, bp_dates, bp_s,
+                              gc_gld_ratio, usdcny_rate, today_sgt)
         return
 
     if mode == "历史回看":
@@ -1221,7 +1139,7 @@ def main():
     eod_df = None
     snap_date = None
 
-    if mode == "今日预测" and pred_u_pct is not None:
+    if mode == "今日预测 v1.0" and pred_u_pct is not None:
         cfg = load_config()
         eod_df, snap_date = load_latest_eod_snapshot(cfg)
         if eod_df is not None:
@@ -1285,7 +1203,7 @@ def main():
     plt.close(fig)
 
     # ── 预测模式额外内容 ──
-    if mode == "今日预测":
+    if mode == "今日预测 v1.0":
         st.divider()
         c_a, c_b = st.columns(2)
 
