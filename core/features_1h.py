@@ -250,47 +250,46 @@ def build_daily_features(df_1h, regime_series=None, daily_rv_pctile=None):
 
 # ── 跨市场特征 ──
 
-def build_cross_market_features(gld_1h, gc_1h=None, dxy_1h=None,
+def build_cross_market_features(gc_1h, gld_1h=None, dxy_1h=None,
                                  vix_1h=None, slv_1h=None, tlt_1h=None):
     """从多个 1h 数据构建跨市场特征.
 
-    所有输入 align 到 gld_1h 的 index.
-    Returns: DataFrame, index = gld_1h datetime.
+    gc_1h 为主, 所有输入 align 到 gc_1h 的 index.
+    Returns: DataFrame, index = gc_1h datetime.
     """
-    feat = pd.DataFrame(index=gld_1h.index)
-    gld_c = gld_1h["Close"]
+    feat = pd.DataFrame(index=gc_1h.index)
+    gc_c = gc_1h["Close"]
 
-    if gc_1h is not None:
-        gc_c = gc_1h["Close"].reindex(gld_1h.index).ffill()
-        ratio = gc_c / gld_c
+    if gld_1h is not None:
+        gld_c = gld_1h["Close"].reindex(gc_1h.index).ffill()
+        ratio = gc_c / gld_c.replace(0, np.nan)
         feat["gc_gld_ratio"] = ratio
         feat["gc_gld_ratio_z"] = (ratio - ratio.rolling(70).mean()) / \
             ratio.rolling(70).std().replace(0, np.nan)
-        feat["gc_ret_1h"] = gc_c.pct_change(1)
 
     if dxy_1h is not None:
-        dxy_c = dxy_1h["Close"].reindex(gld_1h.index).ffill()
+        dxy_c = dxy_1h["Close"].reindex(gc_1h.index).ffill()
         feat["dxy_ret_7h"] = dxy_c.pct_change(7)
         feat["dxy_ret_35h"] = dxy_c.pct_change(35)
         feat["dxy_sma20_pct"] = dxy_c / _sma(dxy_c, 20) - 1
 
     if vix_1h is not None:
-        vix_c = vix_1h["Close"].reindex(gld_1h.index).ffill()
+        vix_c = vix_1h["Close"].reindex(gc_1h.index).ffill()
         feat["vix_level"] = vix_c
         feat["vix_ret_7h"] = vix_c.pct_change(7)
         feat["vix_sma20_dev"] = (vix_c - _sma(vix_c, 20)) / \
             _sma(vix_c, 20).replace(0, np.nan)
 
     if slv_1h is not None:
-        slv_c = slv_1h["Close"].reindex(gld_1h.index).ffill()
-        gs_ratio = gld_c / slv_c.replace(0, np.nan)
+        slv_c = slv_1h["Close"].reindex(gc_1h.index).ffill()
+        gs_ratio = gc_c / slv_c.replace(0, np.nan)
         feat["gold_silver_ratio"] = gs_ratio
         feat["gold_silver_change"] = gs_ratio.pct_change(7)
 
     if tlt_1h is not None:
-        tlt_c = tlt_1h["Close"].reindex(gld_1h.index).ffill()
+        tlt_c = tlt_1h["Close"].reindex(gc_1h.index).ffill()
         feat["tlt_ret_7h"] = tlt_c.pct_change(7)
-        feat["gld_tlt_corr_35h"] = gld_c.pct_change().rolling(35).corr(
+        feat["gc_tlt_corr_35h"] = gc_c.pct_change().rolling(35).corr(
             tlt_c.pct_change())
 
     return feat
@@ -298,12 +297,12 @@ def build_cross_market_features(gld_1h, gc_1h=None, dxy_1h=None,
 
 # ── 预测目标 ──
 
-def build_targets(df_1h, horizons=(7, 35)):
+def build_targets(df_1h, horizons=(19, 95)):
     """构建多时间尺度预测目标.
 
     Args:
-        df_1h: 1h OHLCV
-        horizons: tuple of forward periods in hours (7=1天, 35=5天)
+        df_1h: 1h OHLCV (GC=F: ~19根/天, 所以19≈1天, 95≈5天)
+        horizons: tuple of forward periods in 1h bars
 
     Returns: DataFrame with target columns.
     """
@@ -323,31 +322,41 @@ def build_targets(df_1h, horizons=(7, 35)):
 
 # ── 主入口: 构建完整数据集 ──
 
-def build_dataset(gld_1h, gc_1h=None, dxy_1h=None, vix_1h=None,
+def build_dataset(gc_1h, gld_1h=None, dxy_1h=None, vix_1h=None,
                   slv_1h=None, tlt_1h=None,
                   regime_series=None, daily_rv_pctile=None,
-                  horizons=(7, 35)):
+                  horizons=(19, 95)):
     """构建完整的 1h 特征+目标数据集.
+
+    以 GC=F (COMEX黄金期货) 为主信号源 — 全球24h交易,
+    ~19根/天, 5天≈95根. 覆盖亚洲/伦敦/纽约全时段.
+
+    GLD 等 ETF 作为跨市场参考特征.
+
+    Args:
+        gc_1h: GC=F 1h OHLCV (主数据源)
+        gld_1h: GLD 1h OHLCV (跨市场特征)
+        horizons: (19, 95) = (1天, 5天) on GC=F
 
     Returns: (features_df, targets_df), 已对齐, 包含NaN (由调用方处理).
     """
-    # 1h 层
-    feat_1h = build_1h_features(gld_1h)
+    # 1h 层 (GC=F)
+    feat_1h = build_1h_features(gc_1h)
 
-    # 4h 层
-    feat_4h = build_4h_features(gld_1h)
+    # 4h 层 (GC=F)
+    feat_4h = build_4h_features(gc_1h)
 
-    # 日线层
-    feat_d = build_daily_features(gld_1h, regime_series, daily_rv_pctile)
+    # 日线层 (GC=F + Regime)
+    feat_d = build_daily_features(gc_1h, regime_series, daily_rv_pctile)
 
-    # 跨市场
+    # 跨市场: GC=F 为主, GLD/DXY/VIX/SLV/TLT 为参考
     feat_cross = build_cross_market_features(
-        gld_1h, gc_1h, dxy_1h, vix_1h, slv_1h, tlt_1h)
+        gc_1h, gld_1h, dxy_1h, vix_1h, slv_1h, tlt_1h)
 
     # 合并
     features = pd.concat([feat_1h, feat_4h, feat_d, feat_cross], axis=1)
 
-    # 目标
-    targets = build_targets(gld_1h, horizons)
+    # 目标 (GC=F 价格区间)
+    targets = build_targets(gc_1h, horizons)
 
     return features, targets

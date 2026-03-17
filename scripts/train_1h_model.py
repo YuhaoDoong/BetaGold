@@ -75,8 +75,9 @@ def main():
     slv_1h = load_1h_csv(os.path.join(data_dir, "slv_1h.csv"))
     tlt_1h = load_1h_csv(os.path.join(data_dir, "tlt_1h.csv"))
 
-    print(f"  GLD 1h: {len(gld_1h)} bars ({gld_1h.index[0]} ~ {gld_1h.index[-1]})")
-    for name, df in [("GC", gc_1h), ("DXY", dxy_1h), ("VIX", vix_1h),
+    print(f"  GC=F 1h: {len(gc_1h)} bars ({gc_1h.index[0]} ~ {gc_1h.index[-1]}) [主信号源]")
+    print(f"  GLD 1h: {len(gld_1h)} bars (含盘前盘后)")
+    for name, df in [("DXY", dxy_1h), ("VIX", vix_1h),
                       ("SLV", slv_1h), ("TLT", tlt_1h)]:
         if df is not None:
             print(f"  {name} 1h: {len(df)} bars")
@@ -87,10 +88,11 @@ def main():
     print(f"  Regime: {len(regime)} days, latest={regime.iloc[-1]}")
 
     # ── 构建特征 ──
-    print("\n[3/5] 构建多粒度特征...")
-    horizons = (7, 35)  # 7h≈1天, 35h≈5天
+    print("\n[3/5] 构建多粒度特征 (GC=F 为主)...")
+    # GC=F ~19根/天: 19≈1天, 95≈5天
+    horizons = (19, 95)
     features, targets = build_dataset(
-        gld_1h, gc_1h, dxy_1h, vix_1h, slv_1h, tlt_1h,
+        gc_1h, gld_1h, dxy_1h, vix_1h, slv_1h, tlt_1h,
         regime_series=regime, daily_rv_pctile=rv_pctile,
         horizons=horizons,
     )
@@ -114,11 +116,25 @@ def main():
     # ── 训练 ──
     print("\n[4/5] 训练模型...")
 
+    # 特征筛选: 与目标相关性 > 0.02
+    corrs_u = features.corrwith(targets[f"fwd_{horizons[1]}h_upper_pct"]
+                                 .reindex(features.index)).abs()
+    corrs_l = features.corrwith(targets[f"fwd_{horizons[1]}h_lower_pct"]
+                                 .reindex(features.index)).abs()
+    good_feats = list(set(
+        corrs_u[corrs_u > 0.02].index.tolist() +
+        corrs_l[corrs_l > 0.02].index.tolist()
+    ))
+    if "rv_10h" not in good_feats:
+        good_feats.append("rv_10h")
+    print(f"  特征筛选: {len(good_feats)}/{features.shape[1]} 维")
+    features = features[good_feats]
+
     # Train/test split: 后 25% 作为 OOS 测试
     n = len(features)
     train_end = int(n * 0.75)
-    val_size = 350   # ~50天
-    cal_size = 175   # ~25天
+    val_size = 500   # ~26天 on GC (19bars/day)
+    cal_size = 250   # ~13天
 
     print(f"  总样本: {n}")
     print(f"  训练截止: {features.index[train_end]} (idx={train_end})")
@@ -132,7 +148,7 @@ def main():
         targets_list.append((u, l))
 
     predictor = DLRangePredictor1h(
-        seq_len=48,
+        seq_len=24,
         hidden_size=64,
         num_layers=2,
         dropout=0.2,
@@ -140,8 +156,8 @@ def main():
         epochs=150,
         batch_size=64,
         patience=20,
-        q_upper=0.85,
-        q_lower=0.15,
+        q_upper=0.90,
+        q_lower=0.10,
         n_ensemble=3,
         cal_target_cov=0.80,
         horizons=horizons,
