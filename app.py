@@ -45,6 +45,12 @@ plt.rcParams["axes.unicode_minus"] = False
 st.set_page_config(page_title="GLD 交易仪表板", page_icon="📊",
                    layout="wide", initial_sidebar_state="expanded")
 
+try:
+    from streamlit_autorefresh import st_autorefresh
+    _HAS_AUTOREFRESH = True
+except ImportError:
+    _HAS_AUTOREFRESH = False
+
 # ── 时区配置 ──
 TZ_OPTIONS = {"SGT (UTC+8)": 8, "ET (UTC-5)": -5, "UTC": 0, "CST (UTC+8)": 8}
 TZ_DEFAULT = "SGT (UTC+8)"
@@ -765,6 +771,14 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     tz_name = st.sidebar.selectbox("时区", list(TZ_OPTIONS.keys()),
                                     index=list(TZ_OPTIONS.keys()).index(TZ_DEFAULT))
 
+    # 自动刷新
+    if _HAS_AUTOREFRESH:
+        refresh_min = st.sidebar.selectbox("自动刷新", [0, 1, 3, 5, 10],
+                                            index=3, format_func=lambda x: "关闭" if x == 0 else f"{x}分钟")
+        if refresh_min > 0:
+            st_autorefresh(interval=refresh_min * 60 * 1000,
+                           key="intraday_refresh")
+
     # GLD 1h
     gld_1h_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                "..", "Gold", "data", "raw", "market", "gld_1h.csv")
@@ -823,51 +837,38 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                     pullback_stop = peak_open * (1 - PULLBACK_DD / 100)
 
     # ════════════════════════════════════════
-    # 醒目顶部: 核心价位
+    # 醒目顶部: 交易价位 + 实时
     # ════════════════════════════════════════
     if next_bp030 > 0:
-        st.markdown("### 交易价位")
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            st.metric("买入 (bp<0.30)", f"< ${next_bp030:.2f}",
-                      delta=f"COMEX < ${next_bp030*gc_gld_r:.0f} | 沪金 < ¥{next_bp030*gc_gld_r*_cny/_g:.1f}")
-        with c2:
-            st.metric("平仓 (bp>0.90)", f"> ${next_bp090:.2f}",
-                      delta=f"COMEX > ${next_bp090*gc_gld_r:.0f} | 沪金 > ¥{next_bp090*gc_gld_r*_cny/_g:.1f}")
-        with c3:
-            if has_open_position and pullback_stop > 0:
-                st.metric("止盈 (Pullback)", f"< ${pullback_stop:.2f}",
-                          delta=f"入场${entry_price_open:.1f} 峰值${peak_open:.1f} 回撤{PULLBACK_DD}%")
-            elif has_open_position:
-                st.metric("止盈", "未触发",
-                          delta=f"入场${entry_price_open:.1f} 涨幅未达{PULLBACK_GAIN}%")
-            else:
-                st.metric("止盈", "无持仓", delta="等待买入信号")
-
         # 实时价格
-        if rt:
-            gc_now = rt["gc_price"]
-            gld_est = gc_now / gc_gld_r
-            bp_est = (gld_est - next_lower) / (next_upper - next_lower) \
-                if next_upper > next_lower else 0
-            zone = "买入区" if bp_est < 0.30 else ("退出区" if bp_est > 0.90 else "观望")
-            st.info(f"**实时** GC=${gc_now:.0f} → GLD≈${gld_est:.1f} → "
-                    f"bp≈{bp_est:.2f} ({zone}) | {rt['timestamp']}")
+        gc_now = rt["gc_price"] if rt else 0
+        gld_est = gc_now / gc_gld_r if gc_now > 0 else last_close
+        bp_est = (gld_est - next_lower) / (next_upper - next_lower) \
+            if next_upper > next_lower else 0
+        zone = "买入区" if bp_est < 0.30 else ("退出区" if bp_est > 0.90 else "观望")
+        zone_icon = {"买入区": "🟢", "退出区": "🔴", "观望": "⚪"}
+        ts = rt["timestamp"] if rt else ""
 
-    # 顶部指标行
-    m1, m2, m3, m4, m5 = st.columns(5)
-    with m1:
-        delta_pct = f"{(last_close/close_d.iloc[-2]-1)*100:+.2f}%" if len(close_d)>1 else None
-        st.metric("GLD 收盘", f"${last_close:.2f}", delta=delta_pct)
-    with m2:
-        st.metric("Regime", last_regime)
-    with m3:
-        st.metric("bp", f"{last_bp:.3f}")
-    with m4:
-        st.metric("RV%", f"{rv_pctile.get(last_date,0):.0%}")
-    with m5:
-        sig_text = sig_df.loc[last_date]["signal_text"] if last_date in sig_df.index else ""
-        st.metric("最新信号", sig_text if sig_text else "—")
+        c1, c2, c3, c4 = st.columns([2, 2, 2, 3])
+        with c1:
+            st.metric("买入 < (bp=0.30)", f"${next_bp030:.2f}",
+                      delta=f"COMEX ${next_bp030*gc_gld_r:.0f}")
+        with c2:
+            st.metric("退出 > (bp=0.90)", f"${next_bp090:.2f}",
+                      delta=f"COMEX ${next_bp090*gc_gld_r:.0f}")
+        with c3:
+            sig_text = sig_df.loc[last_date]["signal_text"] \
+                if last_date in sig_df.index else ""
+            st.metric("最新信号", sig_text if sig_text else "—",
+                      delta=f"Regime: {last_regime}")
+        with c4:
+            if gc_now > 0:
+                st.metric(f"{zone_icon.get(zone,'')} GLD≈${gld_est:.1f} bp≈{bp_est:.2f}",
+                          f"COMEX ${gc_now:.0f}",
+                          delta=f"{zone} | {ts}")
+            else:
+                st.metric("GLD 收盘", f"${last_close:.2f}",
+                          delta=f"bp={last_bp:.3f} | {last_date.date()}")
 
     # ── 信号历史图 ──
     st.divider()
@@ -978,6 +979,50 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     st.download_button("下载图表", buf.getvalue(),
                        file_name="gld_v21_dashboard.png", mime="image/png")
     plt.close(fig)
+
+    # ── 止盈预测 ──
+    st.divider()
+    st.subheader("止盈预测")
+
+    # 找出未平仓的买入信号: 有买入但之后没有退出信号
+    buy_rows = sig_df[sig_df["buy_signal"]]
+    exit_rows = sig_df[sig_df["exit_signal"]]
+    tp_recs = []
+
+    # 检查最近的买入信号是否已有退出
+    for buy_d in buy_rows.index[-5:][::-1]:  # 最近5个买入日
+        exits_after = exit_rows.index[exit_rows.index > buy_d]
+        br = buy_rows.loc[buy_d]
+        entry_p = br["bp030_price"]
+
+        # 从入场到现在的峰值
+        post = high_d[(high_d.index >= buy_d) & (high_d.index <= last_date)]
+        pk = post.max() if len(post) > 0 else entry_p
+        gain = (pk / entry_p - 1) * 100
+        current_p = close_d.get(last_date, entry_p)
+        current_gain = (current_p / entry_p - 1) * 100
+
+        # Pullback 止盈位
+        pb_stop = pk * (1 - PULLBACK_DD / 100) if gain > PULLBACK_GAIN else 0
+        # BandExit 止盈位 = 下一交易日 bp090
+        band_stop = next_bp090
+
+        status = "已退出" if len(exits_after) > 0 else "持仓中"
+        tp_recs.append({
+            "买入日": buy_d.strftime("%m/%d"),
+            "类型": br["buy_type"],
+            "入场价": f"${entry_p:.1f}",
+            "峰值": f"${pk:.1f} ({gain:+.1f}%)",
+            "当前": f"${current_p:.1f} ({current_gain:+.1f}%)",
+            "Pullback止盈": f"${pb_stop:.1f}" if pb_stop > 0 else f"涨幅未达{PULLBACK_GAIN}%",
+            "BandExit": f"${band_stop:.1f}",
+            "状态": status,
+        })
+
+    if tp_recs:
+        st.dataframe(pd.DataFrame(tp_recs), use_container_width=True, hide_index=True)
+    else:
+        st.caption("无近期买入信号")
 
     # ── 信号历史表 ──
     st.divider()
