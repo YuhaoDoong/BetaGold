@@ -849,7 +849,17 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         zone_icon = {"买入区": "🟢", "退出区": "🔴", "观望": "⚪"}
         ts = rt["timestamp"] if rt else ""
 
-        # 交易价位
+        # 信号预测价位 (蓝色背景)
+        st.markdown("""<style>
+        .signal-box {background: linear-gradient(135deg, #E3F2FD, #BBDEFB);
+                     border-radius: 10px; padding: 15px; margin-bottom: 10px;
+                     border-left: 4px solid #1565C0;}
+        .price-box  {background: linear-gradient(135deg, #F3E5F5, #E1BEE7);
+                     border-radius: 10px; padding: 15px;
+                     border-left: 4px solid #7B1FA2;}
+        </style>""", unsafe_allow_html=True)
+
+        st.markdown('<div class="signal-box">', unsafe_allow_html=True)
         c1, c2, c3 = st.columns(3)
         with c1:
             st.metric("买入 < (bp=0.30)", f"${next_bp030:.2f}",
@@ -862,19 +872,21 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                 if last_date in sig_df.index else ""
             st.metric("最新信号", sig_text if sig_text else "—",
                       delta=f"Regime: {last_regime} | bp={last_bp:.3f} | RV={rv_pctile.get(last_date,0):.0%}")
+        st.markdown('</div>', unsafe_allow_html=True)
 
-        # 实时价格行
+        # 实时价格行 (紫色背景)
         if gc_now > 0:
-            xau_est = gc_now  # COMEX ≈ XAU
+            xau_est = gc_now
             shfe_est = gc_now * _cny / _g
 
+            st.markdown('<div class="price-box">', unsafe_allow_html=True)
             r1, r2, r3, r4, r5 = st.columns(5)
             with r1:
                 st.metric("COMEX 纽约金", f"${gc_now:.1f}",
                           delta=f"{zone_icon.get(zone,'')} {zone}")
             with r2:
                 st.metric("伦敦金 XAU", f"${xau_est:.1f}",
-                          delta=f"≈COMEX")
+                          delta="≈COMEX")
             with r3:
                 st.metric("GLD", f"${gld_est:.1f}",
                           delta=f"bp≈{bp_est:.2f}")
@@ -884,6 +896,7 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             with r5:
                 st.metric("数据时间", ts if ts else "—",
                           delta=f"基准: {last_date.date()}")
+            st.markdown('</div>', unsafe_allow_html=True)
         else:
             st.caption(f"实时数据未获取 | GLD 收盘 ${last_close:.2f} ({last_date.date()})")
 
