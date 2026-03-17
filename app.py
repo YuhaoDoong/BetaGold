@@ -577,124 +577,138 @@ def build_all_trades(close, high, bp_dates, buy_call, sell_put, exit_sig,
     return trades
 
 
-def generate_backtest_chart(close, bp_dates, buy_call, sell_put, exit_sig,
-                            high, regime):
-    """生成 1Y/2Y/3Y 回测收益曲线图."""
+def _build_nav(trades, period_dates):
+    """从交易列表构建净值曲线."""
+    nav = pd.Series(np.nan, index=period_dates)
+    nav.iloc[0] = 100.0
+    cur = 100.0
+    for t in trades:
+        ed, xd = t["entry_date"], t["exit_date"]
+        g = t["gain"] / 100
+        if ed in nav.index:
+            nav[ed] = cur
+        cur *= (1 + g)
+        if xd in nav.index:
+            nav[xd] = cur
+    return nav.ffill().fillna(100.0)
+
+
+def _trade_stats(trades, buy_hold):
+    """计算交易统计."""
+    if not trades:
+        return {}
+    tdf = pd.DataFrame(trades)
+    cum = 1.0
+    for g in tdf["gain"]:
+        cum *= (1 + g / 100)
+    total_ret = (cum - 1) * 100
+    bh_ret = (buy_hold.iloc[-1] / 100 - 1) * 100
+    nav = _build_nav(trades, buy_hold.index)
+    running_max = nav.cummax()
+    max_dd = ((nav - running_max) / running_max * 100).min()
+    return {
+        "n": len(tdf), "wr": (tdf["gain"] > 0).mean(),
+        "avg": tdf["gain"].mean(), "total": total_ret,
+        "bh": bh_ret, "max_dd": max_dd,
+        "hold": tdf["hold_days"].mean(),
+        "max_g": tdf["gain"].max(), "min_g": tdf["gain"].min(),
+    }
+
+
+def generate_backtest_chart(close, high, low, bp_dates, upper_band,
+                            lower_band, buy_call, sell_put, exit_sig,
+                            regime, rv_pctile, gld_1h=None):
+    """v2.2 回测: v1.0(收盘) vs v2.2(H/L入场+12h止盈), 1Y/2Y/3Y."""
+    from core.signals_v2 import run_backtest as run_v22
+
     last = bp_dates[-1]
     periods = [
+        ("近6月", last - pd.DateOffset(months=6)),
         ("近1年", last - pd.DateOffset(years=1)),
         ("近2年", last - pd.DateOffset(years=2)),
-        ("近3年", last - pd.DateOffset(years=3)),
     ]
 
-    fig, axes = plt.subplots(3, 1, figsize=(16, 14), sharex=False)
-    fig.suptitle("信号系统回测收益", fontsize=15, fontweight="bold")
+    fig, axes = plt.subplots(3, 1, figsize=(16, 16), sharex=False)
+    fig.suptitle("回测对比: v1.0 收盘价 vs v2.2 盘中H/L+12h止盈",
+                 fontsize=15, fontweight="bold")
 
     summary_rows = []
 
     for ax, (label, start) in zip(axes, periods):
-        trades = build_all_trades(close, high, bp_dates,
-                                  buy_call, sell_put, exit_sig,
-                                  start_date=start)
-
-        if not trades:
-            ax.text(0.5, 0.5, f"{label}: 无交易", transform=ax.transAxes,
-                    ha="center", fontsize=14)
-            ax.set_title(label)
+        period_dates = close.index[close.index >= start]
+        if len(period_dates) == 0:
+            ax.set_title(f"{label}: 无数据")
             continue
 
-        # 构建每日净值曲线
-        period_dates = close.index[close.index >= start]
-        equity = pd.Series(100.0, index=period_dates)  # 起始100
         buy_hold = pd.Series(index=period_dates, dtype=float)
-        base_price = close.get(period_dates[0], close.iloc[0])
+        base = close.get(period_dates[0], close.iloc[0])
         for d in period_dates:
-            buy_hold[d] = close.get(d, base_price) / base_price * 100
+            buy_hold[d] = close.get(d, base) / base * 100
 
-        # 按交易累计收益
-        cum_ret = 1.0
-        trade_returns = []
-        for t in trades:
-            r = t["gain"] / 100
-            cum_ret *= (1 + r)
-            trade_returns.append((t["exit_date"], cum_ret))
+        # v1.0 回测 (收盘价)
+        trades_v1 = build_all_trades(close, high, bp_dates,
+                                      buy_call, sell_put, exit_sig,
+                                      start_date=start)
+        # v2.2 回测 (H/L入场 + 12h止盈)
+        trades_v2 = run_v22(close, high, low, upper_band, lower_band,
+                            regime, rv_pctile, gld_1h=gld_1h,
+                            start_date=start)
 
-        # 填充净值曲线: 交易期间线性插值, 非交易期间持平
-        nav = pd.Series(np.nan, index=period_dates)
-        nav.iloc[0] = 100.0
-        current_nav = 100.0
-
-        for t in trades:
-            # 入场日
-            ed = t["entry_date"]
-            xd = t["exit_date"]
-            g = t["gain"] / 100
-
-            if ed in nav.index:
-                nav[ed] = current_nav
-            # 出场日: 净值变化
-            current_nav *= (1 + g)
-            if xd in nav.index:
-                nav[xd] = current_nav
-
-        # 前向填充
-        nav = nav.ffill()
-        nav = nav.fillna(100.0)
+        nav_v1 = _build_nav(trades_v1, period_dates)
+        nav_v2 = _build_nav(trades_v2, period_dates)
+        s1 = _trade_stats(trades_v1, buy_hold)
+        s2 = _trade_stats(trades_v2, buy_hold)
 
         # 画图
         ax.plot(buy_hold.index, buy_hold.values, color="gray", lw=1.2,
-                alpha=0.6, label="买入持有 GLD")
-        ax.plot(nav.index, nav.values, color="#2196F3", lw=2,
-                label="信号策略")
+                alpha=0.5, label="买入持有")
+        if s1:
+            ax.plot(nav_v1.index, nav_v1.values, color="#2196F3", lw=1.5,
+                    label=f"v1.0 收盘 ({s1['n']}笔 {s1['total']:+.1f}%)")
+        if s2:
+            ax.plot(nav_v2.index, nav_v2.values, color="#FF9800", lw=2,
+                    label=f"v2.2 盘中 ({s2['n']}笔 {s2['total']:+.1f}%)")
 
-        # 标注交易
-        for t in trades:
-            c = SIG_COLORS.get(t["sig_type"], "#2196F3")
-            ed = t["entry_date"]
-            if ed in nav.index:
-                ax.scatter([ed], [nav[ed]], marker="^", s=60, color=c,
-                           edgecolors="black", linewidths=0.5, zorder=5)
+        # 交易标注 (v2.2)
+        for t in trades_v2:
+            ce = "#FF9800"
+            if t["entry_date"] in nav_v2.index:
+                ax.scatter([t["entry_date"]], [nav_v2[t["entry_date"]]],
+                           marker="^", s=50, color=ce, edgecolors="black",
+                           linewidths=0.4, zorder=5)
 
         # Regime 背景
         reg = regime.reindex(period_dates)
         bull = reg == "Bull"
         if bull.any():
-            starts = period_dates[bull & (~bull.shift(1, fill_value=False))]
-            ends = period_dates[bull & (~bull.shift(-1, fill_value=False))]
-            for s, e in zip(starts, ends):
-                ax.axvspan(s, e, alpha=0.04, color="green")
+            starts_b = period_dates[bull & (~bull.shift(1, fill_value=False))]
+            ends_b = period_dates[bull & (~bull.shift(-1, fill_value=False))]
+            for s, e in zip(starts_b, ends_b):
+                ax.axvspan(s, e, alpha=0.03, color="green")
 
-        # 统计
-        tdf = pd.DataFrame(trades)
-        n_trades = len(tdf)
-        avg_gain = tdf["gain"].mean()
-        win_rate = (tdf["gain"] > 0).mean()
-        total_ret = (cum_ret - 1) * 100
-        avg_hold = tdf["hold_days"].mean()
-        max_gain = tdf["gain"].max()
-        max_loss = tdf["gain"].min()
-        bh_ret = (buy_hold.iloc[-1] / 100 - 1) * 100
+        ax.axhline(100, color="black", lw=0.5, ls=":", alpha=0.3)
+        ax.legend(loc="upper left", fontsize=8)
+        ax.set_ylabel("净值 (起始=100)")
+        ax.grid(True, alpha=0.3)
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
+        ax.xaxis.set_major_locator(mdates.MonthLocator(interval=2))
 
-        # 最大回撤
-        running_max = nav.cummax()
-        drawdown = (nav - running_max) / running_max * 100
-        max_dd = drawdown.min()
-
-        n_bc = (tdf["sig_type"] == "BUY CALL").sum()
-        n_sp = (tdf["sig_type"] == "SELL PUT").sum()
-
-        stats_text = (
-            f"收益: {total_ret:+.1f}% (买入持有: {bh_ret:+.1f}%)  |  "
-            f"交易: {n_trades}笔 (BC:{n_bc} SP:{n_sp})  |  "
-            f"胜率: {win_rate:.0%}  |  "
-            f"均收益: {avg_gain:+.1f}%  |  "
-            f"最大回撤: {max_dd:.1f}%  |  "
-            f"均持仓: {avg_hold:.1f}d")
+        # 统计文本
+        if s2:
+            stats_text = (
+                f"v2.2: {s2['total']:+.1f}% ({s2['n']}笔 {s2['wr']:.0%}WR "
+                f"均{s2['avg']:+.1f}% 回撤{s2['max_dd']:.1f}% "
+                f"持仓{s2['hold']:.1f}d)"
+                f"  |  v1.0: {s1['total']:+.1f}% ({s1['n']}笔)"
+                f"  |  持有: {s2.get('bh', 0):+.1f}%")
+        elif s1:
+            stats_text = f"v1.0: {s1['total']:+.1f}% ({s1['n']}笔) | 持有: {s1['bh']:+.1f}%"
+        else:
+            stats_text = "无交易"
 
         ax.text(0.5, 0.02, stats_text, transform=ax.transAxes, fontsize=8,
                 ha="center", va="bottom", fontweight="bold",
                 bbox=dict(fc="lightyellow", ec="gray", alpha=0.9))
-
         ax.set_title(f"{label} ({start.strftime('%Y-%m')} ~ "
                      f"{last.strftime('%Y-%m')})", fontsize=12,
                      fontweight="bold")
@@ -1166,12 +1180,21 @@ def main():
             st.caption(f"{t}: {s}")
 
     if mode == "回测分析":
-        # ── 回测模式: 直接渲染回测图表 ──
+        # ── 回测模式 ──
         st.divider()
-        st.subheader("信号系统回测 (标的收益)")
+        st.subheader("回测对比: v1.0 收盘 vs v2.2 盘中+12h止盈")
+
+        # 加载 GLD 1h (用于 v2.2 止盈)
+        _1h_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "..", "Gold", "data", "raw", "market", "gld_1h.csv")
+        _1h_path = os.path.normpath(_1h_path)
+        _gld_1h = pd.read_csv(_1h_path, index_col=0, parse_dates=True) \
+            if os.path.exists(_1h_path) else None
 
         bt_fig, bt_summary = generate_backtest_chart(
-            close, bp_dates, buy_call, sell_put, exit_sig, high, regime)
+            close, high, low, bp_dates, upper_band, lower_band,
+            buy_call, sell_put, exit_sig,
+            regime, rv_pctile, gld_1h=_gld_1h)
         st.pyplot(bt_fig, use_container_width=True)
 
         if bt_summary:
