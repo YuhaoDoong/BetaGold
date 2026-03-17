@@ -99,21 +99,27 @@ def _get_realtime_prices():
 
 @st.cache_data(ttl=3600)
 def load_1h_data():
-    """加载 1h 数据和 OOS 预测."""
+    """加载 GC=F 1h 数据和 OOS 预测.
+
+    GC=F 为主信号源 (全球24h), GLD 为跨市场参考.
+    """
     data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                             "..", "Gold", "data", "raw", "market")
     data_dir = os.path.normpath(data_dir)
     model_dir = os.path.join(os.path.dirname(data_dir), "..", "models")
     model_dir = os.path.normpath(model_dir)
 
+    gc_path = os.path.join(data_dir, "gc_1h.csv")
     gld_path = os.path.join(data_dir, "gld_1h.csv")
     pred_path = os.path.join(model_dir, "dl_range_1h_oos.parquet")
 
-    if not os.path.exists(gld_path) or not os.path.exists(pred_path):
-        return None, None
-    gld_1h = pd.read_csv(gld_path, index_col=0, parse_dates=True)
+    if not os.path.exists(gc_path) or not os.path.exists(pred_path):
+        return None, None, None
+    gc_1h = pd.read_csv(gc_path, index_col=0, parse_dates=True)
+    gld_1h = pd.read_csv(gld_path, index_col=0, parse_dates=True) \
+        if os.path.exists(gld_path) else None
     pred_1h = pd.read_parquet(pred_path)
-    return gld_1h, pred_1h
+    return gc_1h, gld_1h, pred_1h
 
 
 # ══════════════════════════════════════════════════════════
@@ -746,18 +752,18 @@ def compute_next_day_band(close, range_df, bp_dates, today):
 # ══════════════════════════════════════════════════════════
 def _render_1h_mode(regime, rv_pctile, last_close_daily, last_regime,
                     gc_gld_ratio, usdcny_rate, today_sgt):
-    """渲染 1h 盘中信号模式."""
-    gld_1h, pred_1h = load_1h_data()
-    if gld_1h is None or pred_1h is None:
+    """渲染 1h 盘中信号模式 (GC=F 为主信号源)."""
+    gc_1h, gld_1h, pred_1h = load_1h_data()
+    if gc_1h is None or pred_1h is None:
         st.error("1h 数据未找到。请先运行 `python scripts/train_1h_model.py`")
         return
 
-    close_1h = gld_1h["Close"]
-    high_1h = gld_1h["High"]
-    low_1h = gld_1h["Low"]
+    close_1h = gc_1h["Close"]
+    high_1h = gc_1h["High"]
+    low_1h = gc_1h["Low"]
 
-    # 构建 1h Band (7h horizon for intraday)
-    ub_1h, lb_1h, bp_1h = build_band_1h(pred_1h, close_1h, horizon="7h")
+    # 95h (5天) Band → 多日持仓, 1h GC=F 价格实时计算 bp
+    ub_1h, lb_1h, bp_1h = build_band_1h(pred_1h, close_1h, horizon="95h")
     bp_1h = bp_1h.dropna()
 
     # 信号
@@ -785,11 +791,17 @@ def _render_1h_mode(regime, rv_pctile, last_close_daily, last_regime,
     bp090_price = last_1h_lb + 0.90 * (last_1h_ub - last_1h_lb) \
         if last_1h_ub > last_1h_lb else 0
 
+    # GC → GLD 换算
+    gc_gld_r = gc_gld_ratio if gc_gld_ratio else 10.9
+    gld_equiv = last_1h_close / gc_gld_r
+    bp030_gld = bp030_price / gc_gld_r if bp030_price > 0 else 0
+    bp090_gld = bp090_price / gc_gld_r if bp090_price > 0 else 0
+
     # ── 顶部指标 ──
     m1, m2, m3, m4, m5 = st.columns(5)
     with m1:
-        st.metric("GLD (1h)", f"${last_1h_close:.2f}",
-                  delta=f"{last_1h_dt.strftime('%m/%d %H:%M')}")
+        st.metric("COMEX Gold", f"${last_1h_close:.1f}",
+                  delta=f"GLD≈${gld_equiv:.1f} | {last_1h_dt.strftime('%m/%d %H:%M')}")
     with m2:
         st.metric("Regime", last_regime)
     with m3:
@@ -807,45 +819,41 @@ def _render_1h_mode(regime, rv_pctile, last_close_daily, last_regime,
     st.divider()
     col_a, col_b = st.columns(2)
     with col_a:
-        st.subheader("1h Band 实时阈值")
+        st.subheader("95h Band 实时阈值")
         if bp030_price > 0:
             st.markdown(f"""
-| 指标 | 价位 |
-|------|------|
-| Band 上界 (1h) | ${last_1h_ub:.2f} |
-| Band 下界 (1h) | ${last_1h_lb:.2f} |
-| **买入 (bp<0.30)** | **< ${bp030_price:.2f}** |
-| **平仓 (bp>0.90)** | **> ${bp090_price:.2f}** |
-| 当前 bp | {last_1h_bp:.3f} ({zone}) |
-| 最新K线 | {last_1h_dt.strftime('%Y-%m-%d %H:%M')} |
+| 指标 | COMEX ($/oz) | GLD ($/share) |
+|------|-------------|---------------|
+| Band 上界 | ${last_1h_ub:.1f} | ${last_1h_ub/gc_gld_r:.2f} |
+| Band 下界 | ${last_1h_lb:.1f} | ${last_1h_lb/gc_gld_r:.2f} |
+| **买入 (bp<0.30)** | **< ${bp030_price:.1f}** | **< ${bp030_gld:.2f}** |
+| **平仓 (bp>0.90)** | **> ${bp090_price:.1f}** | **> ${bp090_gld:.2f}** |
+| 当前价 | ${last_1h_close:.1f} | ${gld_equiv:.2f} |
+| bp | {last_1h_bp:.3f} ({zone}) | |
+| K线时间 | {last_1h_dt.strftime('%Y-%m-%d %H:%M')} ET | |
 """)
 
-    # 跨市场换算
+    # 跨市场换算 (GC=F 已经是 COMEX 价格, 直接换算)
     with col_b:
         st.subheader("跨市场价位")
         rt = _get_realtime_prices()
-        if rt and bp030_price > 0:
-            _ratio = rt["gc_price"] / last_close_daily
-            _cny = rt["usdcny"]
-            _g = 31.1035
+        _cny = rt["usdcny"] if rt else (usdcny_rate if usdcny_rate else 7.0)
+        _g = 31.1035
 
-            def _cvt(p):
-                xau = p * _ratio
-                return xau, xau * _cny / _g
-
-            xau_buy, shfe_buy = _cvt(bp030_price)
-            xau_exit, shfe_exit = _cvt(bp090_price)
-            xau_now, shfe_now = rt["gc_price"], rt["shfe_approx"]
+        if bp030_price > 0:
+            shfe_buy = bp030_price * _cny / _g
+            shfe_exit = bp090_price * _cny / _g
+            shfe_now = last_1h_close * _cny / _g
 
             st.markdown(f"""
-| 价位 | GLD | COMEX (USD/oz) | 沪金 (CNY/g) |
-|------|-----|----------------|-------------|
-| **买入** | **${bp030_price:.2f}** | **${xau_buy:.0f}** | **¥{shfe_buy:.2f}** |
-| **平仓** | **${bp090_price:.2f}** | **${xau_exit:.0f}** | **¥{shfe_exit:.2f}** |
-| 当前 | ${last_1h_close:.2f} | ${xau_now:.0f} | ¥{shfe_now:.2f} |
+| 价位 | COMEX ($/oz) | GLD ($) | 沪金 (¥/g) |
+|------|-------------|---------|-----------|
+| **买入** | **${bp030_price:.0f}** | **${bp030_gld:.2f}** | **¥{shfe_buy:.2f}** |
+| **平仓** | **${bp090_price:.0f}** | **${bp090_gld:.2f}** | **¥{shfe_exit:.2f}** |
+| 当前 | ${last_1h_close:.0f} | ${gld_equiv:.2f} | ¥{shfe_now:.2f} |
 """)
-            st.caption(f"COMEX GC=${rt['gc_price']:.1f} | "
-                       f"USD/CNY={_cny:.4f} | {rt['timestamp']}")
+            ts = rt["timestamp"] if rt else "N/A"
+            st.caption(f"USD/CNY={_cny:.4f} | GC/GLD={gc_gld_r:.4f} | {ts}")
 
     # ── 1h 图表 ──
     st.divider()
@@ -949,10 +957,10 @@ def _render_1h_mode(regime, rv_pctile, last_close_daily, last_regime,
                     color=mc, bbox=dict(fc="white", ec=mc, alpha=0.9,
                                         boxstyle="round,pad=0.2"))
 
-    ax.set_title(f"GLD 1h Band (7h) | {last_1h_dt.strftime('%Y-%m-%d %H:%M')} | "
+    ax.set_title(f"COMEX Gold 1h (95h Band) | {last_1h_dt.strftime('%Y-%m-%d %H:%M')} ET | "
                  f"Regime: {last_regime} | bp={last_1h_bp:.3f}",
                  fontsize=13, fontweight="bold")
-    ax.set_ylabel("GLD ($)")
+    ax.set_ylabel("COMEX Gold ($/oz)")
     ax.grid(True, alpha=0.3)
     ax.xaxis.set_major_formatter(FuncFormatter(_fmt_tick))
     ax.xaxis.set_major_locator(MaxNLocator(integer=True, nbins=20))
@@ -1030,15 +1038,18 @@ def _render_1h_mode(regime, rv_pctile, last_close_daily, last_regime,
         st.info("近3个月无交易信号")
 
     # ── 模型信息 ──
-    with st.expander("模型信息 (v2.0)"):
+    with st.expander("模型信息 (v2.0.1)"):
         st.markdown(f"""
+- **主信号源**: GC=F (COMEX黄金期货, ~23h/天, 全球覆盖)
 - **模型**: LSTM+Attention, seq_len=24, hidden=64, 3种子集成
-- **特征**: 33维 (1h技术 + 4h聚合 + 日线Regime + 跨市场)
-- **预测**: 7h (日内) + 35h (5天) 区间, Conformal校准
-- **Band**: 上界=Lag1, 下界=Lag1-3均值 (同v1.0设计)
-- **信号**: Bull + bp<0.30 → BUY; bp>0.90 → EXIT
-- **1h 数据**: {gld_1h.index[0].strftime('%Y-%m-%d')} ~ {gld_1h.index[-1].strftime('%Y-%m-%d')} ({len(gld_1h)} bars)
+- **特征**: 58维 (1h技术 + 4h聚合 + 日线Regime + 跨市场GLD/DXY/VIX/SLV/TLT)
+- **预测**: 19h (1天) + 95h (5天) 区间, q95/05, Conformal cal90
+- **Band**: 95h horizon, 上界=Lag1, 下界=Lag1-3均值
+- **信号**: Bull(日线) + bp<0.30 → BUY; bp>0.90 → EXIT
+- **持仓**: 2-10天, 适合期权交易
+- **GC=F 数据**: {gc_1h.index[0].strftime('%Y-%m-%d')} ~ {gc_1h.index[-1].strftime('%Y-%m-%d')} ({len(gc_1h)} bars)
 - **OOS 预测**: {pred_1h.index[0].strftime('%Y-%m-%d')} ~ {pred_1h.index[-1].strftime('%Y-%m-%d')} ({len(pred_1h)} bars)
+- **GC/GLD 比值**: {gc_gld_r:.4f}
 """)
 
 
