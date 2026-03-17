@@ -1,104 +1,61 @@
-"""v2.1 信号系统 — v1.0 Band + 盘中触发 + 1h 确认.
+"""v2.2 信号系统 — v1.0 Band + 1h 精确入场 + 1h 止盈.
 
 设计:
-  - Band 预测: 复用 v1.0 日线模型 (20年数据, 校准可靠)
-  - 触发判断: 用 GLD 盘中价格 (含盘前盘后 04:00~19:00 ET)
-             + GC=F 补充 19:00~04:00 盲区 (换算为 GLD 等价)
-  - 1h 确认 (方向A): RSI/动量/止跌形态 → 提高入场置信度
-  - 持仓: 2-5天, 适合期权交易
+  Band 预测: 复用 v1.0 日线模型 (20年数据, 校准可靠)
+  入场: 盘中 1h 价格触及 bp=0.30 → 等待止跌确认 → 入场
+  止盈: 盘中 1h 跟踪最高价 → 回撤超阈值 → 止盈
+  退出: bp>0.90 (盘中) | Pullback (1h) | Timeout | Regime退出
 
-信号逻辑:
-  BUY CALL  = Bull + 盘中价 < bp=0.30 + RV≤85% [+ 1h确认]
-  SELL PUT  = Bull + 盘中价 < bp=0.30 + RV>85% [+ 1h确认]
-  EXIT      = 盘中价 > bp=0.90 | Regime退出Bull
+关键改进 (vs v2.1):
+  - 入场不再"一触即发", 而是等 1h 确认止跌 (RSI反弹/K线反转)
+  - 止盈/止损基于 1h 盘中最高价回撤, 不等收盘
+  - 所有信号都基于 1h 时间精度
 """
 
 import numpy as np
 import pandas as pd
-from datetime import timezone, timedelta
+from datetime import timedelta
 
-# 可配置时区
-DEFAULT_TZ_OFFSET = 8  # SGT/北京 = UTC+8
+DEFAULT_TZ_OFFSET = 8  # SGT
 
 
-def compute_1h_confirmation(close_1h, high_1h, low_1h, lookback=6):
-    """计算 1h 级别入场确认指标.
+# ── 1h 技术指标 ──
 
-    Args:
-        close_1h: GLD 或 GC=F 的 1h close
-        lookback: 回看K线数 (6根≈半天)
-
-    Returns: DataFrame with confirmation signals.
-    """
-    c = close_1h
-
-    # 1h RSI (14)
-    delta = c.diff()
-    gain = delta.clip(lower=0).rolling(14).mean()
-    loss = (-delta.clip(upper=0)).rolling(14).mean()
+def _rsi(close, n=14):
+    delta = close.diff()
+    gain = delta.clip(lower=0).rolling(n, min_periods=3).mean()
+    loss = (-delta.clip(upper=0)).rolling(n, min_periods=3).mean()
     rs = gain / loss.replace(0, np.nan)
-    rsi = 100 - 100 / (1 + rs)
-
-    # 短期动量 (最近 lookback 根的方向)
-    momentum = c.pct_change(lookback)
-
-    # 止跌信号: 最近 lookback 根中最低点在前半段 (已经反弹)
-    rolling_low_pos = low_1h.rolling(lookback).apply(
-        lambda x: np.argmin(x) / len(x) if len(x) > 0 else 0.5,
-        raw=True)
-
-    result = pd.DataFrame(index=c.index)
-    result["rsi_1h"] = rsi
-    result["momentum_6h"] = momentum
-    result["low_position"] = rolling_low_pos  # 0=低点在最近, 1=低点在最早
-
-    # 综合确认: RSI 超卖 + 低点已过 (低点在前半段)
-    result["buy_confirmed"] = (rsi < 35) | (rolling_low_pos < 0.4)
-    # 卖出确认: RSI 超买 + 高点已过
-    rolling_high_pos = high_1h.rolling(lookback).apply(
-        lambda x: np.argmax(x) / len(x) if len(x) > 0 else 0.5,
-        raw=True)
-    result["exit_confirmed"] = (rsi > 70) | (rolling_high_pos < 0.4)
-
-    return result
+    return 100 - 100 / (1 + rs)
 
 
-def generate_signals_v2(close_daily, high_daily, low_daily,
-                        upper_band, lower_band, regime, rv_pctile,
-                        close_1h=None, high_1h=None, low_1h=None,
-                        use_1h_confirm=False):
-    """v2.1 信号生成 — 日线 Band + 盘中 High/Low + 可选 1h 确认.
+def _is_reversal_bar(close, low, lookback=3):
+    """止跌反转: 当前 close > 前 lookback 根的最低 close, 且 low 是近期最低."""
+    prev_min_close = close.rolling(lookback, min_periods=1).min().shift(1)
+    is_low_recent = low <= low.rolling(lookback * 2, min_periods=1).min().shift(1) * 1.005
+    rebounded = close > prev_min_close
+    return is_low_recent & rebounded
 
-    Args:
-        close/high/low_daily: 日线 OHLC
-        upper_band, lower_band: v1.0 Band (日线)
-        regime: 日线 Regime Series
-        rv_pctile: 日线 RV percentile Series
-        close/high/low_1h: GLD 1h K线 (可选, 用于确认)
-        use_1h_confirm: 是否使用 1h 确认过滤
 
-    Returns: DataFrame with columns:
-        date, close, high, low, bp_close, bp_low, bp_high,
-        buy_signal, buy_type, exit_signal, signal_text,
-        1h_confirmed (if use_1h_confirm)
+# ── 日线信号 (基础层, 同 v2.1) ──
+
+def generate_daily_signals(close_d, high_d, low_d,
+                           upper_band, lower_band,
+                           regime, rv_pctile):
+    """日线级别信号: Band + H/L 触发 (无 1h 确认).
+
+    返回每天的 Band 参数 + 买入/退出触发状态.
     """
     bp_dates = upper_band.dropna().index.intersection(lower_band.dropna().index)
     records = []
 
-    # 1h 确认指标
-    confirm_1h = None
-    if use_1h_confirm and close_1h is not None:
-        confirm_1h = compute_1h_confirmation(close_1h, high_1h, low_1h)
-
     for d in bp_dates:
-        ub = upper_band[d]
-        lb = lower_band[d]
+        ub, lb = upper_band[d], lower_band[d]
         if ub <= lb:
             continue
-
-        c = close_daily.get(d, np.nan)
-        h = high_daily.get(d, np.nan)
-        lo = low_daily.get(d, np.nan)
+        c = close_d.get(d, np.nan)
+        h = high_d.get(d, np.nan)
+        lo = low_d.get(d, np.nan)
         if np.isnan(c):
             continue
 
@@ -111,72 +68,191 @@ def generate_signals_v2(close_daily, high_daily, low_daily,
         is_bull = regime.get(d, "?") == "Bull"
         rv = rv_pctile.get(d, 0.5)
 
-        # 买入: 盘中 low 触及 bp=0.30
-        buy_sig = False
+        buy_sig = is_bull and bp_low < 0.30
         buy_type = None
-        if is_bull and bp_low < 0.30:
-            buy_sig = True
+        if buy_sig:
             buy_type = "BUY CALL" if rv <= 0.85 else "SELL PUT"
 
-        # 退出: 盘中 high 触及 bp=0.90
         exit_sig = bp_high > 0.90
-
         # Regime 退出
         if d in regime.index:
             loc = regime.index.get_loc(d)
-            if loc > 0:
-                prev = regime.iloc[loc - 1]
-                if prev == "Bull" and regime[d] != "Bull":
-                    exit_sig = True
+            if loc > 0 and regime.iloc[loc-1] == "Bull" and regime[d] != "Bull":
+                exit_sig = True
 
-        # 1h 确认
-        confirmed = True
-        if use_1h_confirm and confirm_1h is not None:
-            # 找到当天的 1h 确认信号
-            day_mask = confirm_1h.index.normalize() == d
-            day_confirm = confirm_1h[day_mask]
-            if len(day_confirm) > 0:
-                if buy_sig:
-                    confirmed = day_confirm["buy_confirmed"].any()
-                elif exit_sig:
-                    confirmed = day_confirm["exit_confirmed"].any()
-
-        rec = {
-            "date": d,
-            "close": c, "high": h, "low": lo,
+        records.append({
+            "date": d, "close": c, "high": h, "low": lo,
             "upper": ub, "lower": lb,
             "bp_close": bp_close, "bp_low": bp_low, "bp_high": bp_high,
             "bp030_price": bp030, "bp090_price": bp090,
             "buy_signal": buy_sig, "buy_type": buy_type,
             "exit_signal": exit_sig,
             "regime": regime.get(d, "?"), "rv_pctile": rv,
-        }
-        if use_1h_confirm:
-            rec["confirmed_1h"] = confirmed
+        })
 
-        # 综合信号文本
+    df = pd.DataFrame(records).set_index("date")
+
+    # 信号文本
+    parts_list = []
+    for _, r in df.iterrows():
         parts = []
-        if buy_sig:
-            parts.append(buy_type)
-            if use_1h_confirm and not confirmed:
-                parts.append("(未确认)")
-        if exit_sig:
+        if r["buy_signal"]:
+            parts.append(r["buy_type"])
+        if r["exit_signal"]:
             parts.append("EXIT")
-            if use_1h_confirm and not confirmed and not buy_sig:
-                parts.append("(未确认)")
-        rec["signal_text"] = " + ".join(parts) if parts else ""
+        parts_list.append(" + ".join(parts))
+    df["signal_text"] = parts_list
 
-        records.append(rec)
-
-    return pd.DataFrame(records).set_index("date")
+    return df
 
 
-def format_time_for_tz(dt, tz_offset=DEFAULT_TZ_OFFSET):
-    """将 ET 时间转为指定时区显示."""
-    if dt.tzinfo is None:
-        # 假设输入是 ET (UTC-5 或 UTC-4)
-        et_offset = -5  # 简化, 实际需处理夏令时
-        utc = dt - timedelta(hours=et_offset)
-        local = utc + timedelta(hours=tz_offset)
-        return local
-    return dt
+# ── 1h 精确入场 ──
+
+def compute_1h_entry_signals(gld_1h, daily_signals,
+                             rsi_threshold=35, lookback=3):
+    """在日线买入信号日, 用 1h 数据找最佳入场时刻.
+
+    逻辑: 日线 low 触及 bp=0.30 的日子里, 找 1h 级别止跌确认:
+      - 1h close < bp030 (价格在买入区内)
+      - 1h RSI < rsi_threshold (超卖)
+      - 止跌反转 K线 (low 是近期最低, 但 close 回升)
+
+    Returns: DataFrame, index=1h datetime, 含 entry_signal, entry_price, entry_type
+    """
+    if gld_1h is None:
+        return pd.DataFrame()
+
+    close_1h = gld_1h["Close"]
+    low_1h = gld_1h["Low"]
+    rsi_1h = _rsi(close_1h)
+    reversal = _is_reversal_bar(close_1h, low_1h, lookback)
+
+    buy_days = daily_signals[daily_signals["buy_signal"]].index
+
+    entries = []
+    for day in buy_days:
+        bp030 = daily_signals.loc[day, "bp030_price"]
+        buy_type = daily_signals.loc[day, "buy_type"]
+
+        # 当天 1h K线
+        day_mask = close_1h.index.normalize() == day
+        day_bars = close_1h[day_mask]
+
+        for dt in day_bars.index:
+            c = close_1h.get(dt, np.nan)
+            r = rsi_1h.get(dt, 50)
+            rev = reversal.get(dt, False)
+
+            if np.isnan(c):
+                continue
+
+            in_buy_zone = c < bp030
+            rsi_oversold = r < rsi_threshold
+            confirmed = in_buy_zone and (rsi_oversold or rev)
+
+            entries.append({
+                "datetime": dt, "date": day,
+                "price": c, "bp030": bp030,
+                "rsi": r, "reversal": rev,
+                "in_zone": in_buy_zone,
+                "confirmed": confirmed,
+                "type": buy_type,
+            })
+
+    return pd.DataFrame(entries).set_index("datetime") if entries else pd.DataFrame()
+
+
+# ── 1h 止盈/止损 ──
+
+def compute_1h_exit_signals(gld_1h, daily_signals,
+                            pullback_gain=2.0, pullback_dd=1.5,
+                            trailing_dd=1.5):
+    """基于 1h 数据的精确退出信号.
+
+    三种退出:
+      1. BandExit: 1h close > bp090 价位
+      2. Pullback: 从持仓期间 1h 最高价回撤超阈值
+      3. TrailingStop: 从近期 1h 峰值回撤超阈值 (不需要持仓状态)
+
+    Returns: DataFrame, index=1h datetime
+    """
+    if gld_1h is None:
+        return pd.DataFrame()
+
+    close_1h = gld_1h["Close"]
+    high_1h = gld_1h["High"]
+
+    exit_days = daily_signals[daily_signals["exit_signal"]].index
+
+    exits = []
+
+    # BandExit: 1h 级别触及 bp090
+    for day in exit_days:
+        bp090 = daily_signals.loc[day, "bp090_price"]
+        day_mask = high_1h.index.normalize() == day
+        day_highs = high_1h[day_mask]
+
+        for dt in day_highs.index:
+            h = high_1h.get(dt, 0)
+            if h > bp090:
+                exits.append({
+                    "datetime": dt, "date": day,
+                    "price": close_1h.get(dt, h),
+                    "trigger_price": bp090,
+                    "type": "BandExit",
+                    "detail": f"High ${h:.1f} > bp090 ${bp090:.1f}",
+                })
+                break  # 一天只记第一次触发
+
+    # TrailingStop: 滚动峰值回撤 (覆盖所有日子, 不只是 exit_days)
+    # 用 5天 (约 85根 1h) 滚动窗口
+    rolling_peak = high_1h.rolling(85, min_periods=1).max()
+    drawdown_from_peak = (rolling_peak - close_1h) / rolling_peak * 100
+    peak_gain_pct = (rolling_peak / close_1h.shift(85).fillna(close_1h.iloc[0]) - 1) * 100
+
+    # 触发: 从峰值涨了 >pullback_gain% 后, 回撤 >pullback_dd%
+    pullback_trigger = (peak_gain_pct > pullback_gain) & (drawdown_from_peak > pullback_dd)
+
+    # 只在有信号价值的日子输出
+    all_dates = daily_signals.index
+    for day in all_dates:
+        day_mask = pullback_trigger.index.normalize() == day
+        day_pb = pullback_trigger[day_mask]
+        if day_pb.any():
+            first_trigger = day_pb[day_pb].index[0]
+            if first_trigger not in [e["datetime"] for e in exits]:
+                exits.append({
+                    "datetime": first_trigger, "date": day,
+                    "price": close_1h.get(first_trigger, 0),
+                    "trigger_price": rolling_peak.get(first_trigger, 0),
+                    "type": "Pullback",
+                    "detail": f"Peak ${rolling_peak.get(first_trigger,0):.1f}"
+                              f" dd={drawdown_from_peak.get(first_trigger,0):.1f}%",
+                })
+
+    return pd.DataFrame(exits).set_index("datetime") if exits else pd.DataFrame()
+
+
+# ── 综合信号 (日线 + 1h) ──
+
+def generate_signals_v22(close_d, high_d, low_d,
+                         upper_band, lower_band,
+                         regime, rv_pctile,
+                         gld_1h=None):
+    """v2.2 综合信号: 日线 Band + 1h 入场确认 + 1h 止盈.
+
+    Returns:
+        daily_signals: DataFrame (日线级别, 含基础信号)
+        entry_1h: DataFrame (1h 入场时刻, 含确认状态)
+        exit_1h: DataFrame (1h 退出时刻, 含退出类型)
+    """
+    daily = generate_daily_signals(
+        close_d, high_d, low_d, upper_band, lower_band,
+        regime, rv_pctile)
+
+    entry_1h = compute_1h_entry_signals(gld_1h, daily) \
+        if gld_1h is not None else pd.DataFrame()
+    exit_1h = compute_1h_exit_signals(gld_1h, daily) \
+        if gld_1h is not None else pd.DataFrame()
+
+    return daily, entry_1h, exit_1h
