@@ -379,8 +379,9 @@ def fetch_live_options(spot_price, expiry_start=None, expiry_end=None,
         if expiry_start is None:
             today = datetime.now().date()
             expiry_start = today.strftime("%Y-%m-%d")
-            expiry_end = (today + timedelta(days=14)).strftime("%Y-%m-%d")
+            expiry_end = (today + timedelta(days=45)).strftime("%Y-%m-%d")
 
+        import time as _time
         ctx = OpenQuoteContext(host="127.0.0.1", port=11111)
         try:
             ret, chain = ctx.get_option_chain(
@@ -389,15 +390,21 @@ def fetch_live_options(spot_price, expiry_start=None, expiry_end=None,
                 return None
 
             # 筛选 ATM 附近 strike
-            lo = int(spot_price - strike_range)
-            hi = int(spot_price + strike_range)
-            pattern = "|".join(
-                [f"[CP]{s}" for s in range(lo, hi + 1)])
-            atm = chain[chain["code"].str.contains(pattern, regex=True)]
+            def _extract_strike(code):
+                try:
+                    s = code.split(".")[-1]
+                    return int(s[10:]) / 1000
+                except Exception:
+                    return 0
+            chain["_strike"] = chain["code"].apply(_extract_strike)
+            lo = spot_price - strike_range
+            hi = spot_price + strike_range
+            atm = chain[(chain["_strike"] >= lo) & (chain["_strike"] <= hi)]
             if len(atm) == 0:
-                atm = chain.head(30)
+                atm = chain.head(50)
 
-            codes = atm["code"].tolist()[:40]
+            codes = atm["code"].tolist()[:200]
+            _time.sleep(0.3)  # 避免频率限制
             ret2, snap = ctx.get_market_snapshot(codes)
             if ret2 != RET_OK:
                 return None

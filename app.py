@@ -1015,6 +1015,22 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                        file_name="gld_v21_dashboard.png", mime="image/png")
     plt.close(fig)
 
+    # ── 期权策略预判 ──
+    st.divider()
+    st.subheader("期权策略推荐")
+    _cfg_opt2 = load_config()
+    _eod_opt2, _snap_opt2 = load_latest_eod_snapshot(_cfg_opt2)
+    _sig_now2 = None
+    if last_date in sig_df.index:
+        _r2 = sig_df.loc[last_date]
+        if _r2["buy_signal"]:
+            _sig_now2 = _r2["buy_type"].replace(" ", "_") if _r2["buy_type"] else "BUY_CALL"
+        if _r2["exit_signal"]:
+            _sig_now2 = _sig_now2 or "EXIT"
+    _render_options_section(_eod_opt2, _snap_opt2, last_close, next_bp090,
+                            gc_gld_ratio=gc_gld_ratio,
+                            today_sgt=today_sgt, current_signal=_sig_now2)
+
     # ── 止盈预测 ──
     st.divider()
     st.subheader("止盈预测")
@@ -1111,23 +1127,6 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         st.dataframe(pd.DataFrame(trecs), use_container_width=True, hide_index=True)
     else:
         st.info("近3个月无交易")
-
-    # ── 期权策略预判 ──
-    st.divider()
-    st.subheader("期权策略推荐")
-    _cfg_opt = load_config()
-    _eod_opt, _snap_opt = load_latest_eod_snapshot(_cfg_opt)
-    # 当前信号
-    _sig_now = None
-    if last_date in sig_df.index:
-        r = sig_df.loc[last_date]
-        if r["buy_signal"]:
-            _sig_now = r["buy_type"].replace(" ", "_") if r["buy_type"] else "BUY_CALL"
-        if r["exit_signal"]:
-            _sig_now = _sig_now or "EXIT"
-    _render_options_section(_eod_opt, _snap_opt, last_close, next_bp090,
-                            gc_gld_ratio=gc_gld_ratio,
-                            today_sgt=today_sgt, current_signal=_sig_now)
 
     # ── 模型信息 ──
     with st.expander("模型信息"):

@@ -17,34 +17,17 @@ def _get_live_snapshot(spot, expiry_start=None, expiry_end=None):
         from core.data import fetch_live_options
         snap = fetch_live_options(spot, expiry_start, expiry_end)
         if snap is not None and len(snap) > 0:
-            # 统一列名
-            snap = snap.rename(columns={
-                "last_price": "last_price",
-                "bid_price": "bid_price",
-                "ask_price": "ask_price",
-                "option_implied_volatility": "option_implied_volatility",
-                "option_delta": "option_delta",
-                "option_theta": "option_theta",
-                "option_gamma": "option_gamma",
-                "option_open_interest": "option_open_interest",
-            })
             snap["mid"] = (snap["bid_price"] + snap["ask_price"]) / 2
-            # 解析 strike 和 type from code
-            # US.GLD260320C450000 → strike=450, type=CALL
-            def _parse_code(code):
-                s = code.split(".")[-1]  # GLD260320C450000
-                opt_type = "CALL" if "C" in s[9:10] else "PUT"
-                strike = int(s[10:]) / 1000
-                expiry = f"20{s[3:5]}-{s[5:7]}-{s[7:9]}"
-                return opt_type, strike, expiry
-            parsed = snap["code"].apply(_parse_code)
-            snap["option_type"] = [p[0] for p in parsed]
-            snap["option_strike_price"] = [p[1] for p in parsed]
-            snap["strike_time"] = [p[2] for p in parsed]
-            snap["dte"] = (pd.to_datetime(snap["strike_time"]) -
-                           pd.Timestamp.now()).dt.days
-            snap["iv_decimal"] = snap["option_implied_volatility"] / 100
-            return snap, "live"
+            # Moomoo 原生列已有 option_type, option_strike_price, strike_time 等
+            # 只需补 dte (从 option_expiry_date_distance 或 strike_time 计算)
+            if "option_expiry_date_distance" in snap.columns:
+                snap["dte"] = snap["option_expiry_date_distance"]
+            elif "strike_time" in snap.columns:
+                snap["dte"] = (pd.to_datetime(snap["strike_time"].astype(str).str[:10])
+                               - pd.Timestamp.now().normalize()).dt.days
+            if "iv_decimal" not in snap.columns and "option_implied_volatility" in snap.columns:
+                snap["iv_decimal"] = snap["option_implied_volatility"] / 100
+            return snap, "LIVE"
     except Exception:
         pass
     return None, None
