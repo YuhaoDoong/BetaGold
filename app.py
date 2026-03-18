@@ -1112,8 +1112,25 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     else:
         st.info("近3个月无交易")
 
+    # ── 期权策略预判 ──
+    st.divider()
+    st.subheader("期权策略推荐")
+    _cfg_opt = load_config()
+    _eod_opt, _snap_opt = load_latest_eod_snapshot(_cfg_opt)
+    # 当前信号
+    _sig_now = None
+    if last_date in sig_df.index:
+        r = sig_df.loc[last_date]
+        if r["buy_signal"]:
+            _sig_now = r["buy_type"].replace(" ", "_") if r["buy_type"] else "BUY_CALL"
+        if r["exit_signal"]:
+            _sig_now = _sig_now or "EXIT"
+    _render_options_section(_eod_opt, _snap_opt, last_close, next_bp090,
+                            gc_gld_ratio=gc_gld_ratio,
+                            today_sgt=today_sgt, current_signal=_sig_now)
+
     # ── 模型信息 ──
-    with st.expander("模型信息 (v2.2)"):
+    with st.expander("模型信息"):
         from core.signals_v2 import EXIT_TIMEFRAME, PULLBACK_GAIN, PULLBACK_DD
         gld_1h_info = f"{gld_1h.index[0].strftime('%Y-%m-%d')} ~ {gld_1h.index[-1].strftime('%Y-%m-%d')} ({len(gld_1h)} bars)" \
             if gld_1h is not None else "未加载"
@@ -1126,6 +1143,75 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
 - **持仓周期**: 2-5天 (适合期权)
 - **回测 (2025-09~2026-03)**: 13笔 85%胜率 +37.5%累计 Sharpe=0.78
 """)
+
+
+# ══════════════════════════════════════════════════════════
+# 共享: 期权策略推荐
+# ══════════════════════════════════════════════════════════
+def _render_options_section(eod_df, snap_date, last_close, next_bp090,
+                            oi_adj_bp090=0, gc_gld_ratio=None,
+                            today_sgt=None, current_signal=None):
+    """渲染期权策略推荐 (盘中信号 + 今日预测 共用).
+
+    始终显示 BUY CALL 和 SELL PUT 两种预判, 不等信号触发.
+    """
+    if eod_df is None:
+        cfg = load_config()
+        eod_df, snap_date = load_latest_eod_snapshot(cfg)
+
+    if eod_df is None:
+        st.info("无期权快照数据")
+        return
+
+    eff_exit = oi_adj_bp090 if oi_adj_bp090 > 0 else next_bp090
+    _rt = _get_realtime_prices()
+    _gc_gld_r = gc_gld_ratio if gc_gld_ratio else 10.9
+    current_gld = _rt["gc_price"] / _gc_gld_r if _rt else last_close
+    price_src = f"实时 GLD≈${current_gld:.1f}" if _rt else f"收盘 ${last_close:.2f}"
+
+    # 当前信号状态提示
+    if current_signal == "EXIT":
+        st.warning("EXIT 信号活跃 — 建议平仓现有头寸")
+    elif current_signal in ("BUY_CALL", "SELL_PUT"):
+        st.success(f"{current_signal.replace('_', ' ')} 信号活跃 — 以下策略可立即执行")
+    else:
+        st.info("当前观望区 — 以下为预判策略, 信号触发时可立即执行")
+
+    # BUY CALL 策略
+    result_call = get_strategy_table("BUY_CALL", current_gld, eff_exit, eod_df,
+                                      use_live=True)
+    data_src = result_call.get("source", "EOD")
+
+    st.caption(f"期权数据: **{data_src}** | 当前价: {price_src} | "
+               f"退出目标: ${eff_exit:.2f}")
+
+    if result_call.get("rec"):
+        st.info(result_call["rec"])
+
+    st.markdown("#### 看涨策略 (BUY CALL)")
+    col_l, col_r = st.columns(2)
+    with col_l:
+        st.markdown("**单腿 Call**")
+        if result_call.get("single_leg"):
+            st.dataframe(pd.DataFrame(result_call["single_leg"]),
+                         use_container_width=True, hide_index=True)
+    with col_r:
+        st.markdown("**牛市看涨价差 (Bull Call Spread)**")
+        if result_call.get("spread"):
+            st.dataframe(pd.DataFrame(result_call["spread"]),
+                         use_container_width=True, hide_index=True)
+
+    # SELL PUT 策略
+    result_put = get_strategy_table("SELL_PUT", current_gld, eff_exit, eod_df,
+                                     use_live=True)
+    st.markdown("#### 高IV策略 (SELL PUT)")
+    st.markdown("**牛市看跌价差 (Bull Put Spread)**")
+    if result_put.get("spread"):
+        st.dataframe(pd.DataFrame(result_put["spread"]),
+                     use_container_width=True, hide_index=True)
+
+    st.caption("风控: 仓位2-5%(稳健)/5-10%(中性)/≤5%(激进) | "
+               "平仓: bp>0.90 / Pullback / MACD弱化 / 10d")
 
 
 # ══════════════════════════════════════════════════════════
@@ -1179,7 +1265,7 @@ def main():
 
     # ── 侧边栏 ──
     st.sidebar.header("设置")
-    mode = st.sidebar.radio("模式", ["盘中信号 v2.1", "今日预测 v1.0", "历史回看", "回测分析"])
+    mode = st.sidebar.radio("模式", ["盘中信号", "今日预测", "历史回看", "回测分析"])
 
     # 数据状态
     with st.sidebar.expander("数据状态", expanded=False):
@@ -1224,7 +1310,7 @@ def main():
                    "期权杠杆效应会放大实际收益/亏损.")
         return  # 回测模式不显示其他内容
 
-    if mode == "盘中信号 v2.1":
+    if mode == "盘中信号":
         _render_intraday_mode(close, high, low, upper_band, lower_band,
                               regime, rv_pctile, bp_dates, bp_s,
                               gc_gld_ratio, usdcny_rate, today_sgt)
@@ -1337,7 +1423,7 @@ def main():
     eod_df = None
     snap_date = None
 
-    if mode == "今日预测 v1.0" and pred_u_pct is not None:
+    if mode == "今日预测" and pred_u_pct is not None:
         cfg = load_config()
         eod_df, snap_date = load_latest_eod_snapshot(cfg)
         if eod_df is not None:
@@ -1407,7 +1493,7 @@ def main():
     plt.close(fig)
 
     # ── 预测模式额外内容 ──
-    if mode == "今日预测 v1.0":
+    if mode == "今日预测":
         st.divider()
         c_a, c_b = st.columns(2)
 
@@ -1839,69 +1925,9 @@ def main():
             cfg = load_config()
             eod_df, snap_date = load_latest_eod_snapshot(cfg)
 
-        if sig_type_viz in ("BUY_CALL", "SELL_PUT"):
-            if eod_df is not None:
-                eff_exit_price = oi_adj_bp090 if oi_adj_bp090 > 0 \
-                    else next_bp090
-                exit_src = "OI修正" if oi_adj_bp090 > 0 else "模型"
-
-                # 用实时价格 (如有), 否则用日线收盘
-                _rt_opt = _get_realtime_prices()
-                _gc_gld_r = gc_gld_ratio if gc_gld_ratio else 10.9
-                current_gld = _rt_opt["gc_price"] / _gc_gld_r \
-                    if _rt_opt else last_close
-                price_src = f"实时 GLD≈${current_gld:.1f}" \
-                    if _rt_opt else f"收盘 ${last_close:.2f}"
-
-                result = get_strategy_table(
-                    sig_type_viz, current_gld, eff_exit_price, eod_df,
-                    use_live=True)
-                data_src = result.get("source", "EOD")
-                st.caption(f"期权数据: **{data_src}** | "
-                           f"当前价: {price_src} | "
-                           f"目标退出价: ${eff_exit_price:.2f} ({exit_src}) | "
-                           f"EOD快照: {snap_date} (DTE按{today_sgt}重算)")
-
-                if sig_type_viz == "BUY_CALL":
-                    # 推荐理由
-                    if result.get("rec"):
-                        st.info(result["rec"])
-                    # 两表并排: 单腿 vs 价差
-                    col_l, col_r = st.columns(2)
-                    with col_l:
-                        st.markdown("**单腿 Call (Long Call)**")
-                        if result["single_leg"]:
-                            st.dataframe(
-                                pd.DataFrame(result["single_leg"]),
-                                use_container_width=True, hide_index=True)
-                    with col_r:
-                        st.markdown("**牛市看涨价差 (Bull Call Spread)**")
-                        if result["spread"]:
-                            st.dataframe(
-                                pd.DataFrame(result["spread"]),
-                                use_container_width=True, hide_index=True)
-                else:
-                    # SELL PUT: Bull Put Spread
-                    st.markdown("**牛市看跌价差 (Bull Put Spread)**")
-                    if result["spread"]:
-                        st.dataframe(
-                            pd.DataFrame(result["spread"]),
-                            use_container_width=True, hide_index=True)
-
-                st.caption(
-                    "风控: 仓位 2-5%(稳健)/5-10%(中性)/≤5%(激进) | "
-                    "平仓: bp>0.90 / Pullback(涨>2%回撤≥1.5%) / 10d | "
-                    "ROI = (Δ×预期涨幅 + Θ×5日) / 成本")
-            else:
-                st.info("无 EOD 快照数据")
-        elif sig_type_viz == "EXIT":
-            st.warning("EXIT 信号 — 建议平仓")
-            st.markdown(
-                "- 持有 Call → 市价平仓\n"
-                "- 持有 Put 空头 → 权利金衰减可等到期\n"
-                "- 暂停新开仓")
-        else:
-            st.info("当前无买卖信号 (bp 0.30~0.90)")
+        _render_options_section(eod_df, snap_date, last_close,
+                                next_bp090, oi_adj_bp090,
+                                gc_gld_ratio, today_sgt, sig_type_viz)
 
     # ── 近期信号 ──
     st.divider()
