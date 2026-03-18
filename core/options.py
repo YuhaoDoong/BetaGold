@@ -81,16 +81,7 @@ def _find_spread_leg(eod_df, anchor_row, option_type, strike_offset):
     return best
 
 
-def _stop_loss_price(gld_price, entry_cost, strategy_type):
-    """推荐止损价位 (基于 GLD 价格回撤).
-
-    单腿 Call: GLD 跌破入场价的 2% → 期权亏损约 40-60%
-    价差: GLD 跌破 short leg strike → 接近最大亏损
-    """
-    if strategy_type == "single":
-        return gld_price * 0.98  # GLD 跌 2%
-    else:
-        return gld_price * 0.97  # GLD 跌 3%
+SINGLE_STOP_PCT = 50  # 单腿止损: 权利金亏损 N%
 
 
 # ══════════════════════════════════════════════════════════
@@ -153,7 +144,7 @@ def _build_call_table(eod_df, gld_price, price_move, hold_days):
         if len(opts) == 0:
             rows.append({"策略": label, "合约": "—", "成本": "—",
                          "Δ": "—", "Θ/日": "—", "5日盈利": "—",
-                         "最大亏损": "—", "止损(GLD)": "—", "说明": desc})
+                         "最大亏损": "—", "止损": "—"})
             continue
 
         oi_col = "option_open_interest" if "option_open_interest" in opts.columns else None
@@ -166,8 +157,8 @@ def _build_call_table(eod_df, gld_price, price_move, hold_days):
 
         pnl = delta * price_move + theta * hold_days
         roi = pnl / mid * 100 if mid > 0 else 0
-        max_loss = mid  # 单腿最大亏损 = 全部权利金
-        stop_gld = _stop_loss_price(gld_price, mid, "single")
+        max_loss = mid
+        stop_price = mid * (1 - SINGLE_STOP_PCT / 100)
 
         rows.append({
             "策略": label,
@@ -176,9 +167,8 @@ def _build_call_table(eod_df, gld_price, price_move, hold_days):
             "Δ": f"{delta:.2f}",
             "Θ/日": f"${theta:.2f}",
             "5日盈利": f"${pnl:.2f} ({roi:+.0f}%)",
-            "最大亏损": f"-${max_loss:.2f} (-100%)",
-            "止损(GLD)": f"< ${stop_gld:.1f}",
-            "说明": desc,
+            "最大亏损": f"-${max_loss:.2f}",
+            "止损": f"期权跌至${stop_price:.2f} (-{SINGLE_STOP_PCT}%)",
         })
     return rows
 
@@ -231,7 +221,7 @@ def _build_call_spread_table(eod_df, gld_price, price_move, hold_days):
 
         pnl = min(pos_delta * price_move + pos_theta * hold_days, max_profit)
         roi = pnl / net_debit * 100 if net_debit > 0 else 0
-        stop_gld = _stop_loss_price(gld_price, net_debit, "spread")
+
 
         exp = pd.Timestamp(buy["strike_time"]).strftime("%m/%d")
 
@@ -241,17 +231,14 @@ def _build_call_spread_table(eod_df, gld_price, price_move, hold_days):
             "净成本": f"${net_debit:.2f}",
             "5日盈利": f"${pnl:.2f} ({roi:+.0f}%)",
             "最大盈利": f"+${max_profit:.2f} (+{max_profit/net_debit*100:.0f}%)",
-            "最大亏损": f"-${max_loss:.2f} (-100%)",
-            "止损(GLD)": f"< ${stop_gld:.1f}",
-            "说明": desc,
+            "最大亏损": f"-${net_debit:.2f} (已锁定)",
         })
     return rows
 
 
 def _empty_spread_row(label, desc):
     return {"策略": label, "价差合约": "—", "净成本": "—",
-            "5日盈利": "—", "最大盈利": "—", "最大亏损": "—",
-            "止损(GLD)": "—", "说明": desc}
+            "5日盈利": "—", "最大盈利": "—", "最大亏损": "—"}
 
 
 # ══════════════════════════════════════════════════════════
@@ -273,7 +260,7 @@ def _build_call_recommendation(eod_df, gld_price, price_move,
     mid = atm["mid"]
     theta_pct = abs(theta) / mid * 100 if mid > 0 else 0
     theta_5d = abs(theta) * hold_days
-    stop_gld = _stop_loss_price(gld_price, mid, "single")
+
 
     sell_leg = _find_spread_leg(eod_df, atm, "CALL", 15)
     if sell_leg is not None:
@@ -285,25 +272,26 @@ def _build_call_recommendation(eod_df, gld_price, price_move,
         theta_saved_pct = 0
         max_loss_spread = mid
 
+    stop_premium = mid * (1 - SINGLE_STOP_PCT / 100)
+
     if iv >= 28:
         title = "推荐: Bull Call Spread"
         reason = (
             f"IV={iv:.0f}%偏高, theta ${abs(theta):.2f}/日, 5日损耗${theta_5d:.1f}。"
             f"价差对冲{theta_saved_pct:.0f}%theta。"
-            f"\n最大亏损: 单腿-${mid:.2f} / 价差-${max_loss_spread:.2f}"
-            f"\n**止损**: GLD跌破${stop_gld:.1f}考虑平仓")
+            f"\n单腿止损: 期权跌至${stop_premium:.2f} (-{SINGLE_STOP_PCT}%权利金)"
+            f"\n价差: 最大亏损已锁定 (-${max_loss_spread:.2f}), 无需额外止损")
     elif iv <= 20:
         title = "推荐: Long Call (单腿)"
         reason = (
             f"IV={iv:.0f}%较低, theta仅${abs(theta):.2f}/日, 5日损失${theta_5d:.1f}可接受。"
-            f"\n最大亏损: -${mid:.2f} (全部权利金)"
-            f"\n**止损**: GLD跌破${stop_gld:.1f}考虑平仓")
+            f"\n止损: 期权跌至${stop_premium:.2f} (-{SINGLE_STOP_PCT}%权利金)")
     else:
         title = "单腿 / 价差均可"
         reason = (
             f"IV={iv:.0f}%, theta ${abs(theta):.2f}/日。"
-            f"单腿最大亏-${mid:.2f}, 价差最大亏-${max_loss_spread:.2f}。"
-            f"\n**止损**: GLD跌破${stop_gld:.1f}考虑平仓")
+            f"\n单腿止损: 期权跌至${stop_premium:.2f} (-{SINGLE_STOP_PCT}%)"
+            f"\n价差: 最大亏损已锁定 (-${max_loss_spread:.2f})")
 
     return f"**{title}**\n\n{reason}"
 
@@ -348,7 +336,7 @@ def _build_put_spread_table(eod_df, gld_price, price_move, hold_days):
 
         max_loss = actual_width - net_credit
         max_profit = net_credit
-        stop_gld = sell_strike + 1  # GLD 跌破 short strike 时止损
+
 
         sell_delta = sell.get("option_delta", 0)
         buy_delta = buy.get("option_delta", 0)
@@ -365,15 +353,12 @@ def _build_put_spread_table(eod_df, gld_price, price_move, hold_days):
             "价差合约": f"GLD {exp} ${sell_strike:.0f}/${buy_strike:.0f}P",
             "净权利金": f"+${net_credit:.2f}",
             "最大盈利": f"+${max_profit:.2f}",
-            "最大亏损": f"-${max_loss:.2f}",
+            "最大亏损": f"-${max_loss:.2f} (已锁定)",
             "5日ROI": f"{roi_on_risk:+.0f}%",
-            "止损(GLD)": f"< ${stop_gld:.0f}",
-            "说明": desc,
         })
     return rows
 
 
 def _empty_put_row(label, desc):
     return {"策略": label, "价差合约": "—", "净权利金": "—",
-            "最大盈利": "—", "最大亏损": "—", "5日ROI": "—",
-            "止损(GLD)": "—", "说明": desc}
+            "最大盈利": "—", "最大亏损": "—", "5日ROI": "—"}

@@ -1187,24 +1187,20 @@ def _render_options_section(eod_df, snap_date, last_close, next_bp090,
     if result_call.get("rec"):
         st.info(result_call["rec"])
 
-    st.markdown("#### 看涨策略 (BUY CALL)")
-    col_l, col_r = st.columns(2)
-    with col_l:
-        st.markdown("**单腿 Call**")
-        if result_call.get("single_leg"):
-            st.dataframe(pd.DataFrame(result_call["single_leg"]),
-                         use_container_width=True, hide_index=True)
-    with col_r:
-        st.markdown("**牛市看涨价差 (Bull Call Spread)**")
-        if result_call.get("spread"):
-            st.dataframe(pd.DataFrame(result_call["spread"]),
-                         use_container_width=True, hide_index=True)
+    st.markdown("**单腿 Call (Long Call)**")
+    if result_call.get("single_leg"):
+        st.dataframe(pd.DataFrame(result_call["single_leg"]),
+                     use_container_width=True, hide_index=True)
+
+    st.markdown("**牛市看涨价差 (Bull Call Spread)**")
+    if result_call.get("spread"):
+        st.dataframe(pd.DataFrame(result_call["spread"]),
+                     use_container_width=True, hide_index=True)
 
     # SELL PUT 策略
     result_put = get_strategy_table("SELL_PUT", current_gld, eff_exit, eod_df,
                                      use_live=True)
-    st.markdown("#### 高IV策略 (SELL PUT)")
-    st.markdown("**牛市看跌价差 (Bull Put Spread)**")
+    st.markdown("**牛市看跌价差 (Bull Put Spread)** — 高IV时推荐")
     if result_put.get("spread"):
         st.dataframe(pd.DataFrame(result_put["spread"]),
                      use_container_width=True, hide_index=True)
