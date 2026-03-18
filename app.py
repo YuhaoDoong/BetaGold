@@ -821,29 +821,25 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     _cny = rt["usdcny"] if rt else (usdcny_rate if usdcny_rate else 7.0)
     _g = 31.1035
 
-    # 止盈预测: 如果有未平仓交易
-    last_trade = trades[-1] if trades else None
+    # 判断是否有未平仓: 看最后一笔回测交易
     has_open_position = False
     entry_price_open = peak_open = pullback_stop = 0
-    if last_trade and last_trade["exit_date"] == last_date:
-        # 最近一笔刚平仓
-        pass
-    elif sig_df.loc[last_date]["buy_signal"] if last_date in sig_df.index else False:
-        # 可能有未平仓 (简化: 最后一个买入信号后没有退出)
-        buy_dates = sig_df[sig_df["buy_signal"]].index
-        exit_dates = sig_df[sig_df["exit_signal"]].index
-        if len(buy_dates) > 0:
-            last_buy = buy_dates[-1]
-            exits_after = exit_dates[exit_dates > last_buy]
-            if len(exits_after) == 0:
-                has_open_position = True
-                entry_price_open = sig_df.loc[last_buy, "bp030_price"]
-                # 从入场到现在的峰值
-                post_entry = high_d[high_d.index >= last_buy]
-                peak_open = post_entry.max() if len(post_entry) > 0 else entry_price_open
-                gain_pct = (peak_open / entry_price_open - 1) * 100
-                if gain_pct > PULLBACK_GAIN:
-                    pullback_stop = peak_open * (1 - PULLBACK_DD / 100)
+    if trades:
+        last_trade = trades[-1]
+        # 最后一笔已平仓 → 检查之后是否有新买入信号
+        buy_after_last = sig_df[
+            (sig_df["buy_signal"]) &
+            (sig_df.index > last_trade["exit_date"])
+        ]
+        if len(buy_after_last) > 0:
+            last_buy = buy_after_last.index[-1]
+            has_open_position = True
+            entry_price_open = buy_after_last.loc[last_buy, "bp030_price"]
+            post_entry = high_d[high_d.index >= last_buy]
+            peak_open = post_entry.max() if len(post_entry) > 0 else entry_price_open
+            gain_pct = (peak_open / entry_price_open - 1) * 100
+            if gain_pct > PULLBACK_GAIN:
+                pullback_stop = peak_open * (1 - PULLBACK_DD / 100)
 
     # ════════════════════════════════════════
     # 醒目顶部: 交易价位 + 实时
@@ -1023,14 +1019,15 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     st.divider()
     st.subheader("止盈预测")
 
-    # 找出未平仓的买入信号: 有买入但之后没有退出信号
+    # 用回测结果判断是否已平仓 (包含 Pullback/MACD, 不只是 BandExit)
+    trade_exits = {}  # {entry_date: (exit_date, exit_type, gain)}
+    for t in trades:
+        trade_exits[t["entry_date"]] = (t["exit_date"], t["exit_type"], t["gain"])
+
     buy_rows = sig_df[sig_df["buy_signal"]]
-    exit_rows = sig_df[sig_df["exit_signal"]]
     tp_recs = []
 
-    # 检查最近的买入信号是否已有退出
-    for buy_d in buy_rows.index[-5:][::-1]:  # 最近5个买入日
-        exits_after = exit_rows.index[exit_rows.index > buy_d]
+    for buy_d in buy_rows.index[-5:][::-1]:
         br = buy_rows.loc[buy_d]
         entry_p = br["bp030_price"]
 
@@ -1043,17 +1040,22 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
 
         # Pullback 止盈位
         pb_stop = pk * (1 - PULLBACK_DD / 100) if gain > PULLBACK_GAIN else 0
-        # BandExit 止盈位 = 下一交易日 bp090
         band_stop = next_bp090
 
-        status = "已退出" if len(exits_after) > 0 else "持仓中"
+        # 判断是否已平仓: 优先看回测, 其次看 BandExit 信号
+        if buy_d in trade_exits:
+            xd, xt, xg = trade_exits[buy_d]
+            status = f"已{xt} {xd.strftime('%m/%d')} {xg:+.1f}%"
+        else:
+            status = "持仓中"
+
         tp_recs.append({
             "买入日": buy_d.strftime("%m/%d"),
             "类型": br["buy_type"],
             "入场价": f"${entry_p:.1f}",
             "峰值": f"${pk:.1f} ({gain:+.1f}%)",
             "当前": f"${current_p:.1f} ({current_gain:+.1f}%)",
-            "Pullback止盈": f"${pb_stop:.1f}" if pb_stop > 0 else f"涨幅未达{PULLBACK_GAIN}%",
+            "Pullback止盈": f"${pb_stop:.1f}" if pb_stop > 0 else f"未达{PULLBACK_GAIN}%",
             "BandExit": f"${band_stop:.1f}",
             "状态": status,
         })
