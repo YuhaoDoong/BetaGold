@@ -384,6 +384,52 @@ class DLRangePredictor:
         pred_l = pred_l - self.cal_lower_margin
         return pred_u, pred_l
 
+    def save(self, path):
+        """保存模型权重 + scaler + margins."""
+        import pickle
+        state = {
+            "n_features": self.n_features,
+            "seq_len": self.seq_len,
+            "hidden_size": self.hidden_size,
+            "num_layers": self.num_layers,
+            "dropout": self.dropout,
+            "cal_upper_margin": self.cal_upper_margin,
+            "cal_lower_margin": self.cal_lower_margin,
+            "scaler": self.scaler,
+            "model_states": [m.state_dict() for m in self.models],
+        }
+        with open(path, "wb") as f:
+            pickle.dump(state, f)
+
+    @classmethod
+    def load(cls, path):
+        """加载已训练的模型."""
+        import pickle
+        with open(path, "rb") as f:
+            state = pickle.load(f)
+
+        pred = cls(
+            seq_len=state["seq_len"],
+            hidden_size=state["hidden_size"],
+            num_layers=state["num_layers"],
+            dropout=state["dropout"],
+        )
+        pred.n_features = state["n_features"]
+        pred.scaler = state["scaler"]
+        pred.cal_upper_margin = state["cal_upper_margin"]
+        pred.cal_lower_margin = state["cal_lower_margin"]
+
+        # 重建模型
+        for ms in state["model_states"]:
+            model = RangeLSTM(
+                state["n_features"], state["hidden_size"],
+                state["num_layers"], state["dropout"])
+            model.load_state_dict(ms)
+            model.to(pred.device)
+            pred.models.append(model)
+
+        return pred
+
     def _eval_loss(self, model, loader, criterion):
         model.eval()
         total_loss = 0

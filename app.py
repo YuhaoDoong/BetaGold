@@ -29,7 +29,8 @@ from core.data import (load_config, load_features, load_gld,
                        load_oos_predictions, load_latest_eod_snapshot,
                        load_all_eod_snapshots, load_gold_futures,
                        load_usdcny, fetch_realtime_gold_fx,
-                       auto_refresh_market_data, get_today_sgt)
+                       auto_refresh_market_data, get_today_sgt,
+                       update_features_incremental, extend_oos_predictions)
 from core.regime import RegimeClassifier
 from core.signals import build_band, compute_rv_pctile, generate_signals
 from core.signals_1h import build_band_1h, generate_signals_1h, backtest_1h
@@ -1137,8 +1138,20 @@ def main():
     with st.spinner("检测数据更新..."):
         refresh_results = auto_refresh_market_data(cfg_refresh)
         refreshed = [f"{t}: {s}" for t, s in refresh_results if "更新" in s]
+
+        # 增量更新特征 + 扩展 OOS 预测
+        try:
+            n_feat = update_features_incremental(cfg_refresh)
+            if n_feat > 0:
+                refresh_results.append(("特征", f"+{n_feat}天"))
+            n_new, oos_msg = extend_oos_predictions(cfg_refresh)
+            refresh_results.append(("OOS预测", oos_msg))
+            if n_new > 0:
+                refreshed.append(f"OOS: {oos_msg}")
+        except Exception as e:
+            refresh_results.append(("OOS预测", f"失败: {e}"))
+
         if refreshed:
-            # 有数据更新 → 清除缓存以加载最新数据
             load_all.clear()
             st.toast("数据已更新: " + " | ".join(refreshed), icon="✅")
 

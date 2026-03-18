@@ -177,6 +177,151 @@ def auto_refresh_market_data(cfg: dict):
     return results
 
 
+def update_features_incremental(cfg: dict):
+    """增量更新特征矩阵: 如果 GLD 有新数据, 追加特征行.
+
+    用简化计算 (收益率/RSI/SMA/BB/RV), 不依赖完整 build_features.
+    """
+    import numpy as np
+
+    feat_path = cfg["resolved"]["features"]
+    gld_path = cfg["resolved"]["gld_csv"]
+
+    feat = pd.read_parquet(feat_path)
+    gld = pd.read_csv(gld_path, index_col=0, parse_dates=True)
+
+    new_dates = gld.index[gld.index > feat.index[-1]]
+    if len(new_dates) == 0:
+        return 0
+
+    close = gld["Close"]
+    new_rows = []
+    for d in new_dates:
+        row = feat.iloc[-1].copy()
+        loc = close.index.get_loc(d)
+
+        # 收益率
+        for p, col in [(1, "ret_1d"), (5, "ret_5d"), (10, "ret_10d"),
+                        (20, "ret_20d"), (60, "ret_60d")]:
+            if col in row.index and loc >= p:
+                row[col] = close.iloc[loc] / close.iloc[loc - p] - 1
+
+        # RV(10d)
+        if "rv_10d" in row.index and loc >= 10:
+            log_r = np.log(close / close.shift(1))
+            row["rv_10d"] = log_r.iloc[max(0, loc-9):loc+1].std() \
+                * np.sqrt(5) * 100
+
+        # RSI(14)
+        if "rsi_14" in row.index and loc >= 14:
+            ch = close.diff().iloc[max(0, loc-13):loc+1]
+            g = ch.clip(lower=0).mean()
+            ls = (-ch.clip(upper=0)).mean()
+            row["rsi_14"] = 100 - 100 / (1 + g / ls) if ls != 0 else 50
+
+        # SMA 位置
+        for n, col in [(5, "close_to_sma_5"), (20, "close_to_sma_20"),
+                        (60, "close_to_sma_60")]:
+            if col in row.index and loc >= n:
+                sma = close.iloc[loc-n+1:loc+1].mean()
+                row[col] = close.iloc[loc] / sma - 1 if sma else 0
+
+        # BB position
+        if "bb_position" in row.index and loc >= 20:
+            w = close.iloc[loc-19:loc+1]
+            sma, std = w.mean(), w.std()
+            if std > 0:
+                row["bb_position"] = (close.iloc[loc] - (sma - 2*std)) \
+                    / (4 * std)
+
+        # MACD
+        if "macd_hist" in row.index and loc >= 26:
+            w = close.iloc[max(0, loc-50):loc+1]
+            e12 = w.ewm(span=12).mean().iloc[-1]
+            e26 = w.ewm(span=26).mean().iloc[-1]
+            ml = e12 - e26
+            sig = (w.ewm(span=12).mean() - w.ewm(span=26).mean()) \
+                .ewm(span=9).mean().iloc[-1]
+            row["macd_hist"] = ml - sig
+
+        for c in row.index:
+            if c.startswith("fwd_"):
+                row[c] = np.nan
+
+        row.name = d
+        new_rows.append(row)
+
+    if new_rows:
+        combined = pd.concat([feat, pd.DataFrame(new_rows)])
+        combined = combined[~combined.index.duplicated(keep="last")]
+        combined.to_parquet(feat_path)
+
+    return len(new_rows)
+
+
+def extend_oos_predictions(cfg: dict):
+    """用保存的模型对最新数据做 inference, 扩展 OOS 预测到今天.
+
+    流程:
+      1. 加载 OOS parquet, 检查最后日期
+      2. 加载特征, 找到 OOS 之后的新日期
+      3. 加载模型权重, 对新日期做预测
+      4. 追加到 OOS parquet
+    """
+    oos_path = cfg["resolved"]["oos_predictions"]
+    model_path = os.path.join(os.path.dirname(oos_path), "dl_range_v2_model.pkl")
+
+    if not os.path.exists(model_path):
+        return 0, "模型权重未找到, 请运行 setup_data.py 训练"
+
+    oos = pd.read_parquet(oos_path)
+    oos_last = oos.index[-1]
+
+    features = pd.read_parquet(cfg["resolved"]["features"])
+    new_dates = features.index[features.index > oos_last]
+
+    if len(new_dates) == 0:
+        return 0, f"已是最新 ({oos_last.date()})"
+
+    from core.dl_range import DLRangePredictor, select_features
+    import numpy as np
+
+    predictor = DLRangePredictor.load(model_path)
+    feat_cols = select_features(features)
+
+    # 需要 seq_len 根历史 + 新日期
+    start_idx = max(0, features.index.get_loc(oos_last) - predictor.seq_len - 5)
+    feat_window = features.iloc[start_idx:][feat_cols]
+
+    # RV scale
+    rv_col = "rv_10d" if "rv_10d" in features.columns else None
+    if rv_col:
+        rv_scale = features.iloc[start_idx:][rv_col].values
+    else:
+        rv_scale = np.ones(len(feat_window))
+
+    pred_u, pred_l = predictor.predict(feat_window.values, rv_scale)
+
+    # 对齐到日期
+    pred_dates = feat_window.index[predictor.seq_len - 1:]
+    pred_df = pd.DataFrame({
+        "pred_upper_pct": pred_u[:len(pred_dates)],
+        "pred_lower_pct": pred_l[:len(pred_dates)],
+    }, index=pred_dates[:len(pred_u)])
+
+    # 只保留新日期
+    new_preds = pred_df[pred_df.index > oos_last]
+    if len(new_preds) == 0:
+        return 0, f"已是最新 ({oos_last.date()})"
+
+    # 追加并保存
+    combined = pd.concat([oos, new_preds])
+    combined = combined[~combined.index.duplicated(keep="last")]
+    combined.to_parquet(oos_path)
+
+    return len(new_preds), f"预测扩展 {oos_last.date()} → {combined.index[-1].date()} (+{len(new_preds)}天)"
+
+
 def load_latest_eod_snapshot(cfg: dict):
     """加载最新 EOD 期权快照. 返回 (df, date_str) 或 (None, None)."""
     snap_dir = cfg["resolved"]["eod_snapshots"]

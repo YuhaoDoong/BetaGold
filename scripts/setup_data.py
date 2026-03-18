@@ -608,6 +608,11 @@ def train_model():
         print(f"\n  OOS 预测: {len(oos)} rows "
               f"({oos.index[0].date()} ~ {oos.index[-1].date()})")
         print(f"  保存: {oos_path}")
+
+        # 保存最后一个 fold 的模型 (用于在线 inference)
+        model_path = os.path.join(MODELS, "dl_range_v2_model.pkl")
+        predictor.save(model_path)
+        print(f"  模型权重: {model_path}")
     else:
         print("  警告: 无预测结果")
 
