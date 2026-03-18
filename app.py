@@ -1844,12 +1844,22 @@ def main():
                 eff_exit_price = oi_adj_bp090 if oi_adj_bp090 > 0 \
                     else next_bp090
                 exit_src = "OI修正" if oi_adj_bp090 > 0 else "模型"
+
+                # 用实时价格 (如有), 否则用日线收盘
+                _rt_opt = _get_realtime_prices()
+                _gc_gld_r = gc_gld_ratio if gc_gld_ratio else 10.9
+                current_gld = _rt_opt["gc_price"] / _gc_gld_r \
+                    if _rt_opt else last_close
+                price_src = f"实时 GLD≈${current_gld:.1f}" \
+                    if _rt_opt else f"收盘 ${last_close:.2f}"
+
                 st.caption(f"基于 {snap_date} EOD 快照 "
                            f"(DTE已按 {today_sgt} 重算) | "
+                           f"当前价: {price_src} | "
                            f"目标退出价: ${eff_exit_price:.2f} "
                            f"(bp=0.90, {exit_src})")
                 result = get_strategy_table(
-                    sig_type_viz, last_close, eff_exit_price, eod_df)
+                    sig_type_viz, current_gld, eff_exit_price, eod_df)
 
                 if sig_type_viz == "BUY_CALL":
                     # 推荐理由
