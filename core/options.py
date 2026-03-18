@@ -1,16 +1,57 @@
-"""期权策略推荐模块.
+"""期权策略推荐模块 v2.
 
-BUY CALL → 单腿 Call + Bull Call Spread, 含推荐 + 理由
-SELL PUT → Bull Put Spread (卖出看跌价差)
-所有 ROI 计算均含5日 theta 衰减
+改进:
+  - 优先用 Moomoo 实时报价 (盘中), 无法获取时降级到 EOD 快照
+  - 每个策略同时展示最大盈利和最大亏损
+  - 推荐止损点 (基于 GLD 价格回撤)
+  - ROI 计算含5日 theta 衰减
 """
 
 import numpy as np
 import pandas as pd
 
 
+def _get_live_snapshot(spot, expiry_start=None, expiry_end=None):
+    """尝试从 Moomoo 获取实时期权报价."""
+    try:
+        from core.data import fetch_live_options
+        snap = fetch_live_options(spot, expiry_start, expiry_end)
+        if snap is not None and len(snap) > 0:
+            # 统一列名
+            snap = snap.rename(columns={
+                "last_price": "last_price",
+                "bid_price": "bid_price",
+                "ask_price": "ask_price",
+                "option_implied_volatility": "option_implied_volatility",
+                "option_delta": "option_delta",
+                "option_theta": "option_theta",
+                "option_gamma": "option_gamma",
+                "option_open_interest": "option_open_interest",
+            })
+            snap["mid"] = (snap["bid_price"] + snap["ask_price"]) / 2
+            # 解析 strike 和 type from code
+            # US.GLD260320C450000 → strike=450, type=CALL
+            def _parse_code(code):
+                s = code.split(".")[-1]  # GLD260320C450000
+                opt_type = "CALL" if "C" in s[9:10] else "PUT"
+                strike = int(s[10:]) / 1000
+                expiry = f"20{s[3:5]}-{s[5:7]}-{s[7:9]}"
+                return opt_type, strike, expiry
+            parsed = snap["code"].apply(_parse_code)
+            snap["option_type"] = [p[0] for p in parsed]
+            snap["option_strike_price"] = [p[1] for p in parsed]
+            snap["strike_time"] = [p[2] for p in parsed]
+            snap["dte"] = (pd.to_datetime(snap["strike_time"]) -
+                           pd.Timestamp.now()).dt.days
+            snap["iv_decimal"] = snap["option_implied_volatility"] / 100
+            return snap, "live"
+    except Exception:
+        pass
+    return None, None
+
+
 def find_options(eod_df, option_type, strike_range, dte_range):
-    """从 EOD 快照中筛选期权合约."""
+    """从快照中筛选期权合约."""
     if eod_df is None or len(eod_df) == 0:
         return pd.DataFrame()
     mask = (
@@ -19,27 +60,26 @@ def find_options(eod_df, option_type, strike_range, dte_range):
         (eod_df["option_strike_price"] <= strike_range[1]) &
         (eod_df["dte"] >= dte_range[0]) &
         (eod_df["dte"] <= dte_range[1]) &
-        (eod_df["bid_price"] > 0) &
-        (eod_df["option_open_interest"] >= 50)
+        (eod_df["bid_price"] > 0)
     )
+    # OI 过滤 (live 数据可能 OI 字段不同)
+    if "option_open_interest" in eod_df.columns:
+        mask = mask & (eod_df["option_open_interest"] >= 50)
     df = eod_df[mask].copy()
-    df["mid"] = (df["bid_price"] + df["ask_price"]) / 2
+    if "mid" not in df.columns:
+        df["mid"] = (df["bid_price"] + df["ask_price"]) / 2
     return df.sort_values(["dte", "option_strike_price"])
 
 
 def _find_spread_leg(eod_df, anchor_row, option_type, strike_offset):
-    """找到同到期日、指定 strike 偏移的合约 (价差另一腿)."""
+    """找到同到期日、指定 strike 偏移的合约."""
     target_strike = anchor_row["option_strike_price"] + strike_offset
+    mask = (eod_df["option_type"] == option_type) & (eod_df["bid_price"] > 0)
 
-    mask = (
-        (eod_df["option_type"] == option_type) &
-        (eod_df["bid_price"] > 0)
-    )
     if "strike_time" in eod_df.columns:
         exp_str = str(anchor_row.get("strike_time", ""))[:10]
         if exp_str:
-            mask = mask & (
-                eod_df["strike_time"].astype(str).str[:10] == exp_str)
+            mask = mask & (eod_df["strike_time"].astype(str).str[:10] == exp_str)
     else:
         mask = mask & (eod_df["dte"] == anchor_row["dte"])
 
@@ -47,64 +87,80 @@ def _find_spread_leg(eod_df, anchor_row, option_type, strike_offset):
     if len(candidates) == 0:
         return None
 
-    candidates["_dist"] = abs(
-        candidates["option_strike_price"] - target_strike)
-    candidates = candidates[candidates["_dist"] <= 2]
+    candidates["_dist"] = abs(candidates["option_strike_price"] - target_strike)
+    candidates = candidates[candidates["_dist"] <= 3]
     if len(candidates) == 0:
         return None
 
     best = candidates.nsmallest(1, "_dist").iloc[0].copy()
-    best["mid"] = (best["bid_price"] + best["ask_price"]) / 2
+    if "mid" not in best.index:
+        best["mid"] = (best["bid_price"] + best["ask_price"]) / 2
     return best
+
+
+def _stop_loss_price(gld_price, entry_cost, strategy_type):
+    """推荐止损价位 (基于 GLD 价格回撤).
+
+    单腿 Call: GLD 跌破入场价的 2% → 期权亏损约 40-60%
+    价差: GLD 跌破 short leg strike → 接近最大亏损
+    """
+    if strategy_type == "single":
+        return gld_price * 0.98  # GLD 跌 2%
+    else:
+        return gld_price * 0.97  # GLD 跌 3%
 
 
 # ══════════════════════════════════════════════════════════
 # 对外接口
 # ══════════════════════════════════════════════════════════
 
-def get_strategy_table(signal_type, gld_price, exit_price, eod_df):
+def get_strategy_table(signal_type, gld_price, exit_price, eod_df,
+                       use_live=True):
     """获取期权策略推荐.
 
-    exit_price: 平仓触发价位 (bp=0.90)
-
-    Returns dict:
-        BUY_CALL → {"single_leg": [...], "spread": [...], "rec": "..."}
-        SELL_PUT → {"spread": [...], "rec": None}
+    优先用 Moomoo 实时报价, 降级到 EOD 快照.
     """
-    if eod_df is None or signal_type not in ("BUY_CALL", "SELL_PUT"):
-        return {"spread": [], "rec": None}
+    if signal_type not in ("BUY_CALL", "SELL_PUT"):
+        return {"spread": [], "rec": None, "source": "none"}
+
+    # 尝试实时数据
+    data_df = eod_df
+    source = "EOD"
+    if use_live:
+        live, src = _get_live_snapshot(gld_price)
+        if live is not None and len(live) > 0:
+            data_df = live
+            source = "LIVE"
+
+    if data_df is None:
+        return {"spread": [], "rec": None, "source": source}
 
     price_move = exit_price - gld_price
     hold_days = 5
 
     if signal_type == "BUY_CALL":
-        single_leg = _build_call_table(
-            eod_df, gld_price, price_move, hold_days)
-        spread = _build_call_spread_table(
-            eod_df, gld_price, price_move, hold_days)
+        single_leg = _build_call_table(data_df, gld_price, price_move, hold_days)
+        spread = _build_call_spread_table(data_df, gld_price, price_move, hold_days)
         rec = _build_call_recommendation(
-            eod_df, gld_price, price_move, hold_days, exit_price)
-        return {"single_leg": single_leg, "spread": spread, "rec": rec}
+            data_df, gld_price, price_move, hold_days, exit_price)
+        return {"single_leg": single_leg, "spread": spread,
+                "rec": rec, "source": source}
     else:
-        spread = _build_put_spread_table(
-            eod_df, gld_price, price_move, hold_days)
-        return {"spread": spread, "rec": None}
+        spread = _build_put_spread_table(data_df, gld_price, price_move, hold_days)
+        return {"spread": spread, "rec": None, "source": source}
 
 
 # ══════════════════════════════════════════════════════════
-# BUY CALL — 单腿 Call
+# BUY CALL — 单腿
 # ══════════════════════════════════════════════════════════
 
 def _build_call_table(eod_df, gld_price, price_move, hold_days):
     configs = [
-        ("A. 稳健 (ITM)",
-         (gld_price - 20, gld_price - 5), (25, 45),
+        ("A. 稳健 (ITM)", (gld_price - 20, gld_price - 5), (25, 45),
          "Delta≈0.70, theta较低"),
-        ("B. 中性 (ATM)",
-         (gld_price - 5, gld_price + 5), (17, 35),
+        ("B. 中性 (ATM)", (gld_price - 5, gld_price + 5), (17, 35),
          "Delta≈0.50, 平衡"),
-        ("C. 激进 (OTM)",
-         (gld_price + 5, gld_price + 20), (14, 28),
+        ("C. 激进 (OTM)", (gld_price + 5, gld_price + 20), (14, 28),
          "Delta≈0.30, 高杠杆"),
     ]
 
@@ -112,23 +168,23 @@ def _build_call_table(eod_df, gld_price, price_move, hold_days):
     for label, strike_range, dte_range, desc in configs:
         opts = find_options(eod_df, "CALL", strike_range, dte_range)
         if len(opts) == 0:
-            rows.append({
-                "策略": label, "合约": "—", "成本": "—",
-                "Δ": "—", "Θ/日": "—",
-                "5日ROI": "—", "OI": "—", "说明": desc,
-            })
+            rows.append({"策略": label, "合约": "—", "成本": "—",
+                         "Δ": "—", "Θ/日": "—", "5日盈利": "—",
+                         "最大亏损": "—", "止损(GLD)": "—", "说明": desc})
             continue
 
-        best = opts.nlargest(1, "option_open_interest").iloc[0]
+        oi_col = "option_open_interest" if "option_open_interest" in opts.columns else None
+        best = opts.nlargest(1, oi_col).iloc[0] if oi_col else opts.iloc[0]
         exp = pd.Timestamp(best["strike_time"]).strftime("%m/%d")
         strike = best["option_strike_price"]
         mid = best["mid"]
         delta = abs(best.get("option_delta", 0))
         theta = best.get("option_theta", 0)
-        oi = best["option_open_interest"]
 
         pnl = delta * price_move + theta * hold_days
         roi = pnl / mid * 100 if mid > 0 else 0
+        max_loss = mid  # 单腿最大亏损 = 全部权利金
+        stop_gld = _stop_loss_price(gld_price, mid, "single")
 
         rows.append({
             "策略": label,
@@ -136,20 +192,19 @@ def _build_call_table(eod_df, gld_price, price_move, hold_days):
             "成本": f"${mid:.2f}",
             "Δ": f"{delta:.2f}",
             "Θ/日": f"${theta:.2f}",
-            "5日ROI": f"{roi:+.0f}%",
-            "OI": f"{oi:,.0f}",
+            "5日盈利": f"${pnl:.2f} ({roi:+.0f}%)",
+            "最大亏损": f"-${max_loss:.2f} (-100%)",
+            "止损(GLD)": f"< ${stop_gld:.1f}",
             "说明": desc,
         })
-
     return rows
 
 
 # ══════════════════════════════════════════════════════════
-# BUY CALL — Bull Call Spread (牛市看涨价差)
+# BUY CALL — Bull Call Spread
 # ══════════════════════════════════════════════════════════
 
 def _build_call_spread_table(eod_df, gld_price, price_move, hold_days):
-    """买近ATM + 卖OTM, 三档宽度."""
     widths = [
         ("A. 窄幅 ($10)", 10, "theta对冲高, 盈利上限$10"),
         ("B. 中幅 ($15)", 15, "平衡theta与收益"),
@@ -159,70 +214,61 @@ def _build_call_spread_table(eod_df, gld_price, price_move, hold_days):
     rows = []
     for label, width, desc in widths:
         buy_opts = find_options(
-            eod_df, "CALL",
-            (gld_price - 5, gld_price + 5), (17, 45))
+            eod_df, "CALL", (gld_price - 5, gld_price + 5), (17, 45))
         if len(buy_opts) == 0:
-            rows.append(_empty_call_spread_row(label, desc))
+            rows.append(_empty_spread_row(label, desc))
             continue
 
-        buy = buy_opts.nlargest(1, "option_open_interest").iloc[0]
+        oi_col = "option_open_interest" if "option_open_interest" in buy_opts.columns else None
+        buy = buy_opts.nlargest(1, oi_col).iloc[0] if oi_col else buy_opts.iloc[0]
         sell = _find_spread_leg(eod_df, buy, "CALL", +width)
         if sell is None:
-            rows.append(_empty_call_spread_row(label, desc))
+            rows.append(_empty_spread_row(label, desc))
             continue
 
         buy_strike = buy["option_strike_price"]
         sell_strike = sell["option_strike_price"]
         actual_width = sell_strike - buy_strike
         if actual_width <= 0:
-            rows.append(_empty_call_spread_row(label, desc))
+            rows.append(_empty_spread_row(label, desc))
             continue
 
-        buy_mid = buy["mid"]
-        sell_mid = sell["mid"]
-        net_debit = buy_mid - sell_mid
+        net_debit = buy["mid"] - sell["mid"]
         if net_debit <= 0:
-            rows.append(_empty_call_spread_row(label, desc))
+            rows.append(_empty_spread_row(label, desc))
             continue
 
         max_profit = actual_width - net_debit
+        max_loss = net_debit  # 价差最大亏损 = 净成本
 
-        # Position Greeks: long buy leg + short sell leg
         buy_delta = abs(buy.get("option_delta", 0))
         sell_delta = abs(sell.get("option_delta", 0))
-        buy_theta = buy.get("option_theta", 0)   # negative
-        sell_theta = sell.get("option_theta", 0)  # negative, less so
+        pos_delta = buy_delta - sell_delta
+        pos_theta = buy.get("option_theta", 0) - sell.get("option_theta", 0)
 
-        pos_delta = buy_delta - sell_delta         # positive (bullish)
-        pos_theta = buy_theta - sell_theta         # less negative
-
-        pnl = pos_delta * price_move + pos_theta * hold_days
-        pnl = min(pnl, max_profit)  # cap at max profit
+        pnl = min(pos_delta * price_move + pos_theta * hold_days, max_profit)
         roi = pnl / net_debit * 100 if net_debit > 0 else 0
+        stop_gld = _stop_loss_price(gld_price, net_debit, "spread")
 
         exp = pd.Timestamp(buy["strike_time"]).strftime("%m/%d")
-        contract = f"GLD {exp} ${buy_strike:.0f}/${sell_strike:.0f}C"
 
         rows.append({
             "策略": label,
-            "价差合约": contract,
+            "价差合约": f"GLD {exp} ${buy_strike:.0f}/${sell_strike:.0f}C",
             "净成本": f"${net_debit:.2f}",
-            "最大盈利": f"${max_profit:.2f}",
-            "Pos Δ": f"{pos_delta:.2f}",
-            "Pos Θ/日": f"${pos_theta:.2f}",
-            "5日ROI": f"{roi:+.0f}%",
+            "5日盈利": f"${pnl:.2f} ({roi:+.0f}%)",
+            "最大盈利": f"+${max_profit:.2f} (+{max_profit/net_debit*100:.0f}%)",
+            "最大亏损": f"-${max_loss:.2f} (-100%)",
+            "止损(GLD)": f"< ${stop_gld:.1f}",
             "说明": desc,
         })
-
     return rows
 
 
-def _empty_call_spread_row(label, desc):
-    return {
-        "策略": label, "价差合约": "—", "净成本": "—",
-        "最大盈利": "—", "Pos Δ": "—", "Pos Θ/日": "—",
-        "5日ROI": "—", "说明": desc,
-    }
+def _empty_spread_row(label, desc):
+    return {"策略": label, "价差合约": "—", "净成本": "—",
+            "5日盈利": "—", "最大盈利": "—", "最大亏损": "—",
+            "止损(GLD)": "—", "说明": desc}
 
 
 # ══════════════════════════════════════════════════════════
@@ -231,135 +277,120 @@ def _empty_call_spread_row(label, desc):
 
 def _build_call_recommendation(eod_df, gld_price, price_move,
                                 hold_days, exit_price):
-    """基于 IV / theta 比较, 给出单腿 vs 价差推荐."""
     atm_opts = find_options(
         eod_df, "CALL", (gld_price - 3, gld_price + 3), (17, 45))
     if len(atm_opts) == 0:
         return None
 
-    atm = atm_opts.nlargest(1, "option_open_interest").iloc[0]
-    iv = atm.get("iv_decimal", 0) * 100
+    oi_col = "option_open_interest" if "option_open_interest" in atm_opts.columns else None
+    atm = atm_opts.nlargest(1, oi_col).iloc[0] if oi_col else atm_opts.iloc[0]
+    iv = atm.get("iv_decimal", atm.get("option_implied_volatility", 0) / 100
+                  if atm.get("option_implied_volatility", 0) > 1 else 0) * 100
     theta = atm.get("option_theta", 0)
     mid = atm["mid"]
     theta_pct = abs(theta) / mid * 100 if mid > 0 else 0
     theta_5d = abs(theta) * hold_days
+    stop_gld = _stop_loss_price(gld_price, mid, "single")
 
-    # 参考 $15 价差的 theta 对冲效果
     sell_leg = _find_spread_leg(eod_df, atm, "CALL", 15)
     if sell_leg is not None:
         net_theta = theta - sell_leg.get("option_theta", 0)
         theta_saved_pct = (1 - abs(net_theta) / max(abs(theta), 0.01)) * 100
-        net_theta_5d = abs(net_theta) * hold_days
+        net_debit = mid - sell_leg["mid"]
+        max_loss_spread = net_debit
     else:
         theta_saved_pct = 0
-        net_theta_5d = theta_5d
+        max_loss_spread = mid
 
     if iv >= 28:
-        title = "推荐: Bull Call Spread (牛市看涨价差)"
+        title = "推荐: Bull Call Spread"
         reason = (
-            f"IV={iv:.0f}%偏高, 单腿theta ${abs(theta):.2f}/日 "
-            f"({theta_pct:.1f}%/日), 5日损耗${theta_5d:.1f}。"
-            f"价差对冲{theta_saved_pct:.0f}%的theta "
-            f"(净损耗${net_theta_5d:.1f}/5日)。"
-            f"退出价${exit_price:.0f}高于价差卖腿, "
-            f"单腿在极端上涨时收益更高, 但theta代价大"
-        )
+            f"IV={iv:.0f}%偏高, theta ${abs(theta):.2f}/日, 5日损耗${theta_5d:.1f}。"
+            f"价差对冲{theta_saved_pct:.0f}%theta。"
+            f"\n最大亏损: 单腿-${mid:.2f} / 价差-${max_loss_spread:.2f}"
+            f"\n**止损**: GLD跌破${stop_gld:.1f}考虑平仓")
     elif iv <= 20:
         title = "推荐: Long Call (单腿)"
         reason = (
-            f"IV={iv:.0f}%较低, theta仅${abs(theta):.2f}/日 "
-            f"({theta_pct:.1f}%/日), 5日损失${theta_5d:.1f}可接受。"
-            f"单腿保留涨至退出价${exit_price:.0f}的完整收益空间, "
-            f"操作简单"
-        )
+            f"IV={iv:.0f}%较低, theta仅${abs(theta):.2f}/日, 5日损失${theta_5d:.1f}可接受。"
+            f"\n最大亏损: -${mid:.2f} (全部权利金)"
+            f"\n**止损**: GLD跌破${stop_gld:.1f}考虑平仓")
     else:
         title = "单腿 / 价差均可"
         reason = (
-            f"IV={iv:.0f}%, theta ${abs(theta):.2f}/日 "
-            f"({theta_pct:.1f}%/日)。"
-            f"看好涨至${exit_price:.0f}选单腿 (无上限); "
-            f"重视theta控制选价差 (对冲{theta_saved_pct:.0f}%)"
-        )
+            f"IV={iv:.0f}%, theta ${abs(theta):.2f}/日。"
+            f"单腿最大亏-${mid:.2f}, 价差最大亏-${max_loss_spread:.2f}。"
+            f"\n**止损**: GLD跌破${stop_gld:.1f}考虑平仓")
 
     return f"**{title}**\n\n{reason}"
 
 
 # ══════════════════════════════════════════════════════════
-# SELL PUT → Bull Put Spread (卖出看跌价差)
+# SELL PUT → Bull Put Spread
 # ══════════════════════════════════════════════════════════
 
 def _build_put_spread_table(eod_df, gld_price, price_move, hold_days):
     spread_width = 5
-
     configs = [
-        ("A. 稳健 (远OTM价差)",
-         (gld_price * 0.88, gld_price * 0.93), (25, 45),
-         "|Δ|≈0.10, 极低行权概率"),
-        ("B. 中性 (OTM价差)",
-         (gld_price * 0.93, gld_price * 0.97), (17, 35),
-         "|Δ|≈0.25, 适中权利金"),
-        ("C. 激进 (近ATM价差)",
-         (gld_price * 0.97, gld_price + 2), (14, 28),
-         "|Δ|≈0.40, 高权利金"),
+        ("A. 稳健 (远OTM)", (gld_price * 0.88, gld_price * 0.93), (25, 45),
+         "|Δ|≈0.10"),
+        ("B. 中性 (OTM)", (gld_price * 0.93, gld_price * 0.97), (17, 35),
+         "|Δ|≈0.25"),
+        ("C. 激进 (近ATM)", (gld_price * 0.97, gld_price + 2), (14, 28),
+         "|Δ|≈0.40"),
     ]
 
     rows = []
     for label, strike_range, dte_range, desc in configs:
         sell_opts = find_options(eod_df, "PUT", strike_range, dte_range)
         if len(sell_opts) == 0:
-            rows.append(_empty_put_spread_row(label, desc))
+            rows.append(_empty_put_row(label, desc))
             continue
 
-        sell = sell_opts.nlargest(1, "option_open_interest").iloc[0]
+        oi_col = "option_open_interest" if "option_open_interest" in sell_opts.columns else None
+        sell = sell_opts.nlargest(1, oi_col).iloc[0] if oi_col else sell_opts.iloc[0]
         buy = _find_spread_leg(eod_df, sell, "PUT", -spread_width)
         if buy is None:
-            rows.append(_empty_put_spread_row(label, desc))
+            rows.append(_empty_put_row(label, desc))
             continue
 
         sell_strike = sell["option_strike_price"]
         buy_strike = buy["option_strike_price"]
         actual_width = sell_strike - buy_strike
-        sell_mid = sell["mid"]
-        buy_mid = buy["mid"]
-        net_credit = sell_mid - buy_mid
+        net_credit = sell["mid"] - buy["mid"]
 
         if net_credit <= 0 or actual_width <= 0:
-            rows.append(_empty_put_spread_row(label, desc))
+            rows.append(_empty_put_row(label, desc))
             continue
 
         max_loss = actual_width - net_credit
+        max_profit = net_credit
+        stop_gld = sell_strike + 1  # GLD 跌破 short strike 时止损
 
         sell_delta = sell.get("option_delta", 0)
         buy_delta = buy.get("option_delta", 0)
-        sell_theta = sell.get("option_theta", 0)
-        buy_theta = buy.get("option_theta", 0)
-
         pos_delta = -sell_delta + buy_delta
-        pos_theta = -sell_theta + buy_theta
+        pos_theta = -sell.get("option_theta", 0) + buy.get("option_theta", 0)
 
         pnl = pos_delta * price_move + pos_theta * hold_days
-        roi = pnl / max_loss * 100 if max_loss > 0 else 0
+        roi_on_risk = pnl / max_loss * 100 if max_loss > 0 else 0
 
         exp = pd.Timestamp(sell["strike_time"]).strftime("%m/%d")
-        contract = f"GLD {exp} ${sell_strike:.0f}/${buy_strike:.0f}P"
 
         rows.append({
             "策略": label,
-            "价差合约": contract,
-            "净权利金": f"${net_credit:.2f}",
-            "最大亏损": f"${max_loss:.2f}",
-            "Pos Δ": f"{pos_delta:.3f}",
-            "Pos Θ/日": f"${pos_theta:.3f}",
-            "5日ROI": f"{roi:+.0f}%",
+            "价差合约": f"GLD {exp} ${sell_strike:.0f}/${buy_strike:.0f}P",
+            "净权利金": f"+${net_credit:.2f}",
+            "最大盈利": f"+${max_profit:.2f}",
+            "最大亏损": f"-${max_loss:.2f}",
+            "5日ROI": f"{roi_on_risk:+.0f}%",
+            "止损(GLD)": f"< ${stop_gld:.0f}",
             "说明": desc,
         })
-
     return rows
 
 
-def _empty_put_spread_row(label, desc):
-    return {
-        "策略": label, "价差合约": "—", "净权利金": "—",
-        "最大亏损": "—", "Pos Δ": "—", "Pos Θ/日": "—",
-        "5日ROI": "—", "说明": desc,
-    }
+def _empty_put_row(label, desc):
+    return {"策略": label, "价差合约": "—", "净权利金": "—",
+            "最大盈利": "—", "最大亏损": "—", "5日ROI": "—",
+            "止损(GLD)": "—", "说明": desc}

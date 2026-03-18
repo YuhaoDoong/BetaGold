@@ -1853,13 +1853,14 @@ def main():
                 price_src = f"实时 GLD≈${current_gld:.1f}" \
                     if _rt_opt else f"收盘 ${last_close:.2f}"
 
-                st.caption(f"基于 {snap_date} EOD 快照 "
-                           f"(DTE已按 {today_sgt} 重算) | "
-                           f"当前价: {price_src} | "
-                           f"目标退出价: ${eff_exit_price:.2f} "
-                           f"(bp=0.90, {exit_src})")
                 result = get_strategy_table(
-                    sig_type_viz, current_gld, eff_exit_price, eod_df)
+                    sig_type_viz, current_gld, eff_exit_price, eod_df,
+                    use_live=True)
+                data_src = result.get("source", "EOD")
+                st.caption(f"期权数据: **{data_src}** | "
+                           f"当前价: {price_src} | "
+                           f"目标退出价: ${eff_exit_price:.2f} ({exit_src}) | "
+                           f"EOD快照: {snap_date} (DTE按{today_sgt}重算)")
 
                 if sig_type_viz == "BUY_CALL":
                     # 推荐理由

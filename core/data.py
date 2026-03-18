@@ -360,6 +360,55 @@ def extend_oos_predictions(cfg: dict):
     return len(new_preds), f"预测扩展 {oos_last.date()} → {combined.index[-1].date()} (+{len(new_preds)}天)"
 
 
+def fetch_live_options(spot_price, expiry_start=None, expiry_end=None,
+                       strike_range=20):
+    """从 Moomoo API 获取 GLD 期权实时报价.
+
+    Args:
+        spot_price: GLD 当前价格 (用于筛选 ATM 附近)
+        expiry_start/end: 到期日范围 (默认最近2周)
+        strike_range: ATM 附近的 strike 范围 ($)
+
+    Returns: DataFrame with live quotes, or None
+    """
+    try:
+        import sys
+        sys.path.insert(0, "/Users/yhdong/Gold/src")
+        from moomoo import OpenQuoteContext, RET_OK
+
+        if expiry_start is None:
+            today = datetime.now().date()
+            expiry_start = today.strftime("%Y-%m-%d")
+            expiry_end = (today + timedelta(days=14)).strftime("%Y-%m-%d")
+
+        ctx = OpenQuoteContext(host="127.0.0.1", port=11111)
+        try:
+            ret, chain = ctx.get_option_chain(
+                "US.GLD", start=expiry_start, end=expiry_end)
+            if ret != RET_OK or len(chain) == 0:
+                return None
+
+            # 筛选 ATM 附近 strike
+            lo = int(spot_price - strike_range)
+            hi = int(spot_price + strike_range)
+            pattern = "|".join(
+                [f"[CP]{s}" for s in range(lo, hi + 1)])
+            atm = chain[chain["code"].str.contains(pattern, regex=True)]
+            if len(atm) == 0:
+                atm = chain.head(30)
+
+            codes = atm["code"].tolist()[:40]
+            ret2, snap = ctx.get_market_snapshot(codes)
+            if ret2 != RET_OK:
+                return None
+
+            return snap
+        finally:
+            ctx.close()
+    except Exception:
+        return None
+
+
 def load_latest_eod_snapshot(cfg: dict):
     """加载最新 EOD 期权快照. 返回 (df, date_str) 或 (None, None)."""
     snap_dir = cfg["resolved"]["eod_snapshots"]
