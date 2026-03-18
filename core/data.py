@@ -111,6 +111,44 @@ def auto_refresh_market_data(cfg: dict):
         ("usdcny_csv", "USD/CNY", "CNY=X"),
     ]
 
+    # 1h 数据也刷新 (GLD 含盘前盘后, GC=F)
+    market_dir = os.path.dirname(cfg["resolved"].get("gld_csv", ""))
+    for fname, label, ticker, prepost in [
+        ("gld_1h.csv", "GLD 1h", "GLD", True),
+        ("gc_1h.csv", "GC=F 1h", "GC=F", False),
+    ]:
+        path_1h = os.path.join(market_dir, fname)
+        if os.path.exists(path_1h):
+            try:
+                import yfinance as yf
+                existing_1h = pd.read_csv(path_1h, index_col=0, parse_dates=True)
+                last_1h = existing_1h.index[-1]
+                # 只在距上次超过 6 小时才刷新
+                now_utc = datetime.utcnow()
+                hours_since = (now_utc - last_1h.to_pydatetime()).total_seconds() / 3600
+                if hours_since > 6:
+                    t = yf.Ticker(ticker)
+                    new_1h = t.history(period="5d", interval="1h",
+                                       prepost=prepost)
+                    if new_1h is not None and len(new_1h) > 0:
+                        new_1h.index = pd.to_datetime(new_1h.index).tz_localize(None)
+                        new_1h.index.name = "Datetime"
+                        new_1h = new_1h[["Open", "High", "Low", "Close", "Volume"]]
+                        new_1h = new_1h[new_1h.index > existing_1h.index[-1]]
+                        if len(new_1h) > 0:
+                            combined = pd.concat([existing_1h, new_1h])
+                            combined.to_csv(path_1h)
+                            results.append((label,
+                                f"+{len(new_1h)}根 至 {combined.index[-1].strftime('%m/%d %H:%M')}"))
+                        else:
+                            results.append((label, f"已是最新"))
+                    else:
+                        results.append((label, "无新数据"))
+                else:
+                    results.append((label, f"已是最新 (<6h)"))
+            except Exception as e:
+                results.append((label, f"刷新失败: {e}"))
+
     for cfg_key, label, yf_ticker in updates:
         path = cfg["resolved"].get(cfg_key)
         if not path or not os.path.exists(path):

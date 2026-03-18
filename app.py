@@ -904,7 +904,7 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                           delta=f"USD/CNY={_cny:.4f}")
             with r5:
                 st.metric("数据时间", ts if ts else "—",
-                          delta=f"基准: {last_date.date()}")
+                          delta=f"数据: {last_date.date()} | 今日: {today_sgt}")
             st.markdown('</div>', unsafe_allow_html=True)
         else:
             st.caption(f"实时数据未获取 | GLD 收盘 ${last_close:.2f} ({last_date.date()})")
