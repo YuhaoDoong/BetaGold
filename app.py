@@ -816,6 +816,23 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     next_upper, next_lower, next_bp030, next_bp090 = \
         compute_next_day_band(close_d, range_df, bp_dates, last_date)
 
+    # OI 微观结构修正 (期权到期压缩效应)
+    oi_adj_bp030 = oi_adj_bp090 = 0
+    _cfg_oi = load_config()
+    _eod_oi, _snap_oi = load_latest_eod_snapshot(_cfg_oi)
+    if _eod_oi is not None and next_upper > next_lower:
+        _oi = compute_oi_factors(_eod_oi, last_close, ref_date=today_sgt)
+        if _oi is not None:
+            adj_u, adj_l, _oi_det = adjust_range(
+                next_upper, next_lower, last_close, _oi)
+            if adj_u > adj_l:
+                oi_adj_bp030 = adj_l + 0.30 * (adj_u - adj_l)
+                oi_adj_bp090 = adj_l + 0.90 * (adj_u - adj_l)
+
+    # 使用 OI 修正后的阈值 (如有)
+    eff_bp030 = oi_adj_bp030 if oi_adj_bp030 > 0 else next_bp030
+    eff_bp090 = oi_adj_bp090 if oi_adj_bp090 > 0 else next_bp090
+
     gc_gld_r = gc_gld_ratio if gc_gld_ratio else 10.9
     rt = _get_realtime_prices()
     _cny = rt["usdcny"] if rt else (usdcny_rate if usdcny_rate else 7.0)
@@ -844,7 +861,7 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     # ════════════════════════════════════════
     # 醒目顶部: 交易价位 + 实时
     # ════════════════════════════════════════
-    if next_bp030 > 0:
+    if eff_bp030 > 0:
         # 实时价格
         gc_now = rt["gc_price"] if rt else 0
         gld_est = gc_now / gc_gld_r if gc_now > 0 else last_close
@@ -867,11 +884,12 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         st.markdown('<div class="signal-box">', unsafe_allow_html=True)
         c1, c2, c3 = st.columns(3)
         with c1:
-            st.metric("买入 < (bp=0.30)", f"${next_bp030:.2f}",
-                      delta=f"COMEX < ${next_bp030*gc_gld_r:.0f} | 沪金 < ¥{next_bp030*gc_gld_r*_cny/_g:.1f}")
+            oi_tag = " (OI修正)" if oi_adj_bp030 > 0 else ""
+            st.metric(f"买入 <{oi_tag}", f"${eff_bp030:.2f}",
+                      delta=f"COMEX < ${eff_bp030*gc_gld_r:.0f} | 沪金 < ¥{eff_bp030*gc_gld_r*_cny/_g:.1f}")
         with c2:
-            st.metric("退出 > (bp=0.90)", f"${next_bp090:.2f}",
-                      delta=f"COMEX > ${next_bp090*gc_gld_r:.0f} | 沪金 > ¥{next_bp090*gc_gld_r*_cny/_g:.1f}")
+            st.metric(f"退出 >{oi_tag}", f"${eff_bp090:.2f}",
+                      delta=f"COMEX > ${eff_bp090*gc_gld_r:.0f} | 沪金 > ¥{eff_bp090*gc_gld_r*_cny/_g:.1f}")
         with c3:
             sig_text = sig_df.loc[last_date]["signal_text"] \
                 if last_date in sig_df.index else ""
@@ -1027,7 +1045,8 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             _sig_now2 = _r2["buy_type"].replace(" ", "_") if _r2["buy_type"] else "BUY_CALL"
         if _r2["exit_signal"]:
             _sig_now2 = _sig_now2 or "EXIT"
-    _render_options_section(_eod_opt2, _snap_opt2, last_close, next_bp090,
+    _render_options_section(_eod_opt2, _snap_opt2, last_close, eff_bp090,
+                            oi_adj_bp090=oi_adj_bp090,
                             gc_gld_ratio=gc_gld_ratio,
                             today_sgt=today_sgt, current_signal=_sig_now2)
 
@@ -1056,7 +1075,7 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
 
         # Pullback 止盈位
         pb_stop = pk * (1 - PULLBACK_DD / 100) if gain > PULLBACK_GAIN else 0
-        band_stop = next_bp090
+        band_stop = eff_bp090
 
         # 判断是否已平仓: 优先看回测, 其次看 BandExit 信号
         if buy_d in trade_exits:
