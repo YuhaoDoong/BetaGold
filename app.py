@@ -1023,8 +1023,12 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     _straddle_viz = _dst(rv_s, viz_dates)
     _unified_viz = _bus(sig_df, _straddle_viz, close_d, high_d, low_d)
 
-    # 信号标注: 全部显示, 同类型连续标淡色
-    _prev_sig = {}  # {strategy_type: last_date}
+    # 信号标注: 智能去重
+    # 同类型: 入场价低 >2% → 加仓(正常色), 否则忽略
+    # 不同类型: 都显示
+    # Straddle: 连续触发只取第一天和 score 更高的
+    _ADD_DROP = 2.0  # 加仓阈值
+    _prev_entry = {}  # {type: (date, price, score)}
     _sig_colors = {
         "BUY CALL": ("#2196F3", "^"), "SELL PUT": ("#FF9800", "^"),
         "EXIT": ("#F44336", "v"), "STRADDLE": ("#FFD700", "*"),
@@ -1033,37 +1037,52 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         if xi(d) is None:
             continue
         chosen = r["chosen"]
+        score = r.get("straddle_score", 0)
 
-        # 判断是否同类型连续 (标淡色)
-        is_repeat = False
-        if chosen == "EXIT":
-            prev_d = _prev_sig.get("EXIT")
-            is_repeat = prev_d is not None and (d - prev_d).days <= 2
-            _prev_sig = {"EXIT": d}  # EXIT 重置
-        else:
-            prev_d = _prev_sig.get(chosen)
-            is_repeat = prev_d is not None and (d - prev_d).days <= 2
-            _prev_sig[chosen] = d
-
-        color, marker = _sig_colors.get(chosen, ("gray", "o"))
-
-        # 价位
+        # 入场价
         if d in sig_df.index:
             sr = sig_df.loc[d]
             if "CALL" in chosen or "PUT" in chosen:
-                price = sr.get("bp030_price", close_d.get(d, 0))
+                entry_p = sr.get("bp030_price", close_d.get(d, 0))
             elif chosen == "EXIT":
-                price = sr.get("bp090_price", close_d.get(d, 0))
+                entry_p = sr.get("bp090_price", close_d.get(d, 0))
             else:
-                price = close_d.get(d, 0)
+                entry_p = close_d.get(d, 0)
         else:
-            price = close_d.get(d, 0)
+            entry_p = close_d.get(d, 0)
 
+        # 判断: 显示/加仓/忽略
+        show = True
+        is_add = False
+        if chosen == "EXIT":
+            _prev_entry = {}
+        elif chosen == "STRADDLE":
+            prev = _prev_entry.get("STRADDLE")
+            if prev and (d - prev[0]).days <= 3:
+                if score > prev[2]:
+                    show = True  # score 更高, 替换
+                else:
+                    show = False  # 连续相同 score, 忽略
+            _prev_entry["STRADDLE"] = (d, entry_p, score)
+        else:
+            prev = _prev_entry.get(chosen)
+            if prev:
+                drop = (prev[1] - entry_p) / prev[1] * 100 if prev[1] > 0 else 0
+                if drop > _ADD_DROP:
+                    is_add = True  # 加仓
+                elif (d - prev[0]).days <= 5:
+                    show = False  # 横盘忽略
+            if show:
+                _prev_entry[chosen] = (d, entry_p, 0)
+
+        if not show:
+            continue
+
+        color, marker = _sig_colors.get(chosen, ("gray", "o"))
         size = 200 if chosen == "STRADDLE" else (120 if chosen != "EXIT" else 100)
-        alpha = 0.35 if is_repeat else 1.0
-        size_adj = size * 0.6 if is_repeat else size
+        alpha = 0.6 if is_add else 1.0
 
-        ax.scatter([xi(d)], [price], marker=marker, s=size_adj, color=color,
+        ax.scatter([xi(d)], [entry_p], marker=marker, s=size, color=color,
                    edgecolors="black", lw=0.7, zorder=6, alpha=alpha)
 
     # 回测止盈标注 (淡色)
@@ -1202,17 +1221,20 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     st.divider()
     st.subheader("近期信号 (择优推荐)")
 
-    # 全部信号, 同类型连续标注"加仓"
-    _prev_types = {}
+    # 智能去重: 加仓/忽略/新信号
+    _ADD_DROP_TBL = 2.0
+    _prev_tbl = {}
     _sig_recs = []
     for d, r in _unified_viz.iterrows():
         chosen = r["chosen"]
-        prev_d = _prev_types.get(chosen)
-        is_repeat = prev_d is not None and (d - prev_d).days <= 2 and chosen != "EXIT"
-        if chosen == "EXIT":
-            _prev_types = {"EXIT": d}
+        score = r.get("straddle_score", 0)
+        c = r["close"]
+
+        if d in sig_df.index:
+            sr = sig_df.loc[d]
+            entry_p = sr.get("bp030_price", c) if "CALL" in chosen or "PUT" in chosen else c
         else:
-            _prev_types[chosen] = d
+            entry_p = c
 
         w = r["win"]
         win_str = "✓" if w is True or w == True else (
@@ -1220,11 +1242,33 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         ret = f"{r['ret_5d']:+.1f}%" if r["ret_5d"] is not None and \
             not pd.isna(r["ret_5d"]) else "—"
 
-        label = f"{chosen} (加仓)" if is_repeat else chosen
+        # 判断
+        label = chosen
+        show = True
+        if chosen == "EXIT":
+            _prev_tbl = {}
+        elif chosen == "STRADDLE":
+            prev = _prev_tbl.get("STRADDLE")
+            if prev and (d - prev[0]).days <= 3 and score <= prev[2]:
+                show = False
+            _prev_tbl["STRADDLE"] = (d, entry_p, score)
+        else:
+            prev = _prev_tbl.get(chosen)
+            if prev:
+                drop = (prev[1] - entry_p) / prev[1] * 100 if prev[1] > 0 else 0
+                if drop > _ADD_DROP_TBL:
+                    label = f"{chosen} (加仓↓{drop:.0f}%)"
+                elif (d - prev[0]).days <= 5:
+                    show = False
+            if show:
+                _prev_tbl[chosen] = (d, entry_p, 0)
+
+        if not show:
+            continue
 
         _sig_recs.append({
             "日期": d.strftime("%m/%d"),
-            "GLD": f"${r['close']:.0f}",
+            "GLD": f"${c:.0f}",
             "推荐": label,
             "原因": r["chosen_reason"],
             "5天涨跌": ret,
