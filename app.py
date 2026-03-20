@@ -1060,9 +1060,9 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             prev = _prev_entry.get("STRADDLE")
             if prev and (d - prev[0]).days <= 3:
                 if score > prev[2]:
-                    show = True  # score 更高, 替换
+                    show = True  # score 升级, 显示
                 else:
-                    show = False  # 连续相同 score, 忽略
+                    show = False  # 同 score 连续, 不重复
             _prev_entry["STRADDLE"] = (d, entry_p, score)
         else:
             prev = _prev_entry.get(chosen)
@@ -1080,10 +1080,9 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
 
         color, marker = _sig_colors.get(chosen, ("gray", "o"))
         size = 200 if chosen == "STRADDLE" else (120 if chosen != "EXIT" else 100)
-        alpha = 0.6 if is_add else 1.0
-
+        # 加仓信号正常显示; 止盈/止损才标淡
         ax.scatter([xi(d)], [entry_p], marker=marker, s=size, color=color,
-                   edgecolors="black", lw=0.7, zorder=6, alpha=alpha)
+                   edgecolors="black", lw=0.7, zorder=6)
 
     # 回测止盈标注 (淡色)
     tdf_viz = pd.DataFrame(trades) if trades else pd.DataFrame()
