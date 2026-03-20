@@ -142,10 +142,13 @@ def compute_event_features(dates_index):
 # Straddle 信号
 # ══════════════════════════════════════════════════════════
 
-# 参数
+# Straddle 参数
 STRADDLE_RV_THRESHOLD = 20.0   # RV 低于此值视为波动率压缩
+STRADDLE_RV_ABS_MAX = 25.0     # RV 绝对值上限 (高于此值成本太高)
 STRADDLE_EVENT_DAYS = 3        # 距事件日 <= N 天
 STRADDLE_RV_DROP_PCT = 30.0    # RV 相对近期下降 > N%
+# 事件权重: FOMC 最重要, NFP 次之, OPEX 最低
+EVENT_WEIGHT = {"FOMC": 3, "NFP": 2, "OPEX": 1}
 
 
 STRADDLE_HOLD_DAYS = 5     # 持仓天数
@@ -154,16 +157,22 @@ STRADDLE_WIN_MOVE = 0      # 波动 > 成本即为盈利 (0 = 自动用成本)
 
 def detect_straddle_signal(rv_series, dates_index,
                             rv_threshold=STRADDLE_RV_THRESHOLD,
+                            rv_abs_max=STRADDLE_RV_ABS_MAX,
                             event_days=STRADDLE_EVENT_DAYS,
                             rv_drop_pct=STRADDLE_RV_DROP_PCT):
     """检测 Straddle (做多波动率) 信号.
 
-    条件 (同时满足):
-      1. RV < rv_threshold (波动率低位)
-      2. 距下一个重要事件 <= event_days 天
-      3. RV 相对过去 20 天均值下降 > rv_drop_pct%
+    条件 (评分制, score >= 3 触发):
+      - RV < rv_threshold (波动率压缩):     +2
+      - RV 相对20天均值下降 > rv_drop_pct%: +1
+      - 距 FOMC <= event_days 天:           +3
+      - 距 NFP <= event_days 天:            +2
+      - 距 OPEX <= event_days 天:           +1
 
-    Returns: DataFrame with straddle_signal, straddle_reason
+    额外硬门槛:
+      - RV 绝对值 > rv_abs_max → 不触发 (成本太高)
+
+    Returns: DataFrame with straddle_signal, straddle_reason, score
     """
     rv_ma20 = rv_series.rolling(20, min_periods=5).mean()
 
@@ -173,25 +182,56 @@ def detect_straddle_signal(rv_series, dates_index,
         rv_avg = rv_ma20.get(d, rv)
         rv_drop = (rv_avg - rv) / rv_avg * 100 if rv_avg > 0 else 0
 
-        d_any, ev_type, ev_date = days_to_next_event(d)
+        # 找最近的各类事件
+        d_fomc, _, fomc_d = days_to_next_event(d, "FOMC")
+        d_nfp, _, nfp_d = days_to_next_event(d, "NFP")
+        d_opex, _, opex_d = days_to_next_event(d, "OPEX")
+        d_any = min(d_fomc, d_nfp, d_opex)
 
-        signal = False
+        # 最近事件信息
+        if d_fomc <= d_nfp and d_fomc <= d_opex:
+            ev_type, ev_date = "FOMC", fomc_d
+        elif d_nfp <= d_opex:
+            ev_type, ev_date = "NFP", nfp_d
+        else:
+            ev_type, ev_date = "OPEX", opex_d
+
+        score = 0
         reasons = []
 
+        # RV 压缩
         if rv < rv_threshold:
+            score += 2
             reasons.append(f"RV={rv:.1f}%<{rv_threshold}%")
-        if d_any <= event_days:
-            reasons.append(f"距{ev_type} {d_any}天")
+
+        # RV 下降
         if rv_drop > rv_drop_pct:
+            score += 1
             reasons.append(f"RV降{rv_drop:.0f}%")
 
-        # 需要至少2个条件满足
-        if len(reasons) >= 2:
-            signal = True
+        # 事件接近 (按权重)
+        if d_fomc <= event_days:
+            score += EVENT_WEIGHT["FOMC"]
+            reasons.append(f"距FOMC {d_fomc}天")
+        if d_nfp <= event_days:
+            score += EVENT_WEIGHT["NFP"]
+            reasons.append(f"距NFP {d_nfp}天")
+        if d_opex <= event_days:
+            score += EVENT_WEIGHT["OPEX"]
+            reasons.append(f"距OPEX {d_opex}天")
+
+        # 硬门槛: RV 太高 → 成本太高, 不做
+        if rv > rv_abs_max:
+            signal = False
+            if reasons:
+                reasons.append(f"但RV={rv:.0f}%>阈值{rv_abs_max}%,成本过高")
+        else:
+            signal = score >= 3
 
         records.append({
             "straddle_signal": signal,
             "straddle_reason": " + ".join(reasons) if signal else "",
+            "straddle_score": score,
             "rv": rv,
             "days_to_event": d_any,
             "next_event": f"{ev_type} {ev_date.strftime('%m/%d')}" if ev_date else "",
