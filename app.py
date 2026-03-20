@@ -1231,6 +1231,40 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     else:
         st.info("近3个月无交易")
 
+    # ── Straddle 回测 ──
+    st.divider()
+    st.subheader("Straddle 信号回测 (做多波动率)")
+    from core.events import backtest_straddle
+    straddle_start = pd.Timestamp(today_sgt) - timedelta(days=180)
+    straddle_dates = close_d.index[close_d.index >= straddle_start]
+    straddle_trades = backtest_straddle(
+        close_d, high_d, low_d, rv_s, straddle_dates)
+
+    if straddle_trades:
+        sdf = pd.DataFrame(straddle_trades)
+        s_win = (sdf["pnl_pct"] > 0).sum()
+        s_n = len(sdf)
+        st.markdown(f"**{s_n}次 | 胜率 {s_win}/{s_n} ({s_win/s_n:.0%}) | "
+                    f"均盈亏 {sdf['pnl_pct'].mean():+.1f}%**")
+        srecs = []
+        for _, t in sdf.iterrows():
+            result = "大赚" if t["pnl_pct"] > 2 else (
+                "小赚" if t["pnl_pct"] > 0 else (
+                    "持平" if t["pnl_pct"] > -1 else "亏损"))
+            srecs.append({
+                "入场": t["entry_date"].strftime("%m/%d"),
+                "GLD": f"${t['entry_price']:.1f}",
+                "RV": f"{t['rv']:.1f}%",
+                "成本": f"{t['cost_pct']:.1f}%",
+                "5天波动": f"{t['max_move']:.1f}%({t['direction']})",
+                "盈亏": f"{t['pnl_pct']:+.1f}%",
+                "结果": result,
+                "触发": t["reason"],
+            })
+        st.dataframe(pd.DataFrame(srecs), use_container_width=True, hide_index=True)
+    else:
+        st.info("近6个月无 Straddle 信号")
+
     # ── 模型信息 ──
     with st.expander("模型信息"):
         from core.signals_v2 import EXIT_TIMEFRAME, PULLBACK_GAIN, PULLBACK_DD

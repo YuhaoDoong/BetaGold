@@ -148,6 +148,10 @@ STRADDLE_EVENT_DAYS = 3        # 距事件日 <= N 天
 STRADDLE_RV_DROP_PCT = 30.0    # RV 相对近期下降 > N%
 
 
+STRADDLE_HOLD_DAYS = 5     # 持仓天数
+STRADDLE_WIN_MOVE = 0      # 波动 > 成本即为盈利 (0 = 自动用成本)
+
+
 def detect_straddle_signal(rv_series, dates_index,
                             rv_threshold=STRADDLE_RV_THRESHOLD,
                             event_days=STRADDLE_EVENT_DAYS,
@@ -194,3 +198,71 @@ def detect_straddle_signal(rv_series, dates_index,
         })
 
     return pd.DataFrame(records, index=dates_index)
+
+
+def backtest_straddle(close, high, low, rv_series, dates_index,
+                       hold_days=STRADDLE_HOLD_DAYS, **kwargs):
+    """Straddle 信号回测.
+
+    成本估算: price × RV/100 × sqrt(hold_days/252)
+    盈利: max(上涨幅度, 下跌幅度) - 成本
+    胜率: 波动 > 成本 即为胜
+
+    Returns: list of trade dicts
+    """
+    import numpy as np
+
+    straddle = detect_straddle_signal(rv_series, dates_index, **kwargs)
+    signals = straddle[straddle["straddle_signal"]]
+
+    # 去重: 连续信号只取第一天
+    entries = []
+    prev = None
+    for d in signals.index:
+        if prev is None or (d - prev).days > 3:
+            entries.append(d)
+        prev = d
+
+    sqrt_h252 = np.sqrt(hold_days / 252)
+    trades = []
+
+    for d in entries:
+        c = close.get(d, 0)
+        if c == 0:
+            continue
+        rv = rv_series.get(d, 20)
+        reason = straddle.loc[d, "straddle_reason"]
+        next_event = straddle.loc[d, "next_event"]
+
+        cost_pct = rv / 100 * sqrt_h252 * 100
+
+        loc = close.index.get_loc(d)
+        if loc + hold_days >= len(close):
+            end_loc = len(close) - 1
+            partial = True
+        else:
+            end_loc = loc + hold_days
+            partial = False
+
+        window_high = high.iloc[loc + 1:end_loc + 1].max()
+        window_low = low.iloc[loc + 1:end_loc + 1].min()
+        exit_date = close.index[end_loc]
+
+        move_up = (window_high / c - 1) * 100
+        move_down = (1 - window_low / c) * 100
+        max_move = max(move_up, move_down)
+
+        pnl_pct = max_move - cost_pct
+        direction = "上涨" if move_up > move_down else "下跌"
+
+        trades.append({
+            "entry_date": d, "exit_date": exit_date,
+            "entry_price": c, "rv": rv,
+            "cost_pct": cost_pct,
+            "max_move": max_move, "direction": direction,
+            "pnl_pct": pnl_pct,
+            "reason": reason, "next_event": next_event,
+            "partial": partial,
+        })
+
+    return trades
