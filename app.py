@@ -1202,91 +1202,62 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             })
         st.dataframe(pd.DataFrame(recs), use_container_width=True, hide_index=True)
 
-    # ── 12h 止盈回测 ──
+    # ── 统一策略回测 ──
     st.divider()
-    st.subheader("近期交易回测 (12h止盈)")
-    trades = run_backtest(
-        close_d, high_d, low_d, upper_band, lower_band,
-        regime, rv_pctile, gld_1h=gld_1h,
-        start_date=pd.Timestamp(today_sgt) - timedelta(days=90))
-    if trades:
-        # 计算期权盈亏
-        from core.options_pnl import compute_options_pnl
-        _all_snaps = load_all_eod_snapshots(load_config())
-        trades_with_opt = compute_options_pnl(trades, _all_snaps, close_d)
+    st.subheader("统一策略回测 (方向性 + Straddle + 退出)")
 
-        tdf = pd.DataFrame(trades_with_opt)
-        total_ret = ((1 + tdf["gain"] / 100).prod() - 1) * 100
-        wr = (tdf["gain"] > 0).mean()
-        st.markdown(f"**{len(trades)}笔 | 胜率{wr:.0%} | 累计{total_ret:+.1f}% (金价) | "
-                    f"均持仓{tdf['hold_days'].mean():.1f}d**")
-        trecs = []
-        for _, t in tdf.iterrows():
-            opt_str = f"{t['opt_pnl_pct']:+.0f}%({t['opt_source']})" \
-                if pd.notna(t.get("opt_pnl_pct")) else "—"
-            trecs.append({
-                "入场": t["entry_date"].strftime("%m/%d"),
-                "类型": t["type"],
-                "入场价": f"${t['entry_price']:.1f}",
-                "出场": t["exit_date"].strftime("%m/%d"),
-                "退出": t["exit_type"],
-                "金价收益": f"{t['gain']:+.1f}%",
-                "期权收益": opt_str,
-                "持仓": f"{t['hold_days']}d",
-            })
-        st.dataframe(pd.DataFrame(trecs), use_container_width=True, hide_index=True)
-    else:
-        st.info("近3个月无交易")
+    from core.strategy_selector import build_unified_signals, compute_unified_stats
+    from core.events import detect_straddle_signal as _detect_straddle
+    _uni_start = pd.Timestamp(today_sgt) - timedelta(days=180)
+    _uni_dates = features.index[features.index >= _uni_start]
+    _straddle_full = _detect_straddle(rv_s, _uni_dates)
+    _uni = build_unified_signals(sig_df, _straddle_full, close_d, high_d, low_d)
+    _uni_stats = compute_unified_stats(_uni)
 
-    # ── Straddle 回测 ──
-    st.divider()
-    st.subheader("Straddle 信号回测 (做多波动率)")
-    from core.events import backtest_straddle
-    straddle_start = pd.Timestamp(today_sgt) - timedelta(days=180)
-    straddle_dates = close_d.index[close_d.index >= straddle_start]
-    straddle_trades = backtest_straddle(
-        close_d, high_d, low_d, rv_s, straddle_dates)
+    if _uni_stats.get("total", 0) > 0:
+        st.markdown(f"**统一胜率: {_uni_stats['wins']}/{_uni_stats['total']} "
+                    f"({_uni_stats['win_rate']:.0%})**")
 
-    if straddle_trades:
-        # 计算期权实际成本
-        from core.options_pnl import compute_straddle_pnl
-        _all_snaps2 = load_all_eod_snapshots(load_config())
-        straddle_with_opt = compute_straddle_pnl(straddle_trades, _all_snaps2, close_d)
+        # 按策略分类展示
+        cols_stat = st.columns(len(_uni_stats.get("by_type", {})))
+        for i, (stype, s) in enumerate(_uni_stats.get("by_type", {}).items()):
+            with cols_stat[i]:
+                st.metric(stype, f"{s['win']}/{s['n']} ({s['wr']:.0%})")
 
-        sdf = pd.DataFrame(straddle_with_opt)
-        s_win = (sdf["pnl_pct"] > 0).sum()
-        s_n = len(sdf)
-        st.markdown(f"**{s_n}次 | 胜率 {s_win}/{s_n} ({s_win/s_n:.0%}) | "
-                    f"均盈亏(估算) {sdf['pnl_pct'].mean():+.1f}%**")
-        srecs = []
-        for _, t in sdf.iterrows():
-            result = "大赚" if t["pnl_pct"] > 2 else (
-                "小赚" if t["pnl_pct"] > 0 else (
-                    "持平" if t["pnl_pct"] > -1 else "亏损"))
-            # 期权实际成本
-            if pd.notna(t.get("opt_cost_pct")):
-                opt_cost = f"{t['opt_cost_pct']:.1f}%"
-                opt_pnl = f"{t['opt_pnl_pct']:+.1f}%"
-                opt_src = t.get("opt_source", "")
+        # 去重展示信号表
+        _prev = None
+        _urecs = []
+        for d, r in _uni.iterrows():
+            if r["chosen"] == "EXIT":
+                show = True; _prev = None
+            elif _prev is None or (d - _prev).days > 3:
+                show = True; _prev = d
             else:
-                opt_cost = "—"
-                opt_pnl = "—"
-                opt_src = ""
-            srecs.append({
-                "入场": t["entry_date"].strftime("%m/%d"),
-                "GLD": f"${t['entry_price']:.1f}",
-                "RV": f"{t['rv']:.1f}%",
-                "估算成本": f"{t['cost_pct']:.1f}%",
-                "实际成本": opt_cost,
-                "5天波动": f"{t['max_move']:.1f}%({t['direction']})",
-                "估算盈亏": f"{t['pnl_pct']:+.1f}%",
-                "期权盈亏": opt_pnl,
-                "结果": result,
+                show = False
+            if not show:
+                continue
+
+            w = r["win"]
+            win_str = "✓" if w is True or w == True else (
+                "✗" if w is False or w == False else "—")
+            overlap = "⚡" if r["dir_signal"] and r["straddle_signal"] else ""
+            ret = f"{r['ret_5d']:+.1f}%" if r["ret_5d"] is not None and \
+                not pd.isna(r["ret_5d"]) else "—"
+            move = f"{r['max_move_5d']:.1f}%" if r["max_move_5d"] is not None and \
+                not pd.isna(r["max_move_5d"]) else "—"
+
+            _urecs.append({
+                "日期": d.strftime("%m/%d"),
+                "GLD": f"${r['close']:.0f}",
+                "推荐策略": f"{overlap}{r['chosen']}",
+                "5天涨跌": ret,
+                "5天波动": move,
+                "结果": win_str,
+                "原因": r["chosen_reason"],
             })
-        st.dataframe(pd.DataFrame(srecs), use_container_width=True, hide_index=True)
-        st.caption("估算成本: RV×√(5/252)×price | 实际成本: EOD快照 ATM Call+Put mid")
-    else:
-        st.info("近6个月无 Straddle 信号")
+
+        st.dataframe(pd.DataFrame(_urecs), use_container_width=True, hide_index=True)
+        st.caption("⚡=方向性+Straddle重叠 | 策略选择: EXIT优先 > Straddle(高分) > 方向性")
 
     # ── 模型信息 ──
     with st.expander("模型信息"):
