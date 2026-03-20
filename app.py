@@ -1016,42 +1016,65 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         ax.plot(xi_arr(cidx), bp030_line.values, color="#2196F3", lw=0.8, ls="--", alpha=0.5)
         ax.plot(xi_arr(cidx), bp090_line.values, color="#F44336", lw=0.8, ls="--", alpha=0.5)
 
-    # 信号标注 (每天一个标记, 在触发价位上)
-    buy_days = sig_viz[sig_viz["buy_signal"]]
-    exit_days = sig_viz[sig_viz["exit_signal"]]
+    # 统一信号标注 (每天只标一个最优推荐)
+    from core.events import get_all_events, detect_straddle_signal as _dst
+    from core.strategy_selector import build_unified_signals as _bus
 
-    for d, r in buy_days.iterrows():
+    _straddle_viz = _dst(rv_s, viz_dates)
+    _unified_viz = _bus(sig_df, _straddle_viz, close_d, high_d, low_d)
+
+    # 去重: 连续信号只标第一天
+    _prev_sig = None
+    _sig_colors = {
+        "BUY CALL": ("#2196F3", "^"), "SELL PUT": ("#FF9800", "^"),
+        "EXIT": ("#F44336", "v"), "STRADDLE": ("#FFD700", "*"),
+    }
+    for d, r in _unified_viz.iterrows():
         if xi(d) is None:
             continue
-        color = "#2196F3" if r["buy_type"] == "BUY CALL" else "#FF9800"
-        ax.scatter([xi(d)], [r["bp030_price"]], marker="^", s=120, color=color,
+        chosen = r["chosen"]
+        if chosen == "EXIT":
+            _prev_sig = None
+        elif _prev_sig is not None and (d - _prev_sig).days <= 2:
+            continue  # 跳过连续信号
+        else:
+            _prev_sig = d
+
+        color, marker = _sig_colors.get(chosen, ("gray", "o"))
+        # 价位: 买入在 bp030, 退出在 bp090, Straddle 在 close
+        if d in sig_df.index:
+            sr = sig_df.loc[d]
+            if "CALL" in chosen or "PUT" in chosen:
+                price = sr.get("bp030_price", close_d.get(d, 0))
+            elif chosen == "EXIT":
+                price = sr.get("bp090_price", close_d.get(d, 0))
+            else:
+                price = close_d.get(d, 0)
+        else:
+            price = close_d.get(d, 0)
+
+        size = 200 if chosen == "STRADDLE" else (120 if chosen != "EXIT" else 100)
+        ax.scatter([xi(d)], [price], marker=marker, s=size, color=color,
                    edgecolors="black", lw=0.7, zorder=6)
 
-    for d, r in exit_days.iterrows():
-        if xi(d) is None:
-            continue
-        ax.scatter([xi(d)], [r["bp090_price"]], marker="v", s=100,
-                   color="#F44336", edgecolors="black", lw=0.7, zorder=5)
-
-    # 回测止盈标注 (淡色, 每天一个)
+    # 回测止盈标注 (淡色)
     tdf_viz = pd.DataFrame(trades) if trades else pd.DataFrame()
     if len(tdf_viz) > 0:
         for _, t in tdf_viz.iterrows():
             xd = t["exit_date"]
             if xd not in d2i or t["exit_type"] == "BandExit":
                 continue
-            cx = {"Pullback": "#FF6600", "MACD": "#9C27B0", "Timeout": "gray"}
-            mk = {"Pullback": "s", "MACD": "D", "Timeout": "X"}
+            cx = {"Pullback":"#FF6600","MACD":"#9C27B0","StopLoss":"#B71C1C","Timeout":"gray"}
+            mk = {"Pullback":"s","MACD":"D","StopLoss":"X","Timeout":"X"}
             ax.scatter([xi(xd)], [t["exit_price"]],
-                       marker=mk.get(t["exit_type"], "o"), s=80,
-                       color=cx.get(t["exit_type"], "gray"),
+                       marker=mk.get(t["exit_type"],"o"), s=80,
+                       color=cx.get(t["exit_type"],"gray"),
                        edgecolors="black", lw=0.5, alpha=0.5, zorder=4)
             ax.annotate(f"{t['gain']:+.1f}%", xy=(xi(xd), t["exit_price"]),
                         xytext=(3, 6), textcoords="offset points", fontsize=6,
-                        color=cx.get(t["exit_type"], "gray"), alpha=0.7)
+                        color=cx.get(t["exit_type"],"gray"), alpha=0.7)
 
     # 事件日期标注 (FOMC/OPEX/NFP)
-    from core.events import get_all_events, detect_straddle_signal
     events_in_range = get_all_events(
         viz_dates[0].strftime("%Y-%m-%d"), viz_dates[-1].strftime("%Y-%m-%d"))
     ev_colors = {"FOMC": "#E91E63", "OPEX": "#FF9800", "NFP": "#3F51B5"}
@@ -1065,34 +1088,16 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                         fontsize=7, color=ev_colors.get(ev_type, "gray"),
                         fontweight="bold", ha="center", va="top")
 
-    # Straddle 信号 (做多波动率)
-    rv_col = "rv_10d"
-    if rv_col in features.columns:
-        rv_s = features[rv_col]
-    else:
-        from core.signals import compute_rv_pctile
-        rv_s = pd.Series(20, index=viz_dates)
-
-    straddle_df = detect_straddle_signal(rv_s, viz_dates)
-    straddle_days = straddle_df[straddle_df["straddle_signal"]]
-    for d, r in straddle_days.iterrows():
-        sd_xi = xi(d)
-        if sd_xi is not None:
-            cl_val = close_d.get(d, 0)
-            ax.scatter([sd_xi], [cl_val], marker="*", s=200,
-                       color="#FFD700", edgecolors="#FF6F00",
-                       lw=0.8, zorder=7, alpha=0.8)
-
     legend_el = [
-        Line2D([0],[0], color="k", lw=1.5, label="GLD Close"),
+        Line2D([0],[0], color="k", lw=1.5, label="GLD"),
         Line2D([0],[0], color="green", lw=1, alpha=0.5, label="Band"),
-        Line2D([0],[0], color="#2196F3", lw=0.8, ls="--", label="Buy bp=0.30"),
-        Line2D([0],[0], color="#F44336", lw=0.8, ls="--", label="Exit bp=0.90"),
+        Line2D([0],[0], color="#2196F3", lw=0.8, ls="--", label="Buy线"),
+        Line2D([0],[0], color="#F44336", lw=0.8, ls="--", label="Exit线"),
         Line2D([0],[0], marker="^", color="w", markerfacecolor="#2196F3", markersize=9, label="BUY CALL"),
         Line2D([0],[0], marker="^", color="w", markerfacecolor="#FF9800", markersize=9, label="SELL PUT"),
-        Line2D([0],[0], marker="v", color="w", markerfacecolor="#F44336", markersize=9, label="BandExit"),
-        Line2D([0],[0], marker="s", color="w", markerfacecolor="#FF6600", markersize=8, alpha=0.5, label="Pullback"),
-        Line2D([0],[0], marker="*", color="#FFD700", markersize=10, label="Straddle"),
+        Line2D([0],[0], marker="v", color="w", markerfacecolor="#F44336", markersize=9, label="EXIT"),
+        Line2D([0],[0], marker="*", color="#FFD700", markersize=12, label="STRADDLE"),
+        Line2D([0],[0], marker="s", color="w", markerfacecolor="#FF6600", markersize=7, alpha=0.5, label="止盈"),
         Line2D([0],[0], color="#E91E63", lw=1, ls=":", label="FOMC"),
         Line2D([0],[0], color="#FF9800", lw=1, ls=":", label="OPEX"),
     ]
@@ -1184,23 +1189,39 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     else:
         st.caption("无近期买入信号")
 
-    # ── 信号历史表 ──
+    # ── 近期信号 (统一策略) ──
     st.divider()
-    st.subheader("近期信号")
-    sig_recent = sig_df[sig_df["signal_text"] != ""].tail(15)
-    if len(sig_recent) > 0:
-        recs = []
-        for d, r in sig_recent.iterrows():
-            recs.append({
-                "日期": d.strftime("%Y-%m-%d"),
-                "GLD": f"${r['close']:.2f}",
-                "H/L": f"${r['low']:.1f}~${r['high']:.1f}",
-                "bp(L/C/H)": f"{r['bp_low']:.2f}/{r['bp_close']:.2f}/{r['bp_high']:.2f}",
-                "买入价": f"${r['bp030_price']:.2f}",
-                "退出价": f"${r['bp090_price']:.2f}",
-                "信号": r["signal_text"],
-            })
-        st.dataframe(pd.DataFrame(recs), use_container_width=True, hide_index=True)
+    st.subheader("近期信号 (择优推荐)")
+
+    # 去重展示统一信号
+    _prev_d = None
+    _sig_recs = []
+    for d, r in _unified_viz.iterrows():
+        if r["chosen"] == "EXIT":
+            _prev_d = None
+        elif _prev_d is not None and (d - _prev_d).days <= 2:
+            continue
+        else:
+            _prev_d = d
+
+        w = r["win"]
+        win_str = "✓" if w is True or w == True else (
+            "✗" if w is False or w == False else "—")
+        ret = f"{r['ret_5d']:+.1f}%" if r["ret_5d"] is not None and \
+            not pd.isna(r["ret_5d"]) else "—"
+
+        _sig_recs.append({
+            "日期": d.strftime("%m/%d"),
+            "GLD": f"${r['close']:.0f}",
+            "推荐": r["chosen"],
+            "原因": r["chosen_reason"],
+            "5天涨跌": ret,
+            "结果": win_str,
+        })
+
+    if _sig_recs:
+        st.dataframe(pd.DataFrame(_sig_recs[-15:]),
+                     use_container_width=True, hide_index=True)
 
     # ── 统一策略回测 ──
     st.divider()
