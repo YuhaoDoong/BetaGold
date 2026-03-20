@@ -1210,21 +1210,28 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         regime, rv_pctile, gld_1h=gld_1h,
         start_date=pd.Timestamp(today_sgt) - timedelta(days=90))
     if trades:
-        tdf = pd.DataFrame(trades)
+        # 计算期权盈亏
+        from core.options_pnl import compute_options_pnl
+        _all_snaps = load_all_eod_snapshots(load_config())
+        trades_with_opt = compute_options_pnl(trades, _all_snaps, close_d)
+
+        tdf = pd.DataFrame(trades_with_opt)
         total_ret = ((1 + tdf["gain"] / 100).prod() - 1) * 100
         wr = (tdf["gain"] > 0).mean()
-        st.markdown(f"**{len(trades)}笔 | 胜率{wr:.0%} | 累计{total_ret:+.1f}% | "
+        st.markdown(f"**{len(trades)}笔 | 胜率{wr:.0%} | 累计{total_ret:+.1f}% (金价) | "
                     f"均持仓{tdf['hold_days'].mean():.1f}d**")
         trecs = []
         for _, t in tdf.iterrows():
+            opt_str = f"{t['opt_pnl_pct']:+.0f}%({t['opt_source']})" \
+                if pd.notna(t.get("opt_pnl_pct")) else "—"
             trecs.append({
                 "入场": t["entry_date"].strftime("%m/%d"),
                 "类型": t["type"],
                 "入场价": f"${t['entry_price']:.1f}",
                 "出场": t["exit_date"].strftime("%m/%d"),
                 "退出": t["exit_type"],
-                "出场价": f"${t['exit_price']:.1f}",
-                "收益": f"{t['gain']:+.1f}%",
+                "金价收益": f"{t['gain']:+.1f}%",
+                "期权收益": opt_str,
                 "持仓": f"{t['hold_days']}d",
             })
         st.dataframe(pd.DataFrame(trecs), use_container_width=True, hide_index=True)
@@ -1241,27 +1248,43 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         close_d, high_d, low_d, rv_s, straddle_dates)
 
     if straddle_trades:
-        sdf = pd.DataFrame(straddle_trades)
+        # 计算期权实际成本
+        from core.options_pnl import compute_straddle_pnl
+        _all_snaps2 = load_all_eod_snapshots(load_config())
+        straddle_with_opt = compute_straddle_pnl(straddle_trades, _all_snaps2, close_d)
+
+        sdf = pd.DataFrame(straddle_with_opt)
         s_win = (sdf["pnl_pct"] > 0).sum()
         s_n = len(sdf)
         st.markdown(f"**{s_n}次 | 胜率 {s_win}/{s_n} ({s_win/s_n:.0%}) | "
-                    f"均盈亏 {sdf['pnl_pct'].mean():+.1f}%**")
+                    f"均盈亏(估算) {sdf['pnl_pct'].mean():+.1f}%**")
         srecs = []
         for _, t in sdf.iterrows():
             result = "大赚" if t["pnl_pct"] > 2 else (
                 "小赚" if t["pnl_pct"] > 0 else (
                     "持平" if t["pnl_pct"] > -1 else "亏损"))
+            # 期权实际成本
+            if pd.notna(t.get("opt_cost_pct")):
+                opt_cost = f"{t['opt_cost_pct']:.1f}%"
+                opt_pnl = f"{t['opt_pnl_pct']:+.1f}%"
+                opt_src = t.get("opt_source", "")
+            else:
+                opt_cost = "—"
+                opt_pnl = "—"
+                opt_src = ""
             srecs.append({
                 "入场": t["entry_date"].strftime("%m/%d"),
                 "GLD": f"${t['entry_price']:.1f}",
                 "RV": f"{t['rv']:.1f}%",
-                "成本": f"{t['cost_pct']:.1f}%",
+                "估算成本": f"{t['cost_pct']:.1f}%",
+                "实际成本": opt_cost,
                 "5天波动": f"{t['max_move']:.1f}%({t['direction']})",
-                "盈亏": f"{t['pnl_pct']:+.1f}%",
+                "估算盈亏": f"{t['pnl_pct']:+.1f}%",
+                "期权盈亏": opt_pnl,
                 "结果": result,
-                "触发": t["reason"],
             })
         st.dataframe(pd.DataFrame(srecs), use_container_width=True, hide_index=True)
+        st.caption("估算成本: RV×√(5/252)×price | 实际成本: EOD快照 ATM Call+Put mid")
     else:
         st.info("近6个月无 Straddle 信号")
 
