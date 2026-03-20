@@ -923,6 +923,55 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         else:
             st.caption(f"实时数据未获取 | GLD 收盘 ${last_close:.2f} ({last_date.date()})")
 
+    # ── 市场分析 ──
+    st.divider()
+    from core.events import days_to_next_event, detect_straddle_signal
+    from core.data import load_features
+    features = load_features(load_config())
+    features = features.reindex(close_d.index).ffill()
+
+    # 近期事件
+    d_fomc, _, fomc_d = days_to_next_event(last_date, "FOMC")
+    d_opex, _, opex_d = days_to_next_event(last_date, "OPEX")
+    d_nfp, _, nfp_d = days_to_next_event(last_date, "NFP")
+
+    # 宏观指标
+    rv = features["rv_10d"].get(last_date, 0) if "rv_10d" in features.columns else 0
+    dxy = features["dxy_ret_5d"].get(last_date, 0) if "dxy_ret_5d" in features.columns else 0
+    vix = features["vix_level"].get(last_date, 0) if "vix_level" in features.columns else 0
+    real_y = features["real_yield_10y"].get(last_date, 0) if "real_yield_10y" in features.columns else 0
+    fed_r = features["fed_funds_rate"].get(last_date, 0) if "fed_funds_rate" in features.columns else 0
+
+    # Straddle 检测
+    rv_s = features["rv_10d"] if "rv_10d" in features.columns else pd.Series(20, index=features.index)
+    straddle_today = detect_straddle_signal(rv_s, pd.DatetimeIndex([last_date]))
+    is_straddle = straddle_today["straddle_signal"].iloc[0] if len(straddle_today) > 0 else False
+    straddle_reason = straddle_today["straddle_reason"].iloc[0] if is_straddle else ""
+
+    with st.expander("市场环境分析", expanded=True):
+        col_ev, col_macro = st.columns(2)
+        with col_ev:
+            st.markdown("**近期事件**")
+            fomc_str = f"**{fomc_d.strftime('%m/%d')}** ({d_fomc}天)" if fomc_d else "—"
+            opex_str = f"**{opex_d.strftime('%m/%d')}** ({d_opex}天)" if opex_d else "—"
+            nfp_str = f"**{nfp_d.strftime('%m/%d')}** ({d_nfp}天)" if nfp_d else "—"
+            st.markdown(f"- FOMC: {fomc_str}\n- OPEX: {opex_str}\n- 非农: {nfp_str}")
+
+            if is_straddle:
+                st.warning(f"Straddle 信号: {straddle_reason}")
+            elif min(d_fomc, d_opex) <= 3:
+                st.info(f"临近事件日 — 注意波动率变化")
+
+        with col_macro:
+            st.markdown("**宏观指标**")
+            st.markdown(f"""
+- RV(10d): **{rv:.1f}%** {'(低位)' if rv < 20 else '(正常)' if rv < 35 else '(高位)'}
+- VIX: **{vix:.1f}**
+- DXY 5d: **{dxy*100:+.2f}%** {'(美元走强→金价承压)' if dxy > 0.005 else '(美元走弱→金价利好)' if dxy < -0.005 else '(中性)'}
+- 实际利率: **{real_y:.2f}%** {'(偏高→压制金价)' if real_y > 2.0 else ''}
+- 联邦基金: **{fed_r:.2f}%**
+""")
+
     # ── 信号历史图 ──
     st.divider()
     lookback_days = st.sidebar.slider("回看天数", 30, 180, 65)
@@ -1001,6 +1050,39 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                         xytext=(3, 6), textcoords="offset points", fontsize=6,
                         color=cx.get(t["exit_type"], "gray"), alpha=0.7)
 
+    # 事件日期标注 (FOMC/OPEX/NFP)
+    from core.events import get_all_events, detect_straddle_signal
+    events_in_range = get_all_events(
+        viz_dates[0].strftime("%Y-%m-%d"), viz_dates[-1].strftime("%Y-%m-%d"))
+    ev_colors = {"FOMC": "#E91E63", "OPEX": "#FF9800", "NFP": "#3F51B5"}
+    for ev_d, ev_type, ev_label in events_in_range:
+        ev_xi = xi(ev_d)
+        if ev_xi is not None:
+            ax.axvline(ev_xi, color=ev_colors.get(ev_type, "gray"),
+                       lw=1.2, ls=":", alpha=0.5, zorder=1)
+            ax.annotate(ev_label, xy=(ev_xi, ax.get_ylim()[1]),
+                        xytext=(0, -8), textcoords="offset points",
+                        fontsize=7, color=ev_colors.get(ev_type, "gray"),
+                        fontweight="bold", ha="center", va="top")
+
+    # Straddle 信号 (做多波动率)
+    rv_col = "rv_10d"
+    if rv_col in features.columns:
+        rv_s = features[rv_col]
+    else:
+        from core.signals import compute_rv_pctile
+        rv_s = pd.Series(20, index=viz_dates)
+
+    straddle_df = detect_straddle_signal(rv_s, viz_dates)
+    straddle_days = straddle_df[straddle_df["straddle_signal"]]
+    for d, r in straddle_days.iterrows():
+        sd_xi = xi(d)
+        if sd_xi is not None:
+            cl_val = close_d.get(d, 0)
+            ax.scatter([sd_xi], [cl_val], marker="*", s=200,
+                       color="#FFD700", edgecolors="#FF6F00",
+                       lw=0.8, zorder=7, alpha=0.8)
+
     legend_el = [
         Line2D([0],[0], color="k", lw=1.5, label="GLD Close"),
         Line2D([0],[0], color="green", lw=1, alpha=0.5, label="Band"),
@@ -1010,10 +1092,12 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         Line2D([0],[0], marker="^", color="w", markerfacecolor="#FF9800", markersize=9, label="SELL PUT"),
         Line2D([0],[0], marker="v", color="w", markerfacecolor="#F44336", markersize=9, label="BandExit"),
         Line2D([0],[0], marker="s", color="w", markerfacecolor="#FF6600", markersize=8, alpha=0.5, label="Pullback"),
-        Line2D([0],[0], marker="D", color="w", markerfacecolor="#9C27B0", markersize=8, alpha=0.5, label="MACD止盈"),
+        Line2D([0],[0], marker="*", color="#FFD700", markersize=10, label="Straddle"),
+        Line2D([0],[0], color="#E91E63", lw=1, ls=":", label="FOMC"),
+        Line2D([0],[0], color="#FF9800", lw=1, ls=":", label="OPEX"),
     ]
-    ax.legend(handles=legend_el, loc="upper left", fontsize=6, ncol=5)
-    ax.set_title(f"v2.2 盘中信号 (v1.0 Band + H/L入场 + {EXIT_TIMEFRAME}止盈) | "
+    ax.legend(handles=legend_el, loc="upper left", fontsize=6, ncol=6)
+    ax.set_title(f"盘中信号 (Band + H/L入场 + {EXIT_TIMEFRAME}止盈 + 事件日) | "
                  f"数据至 {last_date.date()} | Regime: {last_regime}",
                  fontsize=12, fontweight="bold")
     ax.set_ylabel("GLD ($)")

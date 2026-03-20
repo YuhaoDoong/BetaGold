@@ -1,0 +1,196 @@
+"""事件日历 — FOMC/OPEX/期货交割日/非农等关键日期.
+
+用于:
+  1. 图表标注
+  2. 波动率策略信号 (Straddle)
+  3. 临近事件日收紧买入阈值
+"""
+
+import pandas as pd
+from datetime import date, timedelta
+
+# ══════════════════════════════════════════════════════════
+# 2026 FOMC 日期 (每次会议2天, 第2天发声明)
+# 来源: https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm
+# ══════════════════════════════════════════════════════════
+FOMC_2026 = [
+    ("2026-01-28", "2026-01-29"),
+    ("2026-03-17", "2026-03-18"),
+    ("2026-05-05", "2026-05-06"),
+    ("2026-06-16", "2026-06-17"),
+    ("2026-07-28", "2026-07-29"),
+    ("2026-09-15", "2026-09-16"),
+    ("2026-10-27", "2026-10-28"),
+    ("2026-12-15", "2026-12-16"),
+]
+
+# 2025 补充 (用于回测)
+FOMC_2025 = [
+    ("2025-01-28", "2025-01-29"),
+    ("2025-03-18", "2025-03-19"),
+    ("2025-05-06", "2025-05-07"),
+    ("2025-06-17", "2025-06-18"),
+    ("2025-07-29", "2025-07-30"),
+    ("2025-09-16", "2025-09-17"),
+    ("2025-10-28", "2025-10-29"),
+    ("2025-12-16", "2025-12-17"),
+]
+
+# GLD 月度 OPEX (每月第三个周五)
+def get_opex_dates(year):
+    """计算指定年份的月度 OPEX 日期 (每月第三个周五)."""
+    dates = []
+    for month in range(1, 13):
+        d = date(year, month, 1)
+        # 找第一个周五
+        while d.weekday() != 4:  # Friday
+            d += timedelta(days=1)
+        # 第三个周五
+        opex = d + timedelta(weeks=2)
+        dates.append(opex)
+    return dates
+
+OPEX_2025 = get_opex_dates(2025)
+OPEX_2026 = get_opex_dates(2026)
+
+# 非农就业 (每月第一个周五)
+def get_nfp_dates(year):
+    dates = []
+    for month in range(1, 13):
+        d = date(year, month, 1)
+        while d.weekday() != 4:
+            d += timedelta(days=1)
+        dates.append(d)
+    return dates
+
+NFP_2025 = get_nfp_dates(2025)
+NFP_2026 = get_nfp_dates(2026)
+
+
+def get_all_events(start_date=None, end_date=None):
+    """获取指定范围内的所有事件.
+
+    Returns: list of (date, event_type, label)
+    """
+    events = []
+
+    for y1, y2 in FOMC_2025 + FOMC_2026:
+        events.append((pd.Timestamp(y2), "FOMC", "FOMC"))
+
+    for d in OPEX_2025 + OPEX_2026:
+        events.append((pd.Timestamp(d), "OPEX", "OPEX"))
+
+    for d in NFP_2025 + NFP_2026:
+        events.append((pd.Timestamp(d), "NFP", "NFP"))
+
+    if start_date:
+        events = [(d, t, l) for d, t, l in events if d >= pd.Timestamp(start_date)]
+    if end_date:
+        events = [(d, t, l) for d, t, l in events if d <= pd.Timestamp(end_date)]
+
+    return sorted(events, key=lambda x: x[0])
+
+
+def days_to_next_event(current_date, event_type=None):
+    """距下一个事件的天数.
+
+    Args:
+        event_type: None=任意, "FOMC", "OPEX", "NFP"
+
+    Returns: (days, event_type, event_date) or (999, None, None)
+    """
+    events = get_all_events(start_date=current_date)
+    if event_type:
+        events = [(d, t, l) for d, t, l in events if t == event_type]
+
+    cd = pd.Timestamp(current_date)
+    for d, t, l in events:
+        diff = (d - cd).days
+        if diff >= 0:
+            return diff, t, d
+
+    return 999, None, None
+
+
+def compute_event_features(dates_index):
+    """为每个交易日计算事件特征.
+
+    Returns: DataFrame with columns:
+        days_to_fomc, days_to_opex, days_to_nfp, days_to_any_event,
+        is_fomc_week, is_opex_week
+    """
+    records = []
+    for d in dates_index:
+        d_fomc, _, _ = days_to_next_event(d, "FOMC")
+        d_opex, _, _ = days_to_next_event(d, "OPEX")
+        d_nfp, _, _ = days_to_next_event(d, "NFP")
+        d_any = min(d_fomc, d_opex, d_nfp)
+
+        records.append({
+            "days_to_fomc": d_fomc,
+            "days_to_opex": d_opex,
+            "days_to_nfp": d_nfp,
+            "days_to_any_event": d_any,
+            "is_fomc_week": 1 if d_fomc <= 5 else 0,
+            "is_opex_week": 1 if d_opex <= 5 else 0,
+        })
+
+    return pd.DataFrame(records, index=dates_index)
+
+
+# ══════════════════════════════════════════════════════════
+# Straddle 信号
+# ══════════════════════════════════════════════════════════
+
+# 参数
+STRADDLE_RV_THRESHOLD = 20.0   # RV 低于此值视为波动率压缩
+STRADDLE_EVENT_DAYS = 3        # 距事件日 <= N 天
+STRADDLE_RV_DROP_PCT = 30.0    # RV 相对近期下降 > N%
+
+
+def detect_straddle_signal(rv_series, dates_index,
+                            rv_threshold=STRADDLE_RV_THRESHOLD,
+                            event_days=STRADDLE_EVENT_DAYS,
+                            rv_drop_pct=STRADDLE_RV_DROP_PCT):
+    """检测 Straddle (做多波动率) 信号.
+
+    条件 (同时满足):
+      1. RV < rv_threshold (波动率低位)
+      2. 距下一个重要事件 <= event_days 天
+      3. RV 相对过去 20 天均值下降 > rv_drop_pct%
+
+    Returns: DataFrame with straddle_signal, straddle_reason
+    """
+    rv_ma20 = rv_series.rolling(20, min_periods=5).mean()
+
+    records = []
+    for d in dates_index:
+        rv = rv_series.get(d, 50)
+        rv_avg = rv_ma20.get(d, rv)
+        rv_drop = (rv_avg - rv) / rv_avg * 100 if rv_avg > 0 else 0
+
+        d_any, ev_type, ev_date = days_to_next_event(d)
+
+        signal = False
+        reasons = []
+
+        if rv < rv_threshold:
+            reasons.append(f"RV={rv:.1f}%<{rv_threshold}%")
+        if d_any <= event_days:
+            reasons.append(f"距{ev_type} {d_any}天")
+        if rv_drop > rv_drop_pct:
+            reasons.append(f"RV降{rv_drop:.0f}%")
+
+        # 需要至少2个条件满足
+        if len(reasons) >= 2:
+            signal = True
+
+        records.append({
+            "straddle_signal": signal,
+            "straddle_reason": " + ".join(reasons) if signal else "",
+            "rv": rv,
+            "days_to_event": d_any,
+            "next_event": f"{ev_type} {ev_date.strftime('%m/%d')}" if ev_date else "",
+        })
+
+    return pd.DataFrame(records, index=dates_index)
