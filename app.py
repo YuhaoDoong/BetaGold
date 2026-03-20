@@ -1161,39 +1161,44 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             _sig_now2 = _r2["buy_type"].replace(" ", "_") if _r2["buy_type"] else "BUY_CALL"
         if _r2["exit_signal"]:
             _sig_now2 = _sig_now2 or "EXIT"
+    # 检查统一策略中是否推荐 Straddle
+    _uni_today = _unified_viz.loc[last_date] if last_date in _unified_viz.index else None
+    _straddle_active2 = _uni_today is not None and _uni_today.get("chosen") == "STRADDLE"
+    _straddle_reason2 = _uni_today["chosen_reason"] if _straddle_active2 else ""
+    # 如果统一策略推荐 Straddle, 覆盖方向性信号
+    if _straddle_active2:
+        _sig_now2 = "STRADDLE"
     _render_options_section(_eod_opt2, _snap_opt2, last_close, eff_bp090,
                             oi_adj_bp090=oi_adj_bp090,
                             gc_gld_ratio=gc_gld_ratio,
-                            today_sgt=today_sgt, current_signal=_sig_now2)
+                            today_sgt=today_sgt, current_signal=_sig_now2,
+                            straddle_active=_straddle_active2,
+                            straddle_reason=_straddle_reason2,
+                            rv_val=rv)
 
-    # ── 止盈预测 ──
+    # ── 持仓/止盈管理 ──
     st.divider()
-    st.subheader("止盈预测")
+    st.subheader("持仓管理")
 
-    # 用回测结果判断是否已平仓 (包含 Pullback/MACD, 不只是 BandExit)
-    trade_exits = {}  # {entry_date: (exit_date, exit_type, gain)}
+    # 方向性交易止盈
+    trade_exits = {}
     for t in trades:
         trade_exits[t["entry_date"]] = (t["exit_date"], t["exit_type"], t["gain"])
 
-    buy_rows = sig_df[sig_df["buy_signal"]]
     tp_recs = []
 
+    # 方向性持仓
+    buy_rows = sig_df[sig_df["buy_signal"]]
     for buy_d in buy_rows.index[-5:][::-1]:
         br = buy_rows.loc[buy_d]
         entry_p = br["bp030_price"]
-
-        # 从入场到现在的峰值
         post = high_d[(high_d.index >= buy_d) & (high_d.index <= last_date)]
         pk = post.max() if len(post) > 0 else entry_p
         gain = (pk / entry_p - 1) * 100
         current_p = close_d.get(last_date, entry_p)
         current_gain = (current_p / entry_p - 1) * 100
-
-        # Pullback 止盈位
         pb_stop = pk * (1 - PULLBACK_DD / 100) if gain > PULLBACK_GAIN else 0
-        band_stop = eff_bp090
 
-        # 判断是否已平仓: 优先看回测, 其次看 BandExit 信号
         if buy_d in trade_exits:
             xd, xt, xg = trade_exits[buy_d]
             status = f"已{xt} {xd.strftime('%m/%d')} {xg:+.1f}%"
@@ -1201,20 +1206,51 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             status = "持仓中"
 
         tp_recs.append({
-            "买入日": buy_d.strftime("%m/%d"),
-            "类型": br["buy_type"],
-            "入场价": f"${entry_p:.1f}",
-            "峰值": f"${pk:.1f} ({gain:+.1f}%)",
-            "当前": f"${current_p:.1f} ({current_gain:+.1f}%)",
-            "Pullback止盈": f"${pb_stop:.1f}" if pb_stop > 0 else f"未达{PULLBACK_GAIN}%",
-            "BandExit": f"${band_stop:.1f}",
+            "日期": buy_d.strftime("%m/%d"),
+            "策略": br["buy_type"],
+            "入场": f"${entry_p:.1f}",
+            "当前盈亏": f"{current_gain:+.1f}%",
+            "止盈位": f"${pb_stop:.1f}" if pb_stop > 0 else f"Pullback未达",
+            "BandExit": f"${eff_bp090:.1f}",
+            "状态": status,
+        })
+
+    # Straddle 持仓 (从统一信号中找)
+    from core.events import days_to_next_event as _dte
+    for d, r in _unified_viz.iterrows():
+        if r["chosen"] != "STRADDLE":
+            continue
+        c = r["close"]
+        # Straddle 退出条件: 事件已过 or 持有>5天 or 波动已覆盖成本
+        days_held = (last_date - d).days
+        move_since = max(
+            (high_d[high_d.index >= d].max() / c - 1) * 100 if len(high_d[high_d.index >= d]) > 0 else 0,
+            (1 - low_d[low_d.index >= d].min() / c) * 100 if len(low_d[low_d.index >= d]) > 0 else 0
+        )
+        est_cost = rv_s.get(d, 20) / 100 * (5/252)**0.5 * 100
+        est_pnl = move_since - est_cost
+
+        if days_held > 5:
+            status = f"已超期({days_held}天)"
+        elif est_pnl > 2:
+            status = f"可止盈(波动{move_since:.1f}%>成本)"
+        else:
+            status = "持仓中"
+
+        tp_recs.append({
+            "日期": d.strftime("%m/%d"),
+            "策略": "STRADDLE",
+            "入场": f"${c:.1f}",
+            "当前盈亏": f"~{est_pnl:+.1f}%(估算)",
+            "止盈位": f"波动>{est_cost:.1f}%即盈利",
+            "BandExit": "事件结束后平仓",
             "状态": status,
         })
 
     if tp_recs:
         st.dataframe(pd.DataFrame(tp_recs), use_container_width=True, hide_index=True)
     else:
-        st.caption("无近期买入信号")
+        st.caption("无近期持仓")
 
     # ── 近期信号 (统一策略) ──
     st.divider()
@@ -1356,11 +1392,10 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
 # ══════════════════════════════════════════════════════════
 def _render_options_section(eod_df, snap_date, last_close, next_bp090,
                             oi_adj_bp090=0, gc_gld_ratio=None,
-                            today_sgt=None, current_signal=None):
-    """渲染期权策略推荐 (盘中信号 + 今日预测 共用).
-
-    始终显示 BUY CALL 和 SELL PUT 两种预判, 不等信号触发.
-    """
+                            today_sgt=None, current_signal=None,
+                            straddle_active=False, straddle_reason="",
+                            rv_val=0):
+    """渲染期权策略推荐 — 只推荐当日最优策略."""
     if eod_df is None:
         cfg = load_config()
         eod_df, snap_date = load_latest_eod_snapshot(cfg)
@@ -1375,45 +1410,70 @@ def _render_options_section(eod_df, snap_date, last_close, next_bp090,
     current_gld = _rt["gc_price"] / _gc_gld_r if _rt else last_close
     price_src = f"实时 GLD≈${current_gld:.1f}" if _rt else f"收盘 ${last_close:.2f}"
 
-    # 当前信号状态提示
+    st.caption(f"期权数据: EOD {snap_date} | {price_src} | 退出${eff_exit:.1f}")
+
+    # ── 根据当前信号推荐最优策略 ──
     if current_signal == "EXIT":
-        st.warning("EXIT 信号活跃 — 建议平仓现有头寸")
-    elif current_signal in ("BUY_CALL", "SELL_PUT"):
-        st.success(f"{current_signal.replace('_', ' ')} 信号活跃 — 以下策略可立即执行")
+        st.warning("**EXIT — 建议平仓**\n\n"
+                   "- 持有 Call → 市价平仓\n"
+                   "- 持有 Straddle → 如已盈利, 平仓锁利\n"
+                   "- 暂停新开仓")
+        return
+
+    if straddle_active:
+        # Straddle 推荐
+        st.success(f"**推荐: Straddle (做多波动率)**\n\n"
+                   f"触发: {straddle_reason}\n\n"
+                   f"操作: 买入 ATM Call + ATM Put (同行权价, 同到期日)\n"
+                   f"目标: 5天内波动 > 权利金成本\n"
+                   f"退出: 事件结束后 (FOMC声明/OPEX结算) 或持有5天")
+
+        # 显示 Straddle 成本
+        result_call = get_strategy_table("BUY_CALL", current_gld, eff_exit,
+                                          eod_df, use_live=True)
+        result_put = get_strategy_table("SELL_PUT", current_gld, eff_exit,
+                                         eod_df, use_live=True)
+        if result_call.get("single_leg"):
+            atm = [r for r in result_call["single_leg"] if "中性" in r.get("策略","")]
+            if atm:
+                st.markdown(f"ATM Call: {atm[0].get('合约','')} 成本{atm[0].get('成本','')}")
+        return
+
+    if current_signal in ("BUY_CALL", "SELL_PUT"):
+        result = get_strategy_table(current_signal, current_gld, eff_exit,
+                                     eod_df, use_live=True)
+
+        if current_signal == "BUY_CALL":
+            if result.get("rec"):
+                st.success(result["rec"])
+            else:
+                st.success("**BUY CALL 信号 — 3种策略可选**")
+
+            st.markdown(f"可选: 单腿Call / Bull Call Spread / "
+                        f"{'高IV建议价差' if rv_val > 25 else '低IV建议单腿'}")
+
+            # 只显示推荐的那个
+            if rv_val > 28 and result.get("spread"):
+                st.markdown("**推荐: Bull Call Spread** (IV偏高, 对冲theta)")
+                st.dataframe(pd.DataFrame(result["spread"]),
+                             use_container_width=True, hide_index=True)
+            elif result.get("single_leg"):
+                st.markdown("**推荐: Long Call** (IV适中)")
+                st.dataframe(pd.DataFrame(result["single_leg"]),
+                             use_container_width=True, hide_index=True)
+
+        else:  # SELL_PUT
+            result_put = get_strategy_table("SELL_PUT", current_gld, eff_exit,
+                                             eod_df, use_live=True)
+            st.success("**SELL PUT 信号 (高IV) — 推荐 Bull Put Spread**")
+            if result_put.get("spread"):
+                st.dataframe(pd.DataFrame(result_put["spread"]),
+                             use_container_width=True, hide_index=True)
     else:
-        st.info("当前观望区 — 以下为预判策略, 信号触发时可立即执行")
-
-    # BUY CALL 策略
-    result_call = get_strategy_table("BUY_CALL", current_gld, eff_exit, eod_df,
-                                      use_live=True)
-    data_src = result_call.get("source", "EOD")
-
-    st.caption(f"期权数据: **{data_src}** | 当前价: {price_src} | "
-               f"退出目标: ${eff_exit:.2f}")
-
-    if result_call.get("rec"):
-        st.info(result_call["rec"])
-
-    st.markdown("**单腿 Call (Long Call)**")
-    if result_call.get("single_leg"):
-        st.dataframe(pd.DataFrame(result_call["single_leg"]),
-                     use_container_width=True, hide_index=True)
-
-    st.markdown("**牛市看涨价差 (Bull Call Spread)**")
-    if result_call.get("spread"):
-        st.dataframe(pd.DataFrame(result_call["spread"]),
-                     use_container_width=True, hide_index=True)
-
-    # SELL PUT 策略
-    result_put = get_strategy_table("SELL_PUT", current_gld, eff_exit, eod_df,
-                                     use_live=True)
-    st.markdown("**牛市看跌价差 (Bull Put Spread)** — 高IV时推荐")
-    if result_put.get("spread"):
-        st.dataframe(pd.DataFrame(result_put["spread"]),
-                     use_container_width=True, hide_index=True)
-
-    st.caption("风控: 仓位2-5%(稳健)/5-10%(中性)/≤5%(激进) | "
-               "平仓: bp>0.90 / Pullback / MACD弱化 / 10d")
+        # 观望区 — 简要说明
+        st.info(f"当前观望区 (bp 0.30~0.90) — 等待信号触发\n\n"
+                f"若触发买入: {'建议价差(IV偏高)' if rv_val > 25 else '可选单腿或价差'}\n"
+                f"若波动率压缩+临近事件: 考虑 Straddle")
 
 
 # ══════════════════════════════════════════════════════════
