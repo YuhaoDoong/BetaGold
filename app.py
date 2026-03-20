@@ -1176,20 +1176,21 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                             straddle_reason=_straddle_reason2,
                             rv_val=rv)
 
-    # ── 持仓/止盈管理 ──
+    # ── 持仓管理 (只显示未平仓) ──
     st.divider()
     st.subheader("持仓管理")
 
-    # 方向性交易止盈
     trade_exits = {}
     for t in trades:
         trade_exits[t["entry_date"]] = (t["exit_date"], t["exit_type"], t["gain"])
 
     tp_recs = []
 
-    # 方向性持仓
+    # 方向性: 只显示未平仓的
     buy_rows = sig_df[sig_df["buy_signal"]]
-    for buy_d in buy_rows.index[-5:][::-1]:
+    for buy_d in buy_rows.index[-10:][::-1]:
+        if buy_d in trade_exits:
+            continue  # 已平仓, 跳过
         br = buy_rows.loc[buy_d]
         entry_p = br["bp030_price"]
         post = high_d[(high_d.index >= buy_d) & (high_d.index <= last_date)]
@@ -1199,30 +1200,23 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         current_gain = (current_p / entry_p - 1) * 100
         pb_stop = pk * (1 - PULLBACK_DD / 100) if gain > PULLBACK_GAIN else 0
 
-        if buy_d in trade_exits:
-            xd, xt, xg = trade_exits[buy_d]
-            status = f"已{xt} {xd.strftime('%m/%d')} {xg:+.1f}%"
-        else:
-            status = "持仓中"
-
         tp_recs.append({
             "日期": buy_d.strftime("%m/%d"),
             "策略": br["buy_type"],
             "入场": f"${entry_p:.1f}",
             "当前盈亏": f"{current_gain:+.1f}%",
-            "止盈位": f"${pb_stop:.1f}" if pb_stop > 0 else f"Pullback未达",
+            "止盈位": f"${pb_stop:.1f}" if pb_stop > 0 else "未达",
             "BandExit": f"${eff_bp090:.1f}",
-            "状态": status,
         })
 
-    # Straddle 持仓 (从统一信号中找)
-    from core.events import days_to_next_event as _dte
+    # Straddle: 只显示未超期且未止盈的
     for d, r in _unified_viz.iterrows():
         if r["chosen"] != "STRADDLE":
             continue
         c = r["close"]
-        # Straddle 退出条件: 事件已过 or 持有>5天 or 波动已覆盖成本
         days_held = (last_date - d).days
+        if days_held > 5:
+            continue  # 已超期
         move_since = max(
             (high_d[high_d.index >= d].max() / c - 1) * 100 if len(high_d[high_d.index >= d]) > 0 else 0,
             (1 - low_d[low_d.index >= d].min() / c) * 100 if len(low_d[low_d.index >= d]) > 0 else 0
@@ -1230,46 +1224,30 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         est_cost = rv_s.get(d, 20) / 100 * (5/252)**0.5 * 100
         est_pnl = move_since - est_cost
 
-        if days_held > 5:
-            status = f"已超期({days_held}天)"
-        elif est_pnl > 2:
-            status = f"可止盈(波动{move_since:.1f}%>成本)"
-        else:
-            status = "持仓中"
-
         tp_recs.append({
             "日期": d.strftime("%m/%d"),
             "策略": "STRADDLE",
             "入场": f"${c:.1f}",
-            "当前盈亏": f"~{est_pnl:+.1f}%(估算)",
-            "止盈位": f"波动>{est_cost:.1f}%即盈利",
-            "BandExit": "事件结束后平仓",
-            "状态": status,
+            "当前盈亏": f"~{est_pnl:+.1f}%",
+            "止盈位": f"波动>{est_cost:.1f}%",
+            "BandExit": "事件结束平仓",
         })
 
     if tp_recs:
         st.dataframe(pd.DataFrame(tp_recs), use_container_width=True, hide_index=True)
     else:
-        st.caption("无近期持仓")
+        st.caption("无未平仓持仓")
 
-    # ── 近期信号 (统一策略) ──
+    # ── 近期信号 ──
     st.divider()
-    st.subheader("近期信号 (择优推荐)")
+    st.subheader("近期信号")
 
-    # 智能去重: 加仓/忽略/新信号
-    _ADD_DROP_TBL = 2.0
-    _prev_tbl = {}
+    # 按时间倒序, 显示最近 10 个信号 (不去重, 全部展示)
     _sig_recs = []
-    for d, r in _unified_viz.iterrows():
+    for d in reversed(_unified_viz.index):
+        r = _unified_viz.loc[d]
         chosen = r["chosen"]
-        score = r.get("straddle_score", 0)
         c = r["close"]
-
-        if d in sig_df.index:
-            sr = sig_df.loc[d]
-            entry_p = sr.get("bp030_price", c) if "CALL" in chosen or "PUT" in chosen else c
-        else:
-            entry_p = c
 
         w = r["win"]
         win_str = "✓" if w is True or w == True else (
@@ -1277,41 +1255,19 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         ret = f"{r['ret_5d']:+.1f}%" if r["ret_5d"] is not None and \
             not pd.isna(r["ret_5d"]) else "—"
 
-        # 判断
-        label = chosen
-        show = True
-        if chosen == "EXIT":
-            _prev_tbl = {}
-        elif chosen == "STRADDLE":
-            prev = _prev_tbl.get("STRADDLE")
-            if prev and (d - prev[0]).days <= 3 and score <= prev[2]:
-                show = False
-            _prev_tbl["STRADDLE"] = (d, entry_p, score)
-        else:
-            prev = _prev_tbl.get(chosen)
-            if prev:
-                drop = (prev[1] - entry_p) / prev[1] * 100 if prev[1] > 0 else 0
-                if drop > _ADD_DROP_TBL:
-                    label = f"{chosen} (加仓↓{drop:.0f}%)"
-                elif (d - prev[0]).days <= 5:
-                    show = False
-            if show:
-                _prev_tbl[chosen] = (d, entry_p, 0)
-
-        if not show:
-            continue
-
         _sig_recs.append({
             "日期": d.strftime("%m/%d"),
             "GLD": f"${c:.0f}",
-            "推荐": label,
+            "策略": chosen,
             "原因": r["chosen_reason"],
             "5天涨跌": ret,
             "结果": win_str,
         })
+        if len(_sig_recs) >= 10:
+            break
 
     if _sig_recs:
-        st.dataframe(pd.DataFrame(_sig_recs[-15:]),
+        st.dataframe(pd.DataFrame(_sig_recs),
                      use_container_width=True, hide_index=True)
 
     # ── 统一策略回测 ──
