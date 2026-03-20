@@ -34,7 +34,9 @@ MACD_MIN_GAIN = 1.0
 MAX_HOLD_DAYS = 10
 BUY_BP = 0.30
 EXIT_BP = 0.90
-DEFAULT_TZ_OFFSET = 8  # SGT
+STOP_LOSS_PCT = 3.0       # 单笔止损: 入场后跌超N%
+CONSECUTIVE_STOP = 2      # 连续止损N笔后暂停买入信号
+DEFAULT_TZ_OFFSET = 8     # SGT
 
 
 def _macd_hist(c, fast=12, slow=26, sig=9):
@@ -149,6 +151,7 @@ def run_backtest(close_d, high_d, low_d,
     in_trade = False
     entry_dt = entry_price = entry_type = None
     peak = 0
+    consecutive_stops = 0  # 连续止损计数
 
     for d in bp_dates:
         u, l = upper_band.get(d, np.nan), lower_band.get(d, np.nan)
@@ -171,6 +174,13 @@ def run_backtest(close_d, high_d, low_d,
                 h_bar = tf_df["High"].get(dt_bar, 0)
                 c_bar = tf_df["Close"].get(dt_bar, 0)
                 peak = max(peak, h_bar)
+
+                # 0) StopLoss: 从入场价直接跌超阈值
+                if entry_price > 0:
+                    loss = (c_bar / entry_price - 1) * 100
+                    if loss < -STOP_LOSS_PCT:
+                        exit_type, exit_price = "StopLoss", c_bar
+                        break
 
                 # 1) BandExit
                 if h_bar > bp090:
@@ -197,9 +207,16 @@ def run_backtest(close_d, high_d, low_d,
         elif in_trade:
             # 无 1h 数据: 用日线 H/L
             peak = max(peak, h)
-            if bp_hi > exit_bp:
+
+            # StopLoss (日线)
+            if entry_price > 0:
+                loss = (lo / entry_price - 1) * 100
+                if loss < -STOP_LOSS_PCT:
+                    exit_type, exit_price = "StopLoss", lo
+
+            if not exit_type and bp_hi > exit_bp:
                 exit_type, exit_price = "BandExit", bp090
-            elif entry_price > 0:
+            elif not exit_type and entry_price > 0:
                 gain = (peak / entry_price - 1) * 100
                 dd = (peak - c) / peak * 100
                 if gain > pullback_gain and dd >= pullback_dd:
@@ -211,17 +228,32 @@ def run_backtest(close_d, high_d, low_d,
                 exit_type, exit_price = "Timeout", c
 
         if in_trade and exit_type:
+            gain = (exit_price / entry_price - 1) * 100
             trades.append({
                 "entry_date": entry_dt, "exit_date": d,
                 "entry_price": entry_price, "exit_price": exit_price,
                 "type": entry_type, "exit_type": exit_type,
-                "gain": (exit_price / entry_price - 1) * 100,
+                "gain": gain,
                 "hold_days": (d - entry_dt).days,
                 "peak": peak,
             })
             in_trade = False
 
+            # 连续止损计数
+            if exit_type == "StopLoss":
+                consecutive_stops += 1
+            else:
+                consecutive_stops = 0
+
         # ── 入场 ──
+        # 连续止损后暂停买入
+        if consecutive_stops >= CONSECUTIVE_STOP:
+            # 等下一个 BandExit 或 bp > 0.50 才恢复
+            if bp_hi > exit_bp or (c - l) / (u - l) > 0.50:
+                consecutive_stops = 0  # 恢复
+            else:
+                continue  # 暂停
+
         if not in_trade and is_bull and bp_lo < buy_bp:
             entry_type = "BUY CALL" if rv <= 0.85 else "SELL PUT"
             entry_price = min(bp030, lo)
