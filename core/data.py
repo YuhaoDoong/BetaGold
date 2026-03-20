@@ -255,13 +255,27 @@ def update_features_full(cfg: dict):
         # 1. 下载最新市场数据 (GLD/DXY/VIX/原油/白银/铜/美债/GC=F)
         setup_data.download_market_data()
 
-        # 2. 尝试下载宏观数据 (FRED, 需要 API key)
+        # 2. 下载宏观数据 (FRED)
+        fred_key = None
+        gold_cfg_path = os.path.join(os.path.dirname(data_root),
+                                      "config", "settings.yaml")
+        if os.path.exists(gold_cfg_path):
+            with open(gold_cfg_path, "r") as _f:
+                import yaml as _yaml
+                _gold_cfg = _yaml.safe_load(_f)
+                fred_key = _gold_cfg.get("fred_api_key")
         try:
-            setup_data.download_macro_data()
+            setup_data.download_macro_data(fred_key)
         except Exception:
-            pass  # 无 key 时跳过, 用已有宏观数据
+            pass  # 失败时用已有宏观数据
 
-        # 3. 全量重建特征 (从原始数据计算)
+        # 3. 下载波动率数据 (GVZ)
+        try:
+            setup_data.download_vol_data()
+        except Exception:
+            pass
+
+        # 4. 全量重建特征 (从原始数据计算)
         setup_data.build_features()
 
         _FEATURE_REBUILT_TODAY = True
