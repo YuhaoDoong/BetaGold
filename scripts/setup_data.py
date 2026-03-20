@@ -373,7 +373,8 @@ def build_features():
     gvz_path = os.path.join(RAW_VOL, "gvz.csv")
     if os.path.exists(gvz_path):
         gvz = pd.read_csv(gvz_path, index_col=0, parse_dates=True)
-        gvz_close = gvz["Close"].reindex(gld.index).ffill()
+        gvz_col = "Close" if "Close" in gvz.columns else gvz.columns[0]
+        gvz_close = gvz[gvz_col].reindex(gld.index).ffill()
         features["gvz"] = gvz_close
         features["gvz_pctile_252d"] = gvz_close.rolling(
             252, min_periods=60).rank(pct=True)

@@ -215,86 +215,73 @@ def auto_refresh_market_data(cfg: dict):
     return results
 
 
-def update_features_incremental(cfg: dict):
-    """增量更新特征矩阵: 如果 GLD 有新数据, 追加特征行.
+_FEATURE_REBUILT_TODAY = False  # 每个进程生命周期只重建一次
 
-    用简化计算 (收益率/RSI/SMA/BB/RV), 不依赖完整 build_features.
+
+def update_features_full(cfg: dict):
+    """全量重建特征矩阵: 下载最新市场+宏观数据, 完整重建所有特征.
+
+    每天第一次运行时强制重建, 确保 DXY/利率/VIX/波动率等全部更新.
+    同一进程内不重复执行.
     """
-    import numpy as np
+    global _FEATURE_REBUILT_TODAY
+
+    if _FEATURE_REBUILT_TODAY:
+        return 0, "今日已重建"
 
     feat_path = cfg["resolved"]["features"]
-    gld_path = cfg["resolved"]["gld_csv"]
+    feat_old = pd.read_parquet(feat_path)
 
-    feat = pd.read_parquet(feat_path)
-    gld = pd.read_csv(gld_path, index_col=0, parse_dates=True)
+    try:
+        import sys
+        scripts_dir = os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), "scripts")
+        if scripts_dir not in sys.path:
+            sys.path.insert(0, scripts_dir)
 
-    new_dates = gld.index[gld.index > feat.index[-1]]
-    if len(new_dates) == 0:
-        return 0
+        import setup_data
 
-    close = gld["Close"]
-    new_rows = []
-    for d in new_dates:
-        row = feat.iloc[-1].copy()
-        loc = close.index.get_loc(d)
+        # 覆盖 setup_data 的路径, 指向实际数据目录
+        data_root = cfg.get("data_root", "")
+        if os.path.isdir(data_root):
+            setup_data.DATA_ROOT = data_root
+            setup_data.RAW_MARKET = os.path.join(data_root, "raw", "market")
+            setup_data.RAW_MACRO = os.path.join(data_root, "raw", "macro")
+            setup_data.RAW_VOL = os.path.join(data_root, "raw", "volatility")
+            setup_data.RAW_COT = os.path.join(data_root, "raw", "cot")
+            setup_data.PROCESSED = os.path.join(data_root, "processed")
+            setup_data.MODELS = os.path.join(data_root, "models")
 
-        # 收益率
-        for p, col in [(1, "ret_1d"), (5, "ret_5d"), (10, "ret_10d"),
-                        (20, "ret_20d"), (60, "ret_60d")]:
-            if col in row.index and loc >= p:
-                row[col] = close.iloc[loc] / close.iloc[loc - p] - 1
+        # 1. 下载最新市场数据 (GLD/DXY/VIX/原油/白银/铜/美债/GC=F)
+        setup_data.download_market_data()
 
-        # RV(10d)
-        if "rv_10d" in row.index and loc >= 10:
-            log_r = np.log(close / close.shift(1))
-            row["rv_10d"] = log_r.iloc[max(0, loc-9):loc+1].std() \
-                * np.sqrt(5) * 100
+        # 2. 尝试下载宏观数据 (FRED, 需要 API key)
+        try:
+            setup_data.download_macro_data()
+        except Exception:
+            pass  # 无 key 时跳过, 用已有宏观数据
 
-        # RSI(14)
-        if "rsi_14" in row.index and loc >= 14:
-            ch = close.diff().iloc[max(0, loc-13):loc+1]
-            g = ch.clip(lower=0).mean()
-            ls = (-ch.clip(upper=0)).mean()
-            row["rsi_14"] = 100 - 100 / (1 + g / ls) if ls != 0 else 50
+        # 3. 全量重建特征 (从原始数据计算)
+        setup_data.build_features()
 
-        # SMA 位置
-        for n, col in [(5, "close_to_sma_5"), (20, "close_to_sma_20"),
-                        (60, "close_to_sma_60")]:
-            if col in row.index and loc >= n:
-                sma = close.iloc[loc-n+1:loc+1].mean()
-                row[col] = close.iloc[loc] / sma - 1 if sma else 0
+        _FEATURE_REBUILT_TODAY = True
 
-        # BB position
-        if "bb_position" in row.index and loc >= 20:
-            w = close.iloc[loc-19:loc+1]
-            sma, std = w.mean(), w.std()
-            if std > 0:
-                row["bb_position"] = (close.iloc[loc] - (sma - 2*std)) \
-                    / (4 * std)
+        feat_new = pd.read_parquet(feat_path)
+        n_new = len(feat_new) - len(feat_old)
 
-        # MACD
-        if "macd_hist" in row.index and loc >= 26:
-            w = close.iloc[max(0, loc-50):loc+1]
-            e12 = w.ewm(span=12).mean().iloc[-1]
-            e26 = w.ewm(span=26).mean().iloc[-1]
-            ml = e12 - e26
-            sig = (w.ewm(span=12).mean() - w.ewm(span=26).mean()) \
-                .ewm(span=9).mean().iloc[-1]
-            row["macd_hist"] = ml - sig
+        # 检查关键宏观特征是否有变化
+        changed = []
+        for c in ["dxy_ret_5d", "vix_level", "us10y_level", "crude_ret_5d"]:
+            if c in feat_new.columns and c in feat_old.columns:
+                if abs(feat_new[c].iloc[-1] - feat_old[c].iloc[-1]) > 1e-6:
+                    changed.append(c)
 
-        for c in row.index:
-            if c.startswith("fwd_"):
-                row[c] = np.nan
+        change_str = f" 宏观更新: {','.join(changed)}" if changed else ""
+        return n_new, f"全量重建 → {feat_new.index[-1].date()}{change_str}"
 
-        row.name = d
-        new_rows.append(row)
-
-    if new_rows:
-        combined = pd.concat([feat, pd.DataFrame(new_rows)])
-        combined = combined[~combined.index.duplicated(keep="last")]
-        combined.to_parquet(feat_path)
-
-    return len(new_rows)
+    except Exception as e:
+        logger.warning("Full feature rebuild failed: %s", e)
+        return 0, f"重建失败: {e}"
 
 
 def extend_oos_predictions(cfg: dict):
