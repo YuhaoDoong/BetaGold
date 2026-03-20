@@ -2181,6 +2181,71 @@ def main():
 
             st.markdown("\n".join(lines))
 
+        # ── 前瞻分析: 关键日程 + 信号判断 ──
+        st.divider()
+        st.subheader("前瞻分析")
+
+        from core.events import (get_all_events, detect_straddle_signal,
+                                  days_to_next_event)
+        _feat_pred = load_features(load_config())
+        _feat_pred = _feat_pred.reindex(close.index).ffill()
+        _rv_pred = _feat_pred["rv_10d"] if "rv_10d" in _feat_pred.columns \
+            else pd.Series(20, index=close.index)
+
+        # 近期事件
+        _d_fomc, _, _fomc_d = days_to_next_event(last_date, "FOMC")
+        _d_opex, _, _opex_d = days_to_next_event(last_date, "OPEX")
+        _d_nfp, _, _nfp_d = days_to_next_event(last_date, "NFP")
+
+        # Straddle 检测
+        _st_today = detect_straddle_signal(
+            _rv_pred, pd.DatetimeIndex([last_date]))
+        _is_straddle_pred = _st_today["straddle_signal"].iloc[0] \
+            if len(_st_today) > 0 else False
+        _straddle_reason_pred = _st_today["straddle_reason"].iloc[0] \
+            if _is_straddle_pred else ""
+
+        # 宏观指标
+        _dxy = _feat_pred["dxy_ret_5d"].get(last_date, 0) \
+            if "dxy_ret_5d" in _feat_pred.columns else 0
+        _vix = _feat_pred["vix_level"].get(last_date, 0) \
+            if "vix_level" in _feat_pred.columns else 0
+        _ry = _feat_pred["real_yield_10y"].get(last_date, 0) \
+            if "real_yield_10y" in _feat_pred.columns else 0
+        _rv_val = _rv_pred.get(last_date, 20)
+
+        col_outlook, col_macro = st.columns(2)
+        with col_outlook:
+            st.markdown("**未来关键日程**")
+            events_5d = get_all_events(
+                (last_date + timedelta(days=1)).strftime("%Y-%m-%d"),
+                (last_date + timedelta(days=10)).strftime("%Y-%m-%d"))
+            if events_5d:
+                for ev_d, ev_t, ev_l in events_5d:
+                    days_away = (ev_d - last_date).days
+                    st.markdown(f"- **{ev_d.strftime('%m/%d')} {ev_l}** ({days_away}天后)")
+            else:
+                st.markdown("- 未来10天无重大事件")
+
+            if _is_straddle_pred:
+                st.warning(f"**Straddle 信号活跃**: {_straddle_reason_pred}\n\n"
+                           "建议: 考虑做多波动率 (ATM Call+Put)")
+            elif min(_d_fomc, _d_opex, _d_nfp) <= 5:
+                st.info(f"临近事件日 — 关注波动率变化")
+
+        with col_macro:
+            st.markdown("**宏观环境**")
+            dxy_comment = "美元走强→金价承压" if _dxy > 0.005 else \
+                "美元走弱→金价利好" if _dxy < -0.005 else "中性"
+            rv_comment = "低位(做多波动率机会)" if _rv_val < 20 else \
+                "正常" if _rv_val < 35 else "高位(期权成本高)"
+            st.markdown(f"""
+- RV(10d): **{_rv_val:.1f}%** ({rv_comment})
+- VIX: **{_vix:.1f}**
+- DXY 5d: **{_dxy*100:+.2f}%** ({dxy_comment})
+- 实际利率: **{_ry:.2f}%**
+""")
+
         # 期权策略
         st.divider()
         st.subheader("期权策略推荐")
@@ -2188,9 +2253,16 @@ def main():
             cfg = load_config()
             eod_df, snap_date = load_latest_eod_snapshot(cfg)
 
+        # 传递 Straddle 状态
+        _sig_for_opt = sig_type_viz
+        if _is_straddle_pred:
+            _sig_for_opt = "STRADDLE"
         _render_options_section(eod_df, snap_date, last_close,
                                 next_bp090, oi_adj_bp090,
-                                gc_gld_ratio, today_sgt, sig_type_viz)
+                                gc_gld_ratio, today_sgt, _sig_for_opt,
+                                straddle_active=_is_straddle_pred,
+                                straddle_reason=_straddle_reason_pred,
+                                rv_val=_rv_val)
 
     # ── 近期信号 ──
     st.divider()
