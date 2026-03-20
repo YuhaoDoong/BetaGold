@@ -125,15 +125,18 @@ def compute_unified_stats(unified_df):
     deduped = unified_df.loc[entries].copy()
     deduped["win_bool"] = deduped["win"].apply(
         lambda x: bool(x) if x is not None else None)
-    valid = deduped[deduped["win_bool"].notna()]
+
+    # EXIT 不单独统计胜率 — 只统计入场信号
+    entry_signals = deduped[deduped["chosen"] != "EXIT"]
+    valid = entry_signals[entry_signals["win_bool"].notna()]
 
     if len(valid) == 0:
-        return {"total": len(deduped), "evaluated": 0}
+        return {"total": len(entry_signals), "evaluated": 0}
 
     total = len(valid)
     wins = int(valid["win_bool"].apply(bool).sum())
 
-    # 按策略分组
+    # 按策略分组 (不含 EXIT)
     by_type = {}
     for chosen in valid["chosen"].unique():
         sub = valid[valid["chosen"] == chosen]
