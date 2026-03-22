@@ -326,7 +326,21 @@ def extend_oos_predictions(cfg: dict):
     import numpy as np
 
     predictor = DLRangePredictor.load(model_path)
+    n_expected = predictor.scaler.n_features_in_
     feat_cols = select_features(features)
+
+    # 精确匹配模型训练时的特征数量
+    if len(feat_cols) < n_expected:
+        # 补齐缺失特征 (填0)
+        from core.dl_range import SELECTED_FEATURES
+        for f in SELECTED_FEATURES:
+            if f not in features.columns:
+                features[f] = 0
+        feat_cols = select_features(features)
+
+    # 如果还是不匹配 (多了), 截取到 n_expected 个
+    if len(feat_cols) > n_expected:
+        feat_cols = feat_cols[:n_expected]
 
     # 需要 seq_len 根历史 + 新日期
     start_idx = max(0, features.index.get_loc(oos_last) - predictor.seq_len - 5)
