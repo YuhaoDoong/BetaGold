@@ -1150,15 +1150,22 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     plt.close(fig)
 
     # ── 1h 盘中 K线 + Stoch RSI + Squeeze ──
-    if gld_1h is not None and len(gld_1h) > 0:
-        st.divider()
-        st.subheader("1h 盘中指标 (Stoch RSI + Squeeze)")
+    # 优先用 GC=F (COMEX, 覆盖24h, 即"伦敦金/纽约金"), 否则用 GLD
+    _gc_1h_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "..", "Gold", "data", "raw", "market", "gc_1h.csv")
+    _gc_1h_path = os.path.normpath(_gc_1h_path)
+    _kline_1h = pd.read_csv(_gc_1h_path, index_col=0, parse_dates=True) \
+        if os.path.exists(_gc_1h_path) else gld_1h
+    _kline_label = "COMEX Gold (≈伦敦金)" if os.path.exists(_gc_1h_path) else "GLD"
 
-        # 取最近 N 根 1h K线
+    if _kline_1h is not None and len(_kline_1h) > 0:
+        st.divider()
+        st.subheader(f"1h K线 — {_kline_label} (Stoch RSI + Squeeze)")
+
         n_bars = st.sidebar.slider("1h K线数", 50, 300, 120,
                                     help="120根≈1周")
-        _1h = gld_1h.iloc[-n_bars:].copy()
-        _c1h, _h1h, _l1h = _1h["Close"], _1h["High"], _1h["Low"]
+        _1h = _kline_1h.iloc[-n_bars:].copy()
+        _c1h, _h1h, _l1h, _o1h = _1h["Close"], _1h["High"], _1h["Low"], _1h["Open"]
 
         # Stoch RSI (14, 14, 3, 3)
         _rsi_period = 14
@@ -1214,15 +1221,24 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             3, 1, figsize=(18, 10), sharex=True,
             gridspec_kw={"height_ratios": [3, 1.5, 1]})
 
-        # 价格 K线 (简化: 用线图 + H/L 填充)
-        xi_all = _xi1h_arr(_c1h.dropna().index)
-        ax_price.plot(xi_all, _c1h.dropna().values, "k-", lw=1.2, zorder=3)
-        _hl_common = _h1h.dropna().index.intersection(_l1h.dropna().index)
-        if len(_hl_common) > 0:
-            ax_price.fill_between(_xi1h_arr(_hl_common),
-                                   _l1h[_hl_common].values,
-                                   _h1h[_hl_common].values,
-                                   alpha=0.1, color="gray")
+        # 真实 K线 (红绿蜡烛图)
+        _body_w = 0.6
+        _wick_w = 0.15
+        for dt in _1h.index:
+            ix = _xi1h(dt)
+            if ix is None:
+                continue
+            o, h, l, c = _o1h.get(dt, 0), _h1h.get(dt, 0), _l1h.get(dt, 0), _c1h.get(dt, 0)
+            if o == 0 or c == 0:
+                continue
+            color = "#4CAF50" if c >= o else "#F44336"
+            # 影线
+            ax_price.plot([ix, ix], [l, h], color=color, lw=_wick_w * 2, zorder=2)
+            # 实体
+            body_bottom = min(o, c)
+            body_height = abs(c - o) if abs(c - o) > 0.01 else 0.5
+            ax_price.bar(ix, body_height, bottom=body_bottom, width=_body_w,
+                         color=color, edgecolor=color, zorder=3)
         # BB
         _bb_u_clean = _bb_upper.dropna()
         _bb_l_clean = _bb_lower.dropna()
@@ -1245,8 +1261,11 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             if _squeeze_on.get(dt, False):
                 ax_price.axvspan(i - 0.5, i + 0.5, alpha=0.08, color="red")
 
-        ax_price.set_ylabel("GLD ($)")
-        ax_price.set_title("1h K线 + BB(蓝) / Keltner(橙) / Squeeze(红色背景)",
+        ax_price.set_ylabel(f"{_kline_label} ($/oz)")
+        _last_price = _c1h.iloc[-1]
+        ax_price.set_title(f"{_kline_label} 1h K线 ${_last_price:.1f} | "
+                           f"BB(蓝) / Keltner(橙) / Squeeze(红色背景) | "
+                           f"{_1h.index[-1].strftime('%m/%d %H:%M')}",
                            fontsize=11, fontweight="bold")
         ax_price.grid(True, alpha=0.3)
 
