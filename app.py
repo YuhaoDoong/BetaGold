@@ -1149,6 +1149,187 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                        file_name="gld_v21_dashboard.png", mime="image/png")
     plt.close(fig)
 
+    # ── 1h 盘中 K线 + Stoch RSI + Squeeze ──
+    if gld_1h is not None and len(gld_1h) > 0:
+        st.divider()
+        st.subheader("1h 盘中指标 (Stoch RSI + Squeeze)")
+
+        # 取最近 N 根 1h K线
+        n_bars = st.sidebar.slider("1h K线数", 50, 300, 120,
+                                    help="120根≈1周")
+        _1h = gld_1h.iloc[-n_bars:].copy()
+        _c1h, _h1h, _l1h = _1h["Close"], _1h["High"], _1h["Low"]
+
+        # Stoch RSI (14, 14, 3, 3)
+        _rsi_period = 14
+        _delta = _c1h.diff()
+        _gain = _delta.clip(lower=0).rolling(_rsi_period, min_periods=3).mean()
+        _loss = (-_delta.clip(upper=0)).rolling(_rsi_period, min_periods=3).mean()
+        _rs = _gain / _loss.replace(0, np.nan)
+        _rsi = 100 - 100 / (1 + _rs)
+        _stoch_period = 14
+        _rsi_low = _rsi.rolling(_stoch_period, min_periods=3).min()
+        _rsi_high = _rsi.rolling(_stoch_period, min_periods=3).max()
+        _stoch_rsi_k = ((_rsi - _rsi_low) / (_rsi_high - _rsi_low).replace(0, np.nan)) * 100
+        _stoch_rsi_d = _stoch_rsi_k.rolling(3, min_periods=1).mean()
+
+        # Squeeze: BB vs Keltner
+        _bb_len = 20
+        _kc_len = 20
+        _kc_mult = 1.5
+        _sma = _c1h.rolling(_bb_len, min_periods=5).mean()
+        _std = _c1h.rolling(_bb_len, min_periods=5).std()
+        _bb_upper = _sma + 2 * _std
+        _bb_lower = _sma - 2 * _std
+
+        _tr = pd.concat([_h1h - _l1h,
+                          (_h1h - _c1h.shift(1)).abs(),
+                          (_l1h - _c1h.shift(1)).abs()], axis=1).max(axis=1)
+        _atr = _tr.rolling(_kc_len, min_periods=5).mean()
+        _kc_upper = _sma + _kc_mult * _atr
+        _kc_lower = _sma - _kc_mult * _atr
+
+        _squeeze_on = (_bb_upper < _kc_upper) & (_bb_lower > _kc_lower)
+        _squeeze_off = ~_squeeze_on
+
+        # Momentum (用于 Squeeze 方向)
+        _mom = _c1h - _sma
+
+        # index-based x
+        _idx_1h = list(_1h.index)
+        _d2i_1h = {d: i for i, d in enumerate(_idx_1h)}
+        def _xi1h(d): return _d2i_1h.get(d)
+        def _xi1h_arr(dates): return [_d2i_1h[d] for d in dates if d in _d2i_1h]
+
+        def _fmt1h(x, pos):
+            idx = int(round(x))
+            if 0 <= idx < len(_idx_1h):
+                dt = _idx_1h[idx]
+                if dt.hour == 9 or dt.hour == 0:
+                    return dt.strftime("%m/%d")
+                return dt.strftime("%H:%M")
+            return ""
+
+        fig2, (ax_price, ax_stoch, ax_sq) = plt.subplots(
+            3, 1, figsize=(18, 10), sharex=True,
+            gridspec_kw={"height_ratios": [3, 1.5, 1]})
+
+        # 价格 K线 (简化: 用线图 + H/L 填充)
+        xi_all = _xi1h_arr(_c1h.dropna().index)
+        ax_price.plot(xi_all, _c1h.dropna().values, "k-", lw=1.2, zorder=3)
+        _hl_common = _h1h.dropna().index.intersection(_l1h.dropna().index)
+        if len(_hl_common) > 0:
+            ax_price.fill_between(_xi1h_arr(_hl_common),
+                                   _l1h[_hl_common].values,
+                                   _h1h[_hl_common].values,
+                                   alpha=0.1, color="gray")
+        # BB
+        _bb_u_clean = _bb_upper.dropna()
+        _bb_l_clean = _bb_lower.dropna()
+        if len(_bb_u_clean) > 0:
+            ax_price.plot(_xi1h_arr(_bb_u_clean.index), _bb_u_clean.values,
+                          color="blue", lw=0.6, alpha=0.4)
+            ax_price.plot(_xi1h_arr(_bb_l_clean.index), _bb_l_clean.values,
+                          color="blue", lw=0.6, alpha=0.4)
+        # Keltner
+        _kc_u_clean = _kc_upper.dropna()
+        _kc_l_clean = _kc_lower.dropna()
+        if len(_kc_u_clean) > 0:
+            ax_price.plot(_xi1h_arr(_kc_u_clean.index), _kc_u_clean.values,
+                          color="orange", lw=0.6, ls="--", alpha=0.4)
+            ax_price.plot(_xi1h_arr(_kc_l_clean.index), _kc_l_clean.values,
+                          color="orange", lw=0.6, ls="--", alpha=0.4)
+
+        # Squeeze 背景色
+        for i, dt in enumerate(_idx_1h):
+            if _squeeze_on.get(dt, False):
+                ax_price.axvspan(i - 0.5, i + 0.5, alpha=0.08, color="red")
+
+        ax_price.set_ylabel("GLD ($)")
+        ax_price.set_title("1h K线 + BB(蓝) / Keltner(橙) / Squeeze(红色背景)",
+                           fontsize=11, fontweight="bold")
+        ax_price.grid(True, alpha=0.3)
+
+        # Stoch RSI
+        _sk_clean = _stoch_rsi_k.dropna()
+        _sd_clean = _stoch_rsi_d.dropna()
+        if len(_sk_clean) > 0:
+            ax_stoch.plot(_xi1h_arr(_sk_clean.index), _sk_clean.values,
+                          color="#2196F3", lw=1, label="K")
+        if len(_sd_clean) > 0:
+            ax_stoch.plot(_xi1h_arr(_sd_clean.index), _sd_clean.values,
+                          color="#F44336", lw=1, ls="--", label="D")
+        ax_stoch.axhspan(0, 20, alpha=0.08, color="#4CAF50")
+        ax_stoch.axhspan(80, 100, alpha=0.08, color="#F44336")
+        ax_stoch.axhline(20, color="#4CAF50", lw=0.5, ls=":")
+        ax_stoch.axhline(80, color="#F44336", lw=0.5, ls=":")
+        ax_stoch.set_ylabel("Stoch RSI")
+        ax_stoch.set_ylim(-5, 105)
+        ax_stoch.legend(fontsize=7, loc="upper right")
+        ax_stoch.grid(True, alpha=0.3)
+        # 标注超买超卖
+        ax_stoch.text(0.01, 0.15, "超卖", transform=ax_stoch.transAxes,
+                      fontsize=9, color="#4CAF50", fontweight="bold")
+        ax_stoch.text(0.01, 0.85, "超买", transform=ax_stoch.transAxes,
+                      fontsize=9, color="#F44336", fontweight="bold")
+
+        # Squeeze Momentum
+        _mom_clean = _mom.dropna()
+        if len(_mom_clean) > 0:
+            xi_mom = _xi1h_arr(_mom_clean.index)
+            colors_mom = ["#4CAF50" if v >= 0 else "#F44336" for v in _mom_clean.values]
+            # 颜色深浅: 增加中 vs 减弱中
+            for i in range(len(xi_mom)):
+                v = _mom_clean.values[i]
+                if i > 0:
+                    prev = _mom_clean.values[i - 1]
+                    if v >= 0:
+                        c_sq = "#4CAF50" if v > prev else "#81C784"
+                    else:
+                        c_sq = "#F44336" if v < prev else "#EF9A9A"
+                else:
+                    c_sq = "#4CAF50" if v >= 0 else "#F44336"
+                ax_sq.bar(xi_mom[i], v, width=0.8, color=c_sq, edgecolor="none")
+
+        # Squeeze on/off 标记
+        for i, dt in enumerate(_idx_1h):
+            if _squeeze_on.get(dt, False):
+                ax_sq.scatter([i], [0], marker="o", s=10, color="red", zorder=5)
+            elif _squeeze_off.get(dt, False) and i > 0 and _squeeze_on.get(_idx_1h[i-1], False):
+                ax_sq.scatter([i], [0], marker="o", s=15, color="green", zorder=5)
+
+        ax_sq.axhline(0, color="black", lw=0.5)
+        ax_sq.set_ylabel("Squeeze Mom")
+        ax_sq.grid(True, alpha=0.3)
+        ax_sq.xaxis.set_major_formatter(FuncFormatter(_fmt1h))
+        ax_sq.xaxis.set_major_locator(MaxNLocator(integer=True, nbins=15))
+
+        plt.tight_layout()
+        st.pyplot(fig2, use_container_width=True)
+        plt.close(fig2)
+
+        # 当前状态文字
+        _last_1h = _1h.index[-1]
+        _srk = _stoch_rsi_k.get(_last_1h, 50)
+        _srd = _stoch_rsi_d.get(_last_1h, 50)
+        _sq_on = _squeeze_on.get(_last_1h, False)
+        _mom_v = _mom.get(_last_1h, 0)
+
+        zone_1h = "超卖" if _srk < 20 else ("超买" if _srk > 80 else "中性")
+        sq_state = "挤压中(蓄力)" if _sq_on else "已释放"
+        mom_dir = "向上" if _mom_v > 0 else "向下"
+
+        st.markdown(f"**当前 ({_last_1h.strftime('%m/%d %H:%M')})**: "
+                    f"Stoch RSI K={_srk:.0f} D={_srd:.0f} ({zone_1h}) | "
+                    f"Squeeze: {sq_state} | 动量: {mom_dir}")
+
+        if _srk < 20 and not _sq_on:
+            st.success("超卖 + Squeeze释放 → 可能反弹入场时机")
+        elif _srk > 80 and not _sq_on:
+            st.warning("超买 + Squeeze释放 → 注意止盈")
+        elif _sq_on:
+            st.info("Squeeze挤压中 → 波动率压缩, 等待方向选择突破")
+
     # ── 期权策略预判 ──
     st.divider()
     st.subheader("期权策略推荐")
