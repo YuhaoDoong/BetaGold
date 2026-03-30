@@ -1149,30 +1149,46 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                        file_name="gld_v21_dashboard.png", mime="image/png")
     plt.close(fig)
 
-    # ── 1h 盘中 K线 + Stoch RSI + Squeeze ──
-    # 优先用 GC=F (COMEX, 覆盖24h, 即"伦敦金/纽约金"), 否则用 GLD
-    _gc_1h_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                               "..", "Gold", "data", "raw", "market", "gc_1h.csv")
-    _gc_1h_path = os.path.normpath(_gc_1h_path)
-    _kline_1h = pd.read_csv(_gc_1h_path, index_col=0, parse_dates=True) \
-        if os.path.exists(_gc_1h_path) else gld_1h
-    _kline_label = "COMEX Gold (≈伦敦金)" if os.path.exists(_gc_1h_path) else "GLD"
+    # ── 盘中 K线 + Stoch RSI + Squeeze ──
+    st.divider()
+    _kline_interval = st.sidebar.selectbox("K线周期", ["15m", "5m", "30m", "1h"], index=0)
+    _bars_per_day = {"15m": 57, "5m": 171, "30m": 29, "1h": 14}
+    _default_bars = _bars_per_day.get(_kline_interval, 57) * 2  # 默认2天
 
-    if _kline_1h is not None and len(_kline_1h) > 0:
-        st.divider()
-        st.subheader(f"1h K线 — {_kline_label} (Stoch RSI + Squeeze)")
+    # 实时下载 GC=F 数据 (缓存5分钟)
+    @st.cache_data(ttl=300)
+    def _fetch_gc_kline(interval):
+        try:
+            import yfinance as yf
+            t = yf.Ticker("GC=F")
+            df = t.history(period="5d", interval=interval)
+            if df is not None and len(df) > 0:
+                df.index = pd.to_datetime(df.index).tz_localize(None)
+                return df[["Open", "High", "Low", "Close", "Volume"]]
+        except Exception:
+            pass
+        return None
 
-        n_bars = st.sidebar.slider("1h K线数", 19, 100, 38,
-                                    help="19根≈1天, 38根≈2天")
-        # 计算用更多数据 (指标预热), 显示只取最近 n_bars
-        _warmup = 60  # Stoch RSI 需要约 28 根预热
-        _1h_full = _kline_1h.iloc[-(n_bars + _warmup):].copy()
+    _kline_data = _fetch_gc_kline(_kline_interval)
+    _kline_label = f"COMEX Gold {_kline_interval}"
+
+    if _kline_data is not None and len(_kline_data) > 0:
+        st.subheader(f"{_kline_label} K线 (Stoch RSI + Squeeze)")
+
+        n_bars = st.sidebar.slider("K线数", 30, min(len(_kline_data), 500),
+                                    min(_default_bars, len(_kline_data)),
+                                    help=f"{_bars_per_day.get(_kline_interval,57)}根≈1天")
+
+        _warmup = 60
+        _avail = len(_kline_data)
+        _start = max(0, _avail - n_bars - _warmup)
+        _1h_full = _kline_data.iloc[_start:].copy()
         _c1h_full = _1h_full["Close"]
         _h1h_full = _1h_full["High"]
         _l1h_full = _1h_full["Low"]
         _o1h_full = _1h_full["Open"]
 
-        _1h = _1h_full.iloc[-n_bars:]
+        _1h = _kline_data.iloc[-n_bars:]
         _c1h, _h1h, _l1h, _o1h = _1h["Close"], _1h["High"], _1h["Low"], _1h["Open"]
 
         # ── 用 full 数据计算指标, 然后截取显示范围 ──
@@ -1231,8 +1247,9 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             idx = int(round(x))
             if 0 <= idx < len(_idx_1h):
                 dt = _idx_1h[idx]
-                if dt.hour == 9 or dt.hour == 0:
-                    return dt.strftime("%m/%d")
+                # 每天第一根显示日期, 其余显示时间
+                if idx == 0 or dt.date() != _idx_1h[idx - 1].date():
+                    return dt.strftime("%m/%d\n%H:%M")
                 return dt.strftime("%H:%M")
             return ""
 
@@ -1367,6 +1384,8 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             st.warning("超买 + Squeeze释放 → 注意止盈")
         elif _sq_on:
             st.info("Squeeze挤压中 → 波动率压缩, 等待方向选择突破")
+    else:
+        st.caption("GC=F K线数据暂时不可用")
 
     # ── 期权策略预判 ──
     st.divider()
