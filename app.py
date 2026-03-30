@@ -1297,11 +1297,50 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             if _squeeze_on.get(dt, False):
                 ax_price.axvspan(i - 0.5, i + 0.5, alpha=0.08, color="red")
 
+        # 入场窗口标注: 当日线有买入信号时, Stoch RSI < 30 的区域高亮
+        _has_buy_signal = False
+        _signal_type_today = ""
+        if last_date in _unified_viz.index:
+            _chosen_today = _unified_viz.loc[last_date, "chosen"]
+            if _chosen_today in ("BUY CALL", "SELL PUT"):
+                _has_buy_signal = True
+                _signal_type_today = _chosen_today
+        # 也检查最近2天
+        for _dd in _unified_viz.index[-3:]:
+            _ch = _unified_viz.loc[_dd, "chosen"]
+            if _ch in ("BUY CALL", "SELL PUT"):
+                _has_buy_signal = True
+                _signal_type_today = _ch
+
+        if _has_buy_signal:
+            # 在价格图上高亮 Stoch RSI < 30 的入场窗口
+            for i, dt in enumerate(_idx_1h):
+                sk_val = _stoch_rsi_k.get(dt, 50)
+                if sk_val < 30:
+                    ax_price.axvspan(i - 0.5, i + 0.5, alpha=0.12,
+                                      color="#4CAF50", zorder=1)
+            # 在 Stoch RSI 图上也高亮
+            for i, dt in enumerate(_idx_1h):
+                sk_val = _stoch_rsi_k.get(dt, 50)
+                if sk_val < 30:
+                    ax_stoch.axvspan(i - 0.5, i + 0.5, alpha=0.15,
+                                      color="#4CAF50", zorder=1)
+
+        # 超买时如果有持仓, 标注止盈窗口
+        if _has_buy_signal:
+            for i, dt in enumerate(_idx_1h):
+                sk_val = _stoch_rsi_k.get(dt, 50)
+                if sk_val > 80:
+                    ax_stoch.axvspan(i - 0.5, i + 0.5, alpha=0.1,
+                                      color="#F44336", zorder=1)
+
         ax_price.set_ylabel(f"{_kline_label} ($/oz)")
         _last_price = _c1h.iloc[-1]
-        ax_price.set_title(f"{_kline_label} 1h K线 ${_last_price:.1f} | "
-                           f"BB(蓝) / Keltner(橙) / Squeeze(红色背景) | "
-                           f"{_1h.index[-1].strftime('%m/%d %H:%M')}",
+        _signal_tag = f" | {_signal_type_today} 活跃 → 绿色=入场窗口" \
+            if _has_buy_signal else ""
+        ax_price.set_title(f"{_kline_label} ${_last_price:.1f} | "
+                           f"{_1h.index[-1].strftime('%m/%d %H:%M')}"
+                           f"{_signal_tag}",
                            fontsize=11, fontweight="bold")
         ax_price.grid(True, alpha=0.3)
 
@@ -1378,12 +1417,20 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                     f"Stoch RSI K={_srk:.0f} D={_srd:.0f} ({zone_1h}) | "
                     f"Squeeze: {sq_state} | 动量: {mom_dir}")
 
-        if _srk < 20 and not _sq_on:
-            st.success("超卖 + Squeeze释放 → 可能反弹入场时机")
-        elif _srk > 80 and not _sq_on:
-            st.warning("超买 + Squeeze释放 → 注意止盈")
+        if _has_buy_signal and _srk < 20:
+            st.success(f"**{_signal_type_today} 信号 + 超卖 → 入场窗口!** "
+                       f"(Stoch RSI K={_srk:.0f})")
+        elif _has_buy_signal and _srk < 30:
+            st.success(f"**{_signal_type_today} 信号 + 接近超卖 → 准备入场** "
+                       f"(Stoch RSI K={_srk:.0f})")
+        elif _has_buy_signal and _srk > 80:
+            st.warning(f"**持仓中 + 超买 → 考虑止盈** (Stoch RSI K={_srk:.0f})")
+        elif _srk < 20:
+            st.info("超卖区 — 等待日线买入信号确认")
+        elif _srk > 80:
+            st.warning("超买区 — 如有持仓注意止盈")
         elif _sq_on:
-            st.info("Squeeze挤压中 → 波动率压缩, 等待方向选择突破")
+            st.info("Squeeze挤压中 → 波动率压缩, 等待突破")
     else:
         st.caption("GC=F K线数据暂时不可用")
 
