@@ -1162,14 +1162,24 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         st.divider()
         st.subheader(f"1h K线 — {_kline_label} (Stoch RSI + Squeeze)")
 
-        n_bars = st.sidebar.slider("1h K线数", 50, 300, 120,
-                                    help="120根≈1周")
-        _1h = _kline_1h.iloc[-n_bars:].copy()
+        n_bars = st.sidebar.slider("1h K线数", 19, 100, 38,
+                                    help="19根≈1天, 38根≈2天")
+        # 计算用更多数据 (指标预热), 显示只取最近 n_bars
+        _warmup = 60  # Stoch RSI 需要约 28 根预热
+        _1h_full = _kline_1h.iloc[-(n_bars + _warmup):].copy()
+        _c1h_full = _1h_full["Close"]
+        _h1h_full = _1h_full["High"]
+        _l1h_full = _1h_full["Low"]
+        _o1h_full = _1h_full["Open"]
+
+        _1h = _1h_full.iloc[-n_bars:]
         _c1h, _h1h, _l1h, _o1h = _1h["Close"], _1h["High"], _1h["Low"], _1h["Open"]
+
+        # ── 用 full 数据计算指标, 然后截取显示范围 ──
 
         # Stoch RSI (14, 14, 3, 3)
         _rsi_period = 14
-        _delta = _c1h.diff()
+        _delta = _c1h_full.diff()
         _gain = _delta.clip(lower=0).rolling(_rsi_period, min_periods=3).mean()
         _loss = (-_delta.clip(upper=0)).rolling(_rsi_period, min_periods=3).mean()
         _rs = _gain / _loss.replace(0, np.nan)
@@ -1184,23 +1194,32 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         _bb_len = 20
         _kc_len = 20
         _kc_mult = 1.5
-        _sma = _c1h.rolling(_bb_len, min_periods=5).mean()
-        _std = _c1h.rolling(_bb_len, min_periods=5).std()
+        _sma = _c1h_full.rolling(_bb_len, min_periods=5).mean()
+        _std = _c1h_full.rolling(_bb_len, min_periods=5).std()
         _bb_upper = _sma + 2 * _std
         _bb_lower = _sma - 2 * _std
 
-        _tr = pd.concat([_h1h - _l1h,
-                          (_h1h - _c1h.shift(1)).abs(),
-                          (_l1h - _c1h.shift(1)).abs()], axis=1).max(axis=1)
+        _tr = pd.concat([_h1h_full - _l1h_full,
+                          (_h1h_full - _c1h_full.shift(1)).abs(),
+                          (_l1h_full - _c1h_full.shift(1)).abs()], axis=1).max(axis=1)
         _atr = _tr.rolling(_kc_len, min_periods=5).mean()
         _kc_upper = _sma + _kc_mult * _atr
         _kc_lower = _sma - _kc_mult * _atr
 
         _squeeze_on = (_bb_upper < _kc_upper) & (_bb_lower > _kc_lower)
         _squeeze_off = ~_squeeze_on
+        _mom = _c1h_full - _sma
 
-        # Momentum (用于 Squeeze 方向)
-        _mom = _c1h - _sma
+        # 截取到显示范围
+        _stoch_rsi_k = _stoch_rsi_k.reindex(_1h.index)
+        _stoch_rsi_d = _stoch_rsi_d.reindex(_1h.index)
+        _bb_upper = _bb_upper.reindex(_1h.index)
+        _bb_lower = _bb_lower.reindex(_1h.index)
+        _kc_upper = _kc_upper.reindex(_1h.index)
+        _kc_lower = _kc_lower.reindex(_1h.index)
+        _squeeze_on = _squeeze_on.reindex(_1h.index).fillna(False)
+        _squeeze_off = _squeeze_off.reindex(_1h.index).fillna(True)
+        _mom = _mom.reindex(_1h.index)
 
         # index-based x
         _idx_1h = list(_1h.index)
