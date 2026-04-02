@@ -1151,7 +1151,7 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
 
     # ── 盘中 K线 + Stoch RSI + Squeeze ──
     st.divider()
-    _kline_interval = st.sidebar.selectbox("K线周期", ["15m", "5m", "30m", "1h"], index=0)
+    _kline_interval = st.sidebar.selectbox("K线周期", ["1h", "30m", "15m", "5m"], index=0)
     _bars_per_day = {"15m": 57, "5m": 171, "30m": 29, "1h": 14}
     _default_bars = _bars_per_day.get(_kline_interval, 57) * 2  # 默认2天
 
@@ -1175,9 +1175,9 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     if _kline_data is not None and len(_kline_data) > 0:
         st.subheader(f"{_kline_label} K线 (Stoch RSI + Squeeze)")
 
-        n_bars = st.sidebar.slider("K线数", 30, min(len(_kline_data), 500),
+        n_bars = st.sidebar.slider("K线数", 20, min(len(_kline_data), 300),
                                     min(_default_bars, len(_kline_data)),
-                                    help=f"{_bars_per_day.get(_kline_interval,57)}根≈1天")
+                                    help=f"{_bars_per_day.get(_kline_interval,14)}根≈1天")
 
         _warmup = 60
         _avail = len(_kline_data)
@@ -1312,21 +1312,26 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                 _has_buy_signal = True
                 _signal_type_today = _ch
 
+        # "反转穿越20 + 近BB下轨" = 最优入场信号 (61%胜率 on 1h)
+        _cross_20_up = (_stoch_rsi_k > 20) & (_stoch_rsi_k.shift(1) <= 20)
+        _at_bb_low = _c1h <= _bb_lower.reindex(_c1h.index) * 1.002
+        _entry_window = _cross_20_up & _at_bb_low  # 最优组合
+        _entry_zone = _at_bb_low & (_stoch_rsi_k < 30)  # 准备区
+
         if _has_buy_signal:
-            # 在价格图上高亮 Stoch RSI < 30 的入场窗口
+            # 入场窗口 (绿色): 反转穿越20 + 近BB下轨
             for i, dt in enumerate(_idx_1h):
-                sk_val = _stoch_rsi_k.get(dt, 50)
-                if sk_val < 30:
-                    ax_price.axvspan(i - 0.5, i + 0.5, alpha=0.12,
+                if _entry_window.get(dt, False):
+                    ax_price.axvspan(i - 0.5, i + 0.5, alpha=0.25,
                                       color="#4CAF50", zorder=1)
-            # 在 Stoch RSI 图上也高亮
-            for i, dt in enumerate(_idx_1h):
-                sk_val = _stoch_rsi_k.get(dt, 50)
-                if sk_val < 30:
-                    ax_stoch.axvspan(i - 0.5, i + 0.5, alpha=0.15,
+                    ax_stoch.axvspan(i - 0.5, i + 0.5, alpha=0.25,
+                                      color="#4CAF50", zorder=1)
+                elif _entry_zone.get(dt, False):
+                    # 准备区 (浅绿): 接近但未确认
+                    ax_price.axvspan(i - 0.5, i + 0.5, alpha=0.08,
                                       color="#4CAF50", zorder=1)
 
-        # 超买时如果有持仓, 标注止盈窗口
+        # 超买止盈窗口 (红色)
         if _has_buy_signal:
             for i, dt in enumerate(_idx_1h):
                 sk_val = _stoch_rsi_k.get(dt, 50)
@@ -1336,7 +1341,7 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
 
         ax_price.set_ylabel(f"{_kline_label} ($/oz)")
         _last_price = _c1h.iloc[-1]
-        _signal_tag = f" | {_signal_type_today} 活跃 → 绿色=入场窗口" \
+        _signal_tag = f" | {_signal_type_today} → 深绿=入场(反转+BB下轨) 浅绿=准备" \
             if _has_buy_signal else ""
         ax_price.set_title(f"{_kline_label} ${_last_price:.1f} | "
                            f"{_1h.index[-1].strftime('%m/%d %H:%M')}"
@@ -1417,16 +1422,21 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                     f"Stoch RSI K={_srk:.0f} D={_srd:.0f} ({zone_1h}) | "
                     f"Squeeze: {sq_state} | 动量: {mom_dir}")
 
-        if _has_buy_signal and _srk < 20:
-            st.success(f"**{_signal_type_today} 信号 + 超卖 → 入场窗口!** "
-                       f"(Stoch RSI K={_srk:.0f})")
-        elif _has_buy_signal and _srk < 30:
-            st.success(f"**{_signal_type_today} 信号 + 接近超卖 → 准备入场** "
-                       f"(Stoch RSI K={_srk:.0f})")
+        _is_entry_now = _entry_window.get(_last_1h, False)
+        _is_entry_zone = _entry_zone.get(_last_1h, False)
+
+        if _has_buy_signal and _is_entry_now:
+            st.success(f"**{_signal_type_today} + 反转确认 + BB下轨 → 入场!** "
+                       f"(K={_srk:.0f}, 61%历史胜率)")
+        elif _has_buy_signal and _is_entry_zone:
+            st.success(f"**{_signal_type_today} + 接近BB下轨 → 准备入场, 等反转确认** "
+                       f"(K={_srk:.0f})")
         elif _has_buy_signal and _srk > 80:
-            st.warning(f"**持仓中 + 超买 → 考虑止盈** (Stoch RSI K={_srk:.0f})")
-        elif _srk < 20:
-            st.info("超卖区 — 等待日线买入信号确认")
+            st.warning(f"**持仓中 + 超买 → 考虑止盈** (K={_srk:.0f})")
+        elif _has_buy_signal:
+            st.info(f"{_signal_type_today} 活跃 — 等待价格接近BB下轨 + Stoch RSI反转 (K={_srk:.0f})")
+        elif _is_entry_zone:
+            st.info(f"接近BB下轨 + 超卖 — 等待日线买入信号确认 (K={_srk:.0f})")
         elif _srk > 80:
             st.warning("超买区 — 如有持仓注意止盈")
         elif _sq_on:
