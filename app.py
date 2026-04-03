@@ -103,9 +103,9 @@ def load_all():
 
 
 @st.cache_data(ttl=300)
-def _get_realtime_prices():
-    """实时金价+汇率 (5分钟缓存)."""
-    return fetch_realtime_gold_fx()
+def _get_realtime_prices(futures_ticker="GC=F"):
+    """实时期货价格+汇率 (5分钟缓存)."""
+    return fetch_realtime_gold_fx(futures_ticker)
 
 
 @st.cache_data(ttl=3600)
@@ -834,8 +834,9 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     eff_bp030 = oi_adj_bp030 if oi_adj_bp030 > 0 else next_bp030
     eff_bp090 = oi_adj_bp090 if oi_adj_bp090 > 0 else next_bp090
 
-    gc_gld_r = gc_gld_ratio if gc_gld_ratio else 10.9
-    rt = _get_realtime_prices()
+    gc_gld_r = gc_gld_ratio if gc_gld_ratio else (10.9 if asset_key == "GLD" else 1.0)
+    _rt_ticker = "GC=F" if asset_key == "GLD" else "SI=F"
+    rt = _get_realtime_prices(_rt_ticker)
     _cny = rt["usdcny"] if rt else (usdcny_rate if usdcny_rate else 7.0)
     _g = 31.1035
 

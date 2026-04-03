@@ -63,8 +63,11 @@ def load_usdcny(cfg: dict) -> pd.Series:
     return None
 
 
-def fetch_realtime_gold_fx():
-    """获取实时金价和汇率 (via yfinance).
+def fetch_realtime_gold_fx(futures_ticker="GC=F"):
+    """获取实时期货价格和汇率 (via yfinance).
+
+    Args:
+        futures_ticker: "GC=F" (黄金) 或 "SI=F" (白银)
 
     Returns dict: {gc_price, usdcny, shfe_approx, timestamp}
     Returns None if fetch fails.
@@ -72,8 +75,8 @@ def fetch_realtime_gold_fx():
     try:
         import yfinance as yf
         from datetime import datetime
-        tickers = yf.Tickers("GC=F CNY=X")
-        gc_info = tickers.tickers["GC=F"].fast_info
+        tickers = yf.Tickers(f"{futures_ticker} CNY=X")
+        gc_info = tickers.tickers[futures_ticker].fast_info
         cny_info = tickers.tickers["CNY=X"].fast_info
         gc_price = gc_info.get("lastPrice") or gc_info.get("previousClose")
         cny_rate = cny_info.get("lastPrice") or cny_info.get("previousClose")
