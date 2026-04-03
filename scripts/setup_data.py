@@ -381,18 +381,112 @@ def build_features():
     else:
         print("  警告: gvz.csv 不存在, GVZ 特征跳过")
 
-    # ── VRP ──
+    # ── HV (历史波动率) ──
+    features["hv_5d"] = log_ret.rolling(5).std() * np.sqrt(252) * 100
+    features["hv_60d"] = log_ret.rolling(60).std() * np.sqrt(252) * 100
+    features["hv_5d_change"] = features["hv_5d"].pct_change(5)
+
+    # ── 成交量特征 ──
+    features["vol_ratio_5d"] = volume / volume.rolling(5).mean().replace(0, np.nan)
+    features["vol_ratio_20d"] = volume / volume.rolling(20).mean().replace(0, np.nan)
+    features["vol_change_1d"] = volume.pct_change(1)
+
+    # OBV 方向
+    obv = (np.sign(close.diff()) * volume).cumsum()
+    obv_sma = obv.rolling(20).mean()
+    features["obv_direction"] = np.sign(obv - obv_sma)
+
+    # 价格确认
+    features["price_vol_confirm"] = (
+        (close.pct_change() > 0) & (volume > volume.rolling(5).mean())
+    ).astype(float) - (
+        (close.pct_change() < 0) & (volume > volume.rolling(5).mean())
+    ).astype(float)
+
+    # ── 缺口 ──
+    features["gap_pct"] = (gld["Open"] - close.shift(1)) / close.shift(1)
+    features["gap_up"] = (features["gap_pct"] > 0.005).astype(float)
+    features["gap_down"] = (features["gap_pct"] < -0.005).astype(float)
+
+    # ── VIX 期限结构 (在线获取 or 已有文件) ──
+    vix_term_path = os.path.join(RAW_VOL, "vix_term_structure.csv")
+    # 尝试从 yfinance 更新
+    try:
+        import yfinance as yf
+        _vix_tickers = {"VIX": "^VIX", "VIX9D": "^VIX9D",
+                         "VIX3M": "^VIX3M", "VIX6M": "^VIX6M"}
+        _vix_dfs = {}
+        for name, ticker in _vix_tickers.items():
+            d = yf.Ticker(ticker).history(start=START_DATE, progress=False)
+            if len(d) > 0:
+                d.columns = [c[0] if isinstance(c, tuple) else c for c in d.columns]
+                _vix_dfs[name] = d["Close"]
+        if _vix_dfs:
+            vix_term = pd.DataFrame(_vix_dfs)
+            vix_term.index = pd.to_datetime(vix_term.index).tz_localize(None)
+            vix_term.index.name = "Date"
+            vix_term.to_csv(vix_term_path)
+    except Exception:
+        pass
+
+    if os.path.exists(vix_term_path):
+        vt = pd.read_csv(vix_term_path, index_col=0, parse_dates=True)
+        vt = vt.reindex(gld.index).ffill()
+        if "VIX" in vt.columns and "VIX3M" in vt.columns:
+            features["vix_term_slope"] = (vt["VIX3M"] - vt["VIX"]) / vt["VIX"].replace(0, np.nan)
+        if "VIX" in vt.columns and "VIX9D" in vt.columns:
+            features["vix_9d_vs_30d"] = (vt["VIX9D"] - vt["VIX"]) / vt["VIX"].replace(0, np.nan)
+
+    # ── VRP (波动率风险溢价) ──
     if "rv_20d" in features.columns and "gvz" in features.columns:
         features["iv_rv_spread"] = features["gvz"] - features["rv_20d"]
         features["vrp_20d"] = features["gvz"] - features["rv_20d"]
         features["vrp_10d"] = features.get("gvz", 0) - features.get("rv_10d", 0)
 
+    # ── FRED 个别系列 (macro_panel 可能不全) ──
+    for series_name in ["real_yield_5y", "breakeven_10y", "fed_funds_rate",
+                          "tw_usd", "cpi", "m2", "federal_debt"]:
+        if series_name not in features.columns:
+            fpath = os.path.join(RAW_MACRO, f"{series_name}.csv")
+            if os.path.exists(fpath):
+                s = pd.read_csv(fpath, index_col=0, parse_dates=True)
+                col = s.columns[0] if len(s.columns) > 0 else None
+                if col:
+                    features[series_name] = s[col].reindex(gld.index).ffill()
+
+    # 实际利率曲线
+    if "real_yield_10y" in features.columns and "real_yield_5y" in features.columns:
+        features["real_yield_curve"] = features["real_yield_10y"] - features["real_yield_5y"]
+
+    # 财政数据
+    for fname in ["federal_debt", "fiscal_deficit"]:
+        fpath = os.path.join(RAW_MACRO, f"{fname}.csv")
+        if os.path.exists(fpath) and fname not in features.columns:
+            s = pd.read_csv(fpath, index_col=0, parse_dates=True)
+            col = s.columns[0]
+            series = s[col].reindex(gld.index).ffill()
+            features[fname] = series
+            if fname == "federal_debt":
+                features["federal_debt_yoy"] = series.pct_change(252)
+            elif fname == "fiscal_deficit":
+                features["fiscal_deficit_12m_sum"] = series.rolling(252).sum()
+
     # ── COT (如果存在) ──
     cot_path = os.path.join(RAW_COT, "gold_cot.csv")
     if os.path.exists(cot_path):
         cot = pd.read_csv(cot_path, index_col=0, parse_dates=True)
+        # 计算派生列
+        if "NonComm_Long" in cot.columns and "NonComm_Short" in cot.columns:
+            cot["cot_noncomm_net"] = cot["NonComm_Long"] - cot["NonComm_Short"]
+            cot["cot_comm_net"] = cot.get("Comm_Long", 0) - cot.get("Comm_Short", 0)
+        if "Open_Interest" in cot.columns:
+            cot["cot_open_interest"] = cot["Open_Interest"]
+            cot["cot_oi_change_pct"] = cot["Open_Interest"].pct_change()
+        if "cot_noncomm_net" in cot.columns:
+            cot["cot_noncomm_net_change"] = cot["cot_noncomm_net"].diff()
+
         cot = cot.reindex(gld.index).ffill()
-        for col in ["cot_noncomm_net", "cot_noncomm_net_change",
+        for col in ["cot_noncomm_net", "cot_noncomm_net_change", "cot_comm_net",
                      "cot_open_interest", "cot_oi_change_pct"]:
             if col in cot.columns:
                 features[col] = cot[col]
