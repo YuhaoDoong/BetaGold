@@ -275,7 +275,20 @@ def update_features_full(cfg: dict):
         except Exception:
             pass
 
-        # 4. 全量重建特征 (从原始数据计算)
+        # 4. COT 持仓数据 (CFTC 每周五)
+        try:
+            import sys as _sys
+            _scripts = os.path.join(os.path.dirname(os.path.dirname(
+                os.path.abspath(__file__))), "scripts")
+            if _scripts not in _sys.path:
+                _sys.path.insert(0, _scripts)
+            from fetch_cot import update_cot
+            update_cot("gold")
+            update_cot("silver")
+        except Exception:
+            pass
+
+        # 5. 全量重建特征 (从原始数据计算)
         setup_data.build_features()
 
         _FEATURE_REBUILT_TODAY = True
