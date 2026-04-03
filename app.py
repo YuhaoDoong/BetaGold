@@ -771,7 +771,8 @@ def compute_next_day_band(close, range_df, bp_dates, today):
 # ══════════════════════════════════════════════════════════
 def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                           regime, rv_pctile, bp_dates, bp_s,
-                          gc_gld_ratio, usdcny_rate, today_sgt):
+                          gc_gld_ratio, usdcny_rate, today_sgt,
+                          asset_key="GLD"):
     """v2.2: v1.0 Band + 盘中H/L入场 + 12h止盈."""
     from core.signals_v2 import (generate_daily_signals, run_backtest,
                                   EXIT_TIMEFRAME, PULLBACK_GAIN, PULLBACK_DD)
@@ -891,9 +892,18 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             st.metric(f"看空/止盈 >{oi_tag}", f"${eff_bp090:.2f}",
                       delta=f"COMEX > ${eff_bp090*gc_gld_r:.0f} | 沪金 > ¥{eff_bp090*gc_gld_r*_cny/_g:.1f}")
         with c3:
-            sig_text = sig_df.loc[last_date]["signal_text"] \
+            _raw_sig = sig_df.loc[last_date]["signal_text"] \
                 if last_date in sig_df.index else ""
-            st.metric("最新信号", sig_text if sig_text else "—",
+            # 转换为 期权/期货 双标签
+            _sig_map = {
+                "BUY CALL": "Buy Call / 做多",
+                "SELL PUT": "Sell Put / 做多",
+                "EXIT": "平仓 / 做空",
+                "BUY CALL + EXIT": "Buy Call / 做多 (有退出)",
+                "SELL PUT + EXIT": "Sell Put / 做多 (有退出)",
+            }
+            sig_text = _sig_map.get(_raw_sig, _raw_sig if _raw_sig else "—")
+            st.metric("最新信号", sig_text,
                       delta=f"Regime: {last_regime} | bp={last_bp:.3f} | RV={rv_pctile.get(last_date,0):.0%}")
         st.markdown('</div>', unsafe_allow_html=True)
 
@@ -921,28 +931,38 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                           delta=f"数据: {last_date.date()} | 今日: {today_sgt}")
             st.markdown('</div>', unsafe_allow_html=True)
 
-            # 币安行情 (XAU/USDT + XAG/USDT)
+            # 币安合约行情 (XAU/USDT + XAG/USDT)
             try:
                 from core.binance_data import fetch_binance_prices
                 _bn = fetch_binance_prices()
-                if _bn and ("xau_futures" in _bn or "xag_futures" in _bn):
+                if _bn and ("xau_price" in _bn or "xag_price" in _bn):
                     bn_cols = st.columns(4)
                     with bn_cols[0]:
-                        if "xau_futures" in _bn:
-                            st.metric("币安 XAU/USDT", f"${_bn['xau_futures']:.1f}",
-                                      delta="合约")
+                        if "xau_price" in _bn:
+                            _xau_chg = _bn.get("xau_change", 0)
+                            st.metric("币安 XAU/USDT",
+                                      f"${_bn['xau_price']:.1f}",
+                                      delta=f"{_xau_chg:+.1f}% 24h")
                     with bn_cols[1]:
-                        if "xau_spot" in _bn:
-                            st.metric("币安 PAXG", f"${_bn['xau_spot']:.1f}",
-                                      delta="现货")
+                        if "xag_price" in _bn:
+                            _xag_chg = _bn.get("xag_change", 0)
+                            st.metric("币安 XAG/USDT",
+                                      f"${_bn['xag_price']:.2f}",
+                                      delta=f"{_xag_chg:+.1f}% 24h")
                     with bn_cols[2]:
-                        if "xag_futures" in _bn:
-                            st.metric("币安 XAG/USDT", f"${_bn['xag_futures']:.2f}",
-                                      delta="合约")
-                    with bn_cols[3]:
                         if "gold_silver_ratio" in _bn:
-                            st.metric("金银比", f"{_bn['gold_silver_ratio']:.1f}",
-                                      delta=_bn.get("timestamp", ""))
+                            st.metric("金银比",
+                                      f"{_bn['gold_silver_ratio']:.1f}")
+                    with bn_cols[3]:
+                        # 持仓量
+                        oi_parts = []
+                        if "xau_oi" in _bn:
+                            oi_parts.append(f"XAU OI: {_bn['xau_oi']:,.0f}")
+                        if "xag_oi" in _bn:
+                            oi_parts.append(f"XAG OI: {_bn['xag_oi']:,.0f}")
+                        st.metric("持仓量",
+                                  " | ".join(oi_parts) if oi_parts else "—",
+                                  delta=_bn.get("timestamp", ""))
             except Exception:
                 pass
 
@@ -1880,7 +1900,8 @@ def main():
     if mode == "盘中信号":
         _render_intraday_mode(close, high, low, upper_band, lower_band,
                               regime, rv_pctile, bp_dates, bp_s,
-                              gc_gld_ratio, usdcny_rate, today_sgt)
+                              gc_gld_ratio, usdcny_rate, today_sgt,
+                              asset_key=asset_key)
         return
 
     if mode == "历史回看":

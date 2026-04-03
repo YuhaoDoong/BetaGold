@@ -24,16 +24,9 @@ SYMBOLS = {
 
 
 def fetch_binance_prices():
-    """获取币安金银实时行情.
+    """获取币安金银合约实时行情 + 持仓量.
 
     Returns: dict or None
-        {
-            "xau_futures": float,  # XAU/USDT 合约价
-            "xau_spot": float,     # PAXG/USDT 现货价
-            "xag_futures": float,  # XAG/USDT 合约价
-            "gold_silver_ratio": float,
-            "timestamp": str,
-        }
     """
     try:
         import ccxt
@@ -48,18 +41,26 @@ def fetch_binance_prices():
 
         result = {"timestamp": datetime.now().strftime("%H:%M:%S")}
 
-        for name, symbols in SYMBOLS.items():
-            for stype, symbol in symbols.items():
-                try:
-                    ticker = exchange.fetch_ticker(symbol)
-                    key = f"{'xau' if name == 'gold' else 'xag'}_{stype}"
-                    result[key] = float(ticker["last"])
-                except Exception:
-                    pass
+        # 只获取合约
+        for key, symbol in [("xau", "XAU/USDT:USDT"), ("xag", "XAG/USDT:USDT")]:
+            try:
+                ticker = exchange.fetch_ticker(symbol)
+                result[f"{key}_price"] = float(ticker["last"])
+                result[f"{key}_change"] = float(ticker.get("percentage", 0) or 0)
+                result[f"{key}_volume"] = float(ticker.get("quoteVolume", 0) or 0)
+                # 持仓量 (open interest)
+                if hasattr(exchange, "fetch_open_interest"):
+                    try:
+                        oi = exchange.fetch_open_interest(symbol)
+                        result[f"{key}_oi"] = float(oi.get("openInterest", 0) or 0)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
 
         # 金银比
-        if "xau_futures" in result and "xag_futures" in result and result["xag_futures"] > 0:
-            result["gold_silver_ratio"] = result["xau_futures"] / result["xag_futures"]
+        if "xau_price" in result and "xag_price" in result and result["xag_price"] > 0:
+            result["gold_silver_ratio"] = result["xau_price"] / result["xag_price"]
 
         return result if len(result) > 1 else None
 
