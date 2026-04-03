@@ -898,15 +898,26 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                      border-left: 4px solid #7B1FA2;}
         </style>""", unsafe_allow_html=True)
 
+        _is_gold = asset_key == "GLD"
+        _comex_label = "纽约金" if _is_gold else "纽约银"
+        _shfe_label = "沪金" if _is_gold else "沪银"
+        _etf_label = "GLD" if _is_gold else "SLV"
+
+        # COMEX 价格为主, ETF 为辅
+        _buy_comex = eff_bp030 * gc_gld_r
+        _exit_comex = eff_bp090 * gc_gld_r
+        _buy_shfe = _buy_comex * _cny / _g
+        _exit_shfe = _exit_comex * _cny / _g
+
+        oi_tag = " (OI修正)" if oi_adj_bp030 > 0 else ""
         st.markdown('<div class="signal-box">', unsafe_allow_html=True)
         c1, c2, c3 = st.columns(3)
         with c1:
-            oi_tag = " (OI修正)" if oi_adj_bp030 > 0 else ""
-            st.metric(f"看多 <{oi_tag}", f"${eff_bp030:.2f}",
-                      delta=f"COMEX < ${eff_bp030*gc_gld_r:.0f} | 沪金 < ¥{eff_bp030*gc_gld_r*_cny/_g:.1f}")
+            st.metric(f"看多 <{oi_tag}", f"${_buy_comex:.0f}",
+                      delta=f"{_etf_label} < ${eff_bp030:.2f} | {_shfe_label} < ¥{_buy_shfe:.1f}")
         with c2:
-            st.metric(f"看空/止盈 >{oi_tag}", f"${eff_bp090:.2f}",
-                      delta=f"COMEX > ${eff_bp090*gc_gld_r:.0f} | 沪金 > ¥{eff_bp090*gc_gld_r*_cny/_g:.1f}")
+            st.metric(f"看空/止盈 >{oi_tag}", f"${_exit_comex:.0f}",
+                      delta=f"{_etf_label} > ${eff_bp090:.2f} | {_shfe_label} > ¥{_exit_shfe:.1f}")
         with c3:
             # 转换为 期权/期货 双标签
             _sig_map = {
