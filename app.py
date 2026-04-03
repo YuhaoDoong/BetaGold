@@ -1860,7 +1860,7 @@ def main():
                                         (_etf_path, "黄金ETF", 35)]:
             if os.path.exists(_fp):
                 _df = pd.read_csv(_fp, index_col=0, parse_dates=True)
-                _age = (pd.Timestamp(today_sgt) - _df.index[-1]).days
+                _age = (pd.Timestamp(str(today_sgt)) - pd.Timestamp(_df.index[-1])).days
                 if _age > _max_days:
                     _stale.append(f"{_name} ({_age}天前)")
             else:
