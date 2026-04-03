@@ -1157,10 +1157,10 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
 
     # 实时下载 GC=F 数据 (缓存5分钟)
     @st.cache_data(ttl=300)
-    def _fetch_gc_kline(interval):
+    def _fetch_futures_kline(ticker, interval):
         try:
             import yfinance as yf
-            t = yf.Ticker("GC=F")
+            t = yf.Ticker(ticker)
             df = t.history(period="5d", interval=interval)
             if df is not None and len(df) > 0:
                 df.index = pd.to_datetime(df.index).tz_localize(None)
@@ -1169,8 +1169,10 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             pass
         return None
 
-    _kline_data = _fetch_gc_kline(_kline_interval)
-    _kline_label = f"COMEX Gold {_kline_interval}"
+    _futures_ticker = "GC=F" if asset_key == "GLD" else "SI=F"
+    _futures_name = "COMEX Gold" if asset_key == "GLD" else "COMEX Silver"
+    _kline_data = _fetch_futures_kline(_futures_ticker, _kline_interval)
+    _kline_label = f"{_futures_name} {_kline_interval}"
 
     if _kline_data is not None and len(_kline_data) > 0:
         st.subheader(f"{_kline_label} K线 (Stoch RSI + Squeeze)")
@@ -1732,7 +1734,7 @@ def _render_options_section(eod_df, snap_date, last_close, next_bp090,
 # ══════════════════════════════════════════════════════════
 def main():
     today_sgt = get_today_sgt()
-    st.title(f"GLD 期权交易仪表板  ({today_sgt})")
+    st.title(f"贵金属期权交易仪表板  ({today_sgt})")
 
     # 自动检测并更新市场数据
     cfg_refresh = load_config()
@@ -1757,8 +1759,35 @@ def main():
             load_all.clear()
             st.toast("数据已更新: " + " | ".join(refreshed), icon="✅")
 
-    with st.spinner("加载数据..."):
-        gld, range_df, regime, rv_pctile, gc_gld_ratio, usdcny_rate = load_all()
+    # ── 资产选择 ──
+    st.sidebar.header("设置")
+    asset = st.sidebar.selectbox("资产", ["GLD (黄金)", "SLV (白银)"], index=0)
+    asset_key = "GLD" if "GLD" in asset else "SLV"
+
+    if asset_key == "GLD":
+        with st.spinner("加载黄金数据..."):
+            gld, range_df, regime, rv_pctile, gc_gld_ratio, usdcny_rate = load_all()
+    else:
+        with st.spinner("加载白银数据..."):
+            # 复用黄金的 Regime (宏观环境对金银都适用)
+            gld_for_regime, _, regime, rv_pctile_gld, gc_gld_ratio, usdcny_rate = load_all()
+            # 加载白银数据
+            _slv_path = os.path.join(cfg_refresh["data_root"], "raw", "market", "slv.csv")
+            _slv_oos_path = os.path.join(cfg_refresh["data_root"], "models", "dl_range_slv_oos.parquet")
+            if os.path.exists(_slv_path) and os.path.exists(_slv_oos_path):
+                gld = pd.read_csv(_slv_path, index_col=0, parse_dates=True)
+                range_df = pd.read_parquet(_slv_oos_path)
+                # 白银 RV
+                _slv_feat_path = os.path.join(cfg_refresh["data_root"], "processed", "features_slv.parquet")
+                if os.path.exists(_slv_feat_path):
+                    _slv_feat = pd.read_parquet(_slv_feat_path)
+                    rv_pctile = _slv_feat["rv_10d"].rolling(252, min_periods=60).rank(pct=True) \
+                        if "rv_10d" in _slv_feat.columns else rv_pctile_gld
+                else:
+                    rv_pctile = rv_pctile_gld
+            else:
+                st.error("白银数据未找到。请先运行白银模型训练。")
+                return
 
     close, high, low = gld["Close"], gld["High"], gld["Low"]
 
@@ -1777,14 +1806,12 @@ def main():
     last_regime = regime.get(last_date, "?")
     last_rv = rv_p.get(last_date, 0)
 
-    # ── 侧边栏 ──
-    st.sidebar.header("设置")
     mode = st.sidebar.radio("模式", ["盘中信号", "今日预测", "历史回看", "回测分析"])
 
     # 数据状态
     with st.sidebar.expander("数据状态", expanded=False):
         st.caption(f"今日 (SGT): {today_sgt}")
-        st.caption(f"GLD 最新: {last_date.date()}")
+        st.caption(f"{asset_key} 最新: {last_date.date()}")
         for t, s in refresh_results:
             st.caption(f"{t}: {s}")
 

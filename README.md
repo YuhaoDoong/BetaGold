@@ -1,6 +1,6 @@
-# GoldDash — 黄金期权交易决策系统
+# GoldDash — 贵金属期权交易决策系统
 
-基于宏观因子 + 深度学习的黄金交易决策系统。信号基于金价，适用于 GLD 期权、COMEX 期货、沪金等。
+基于宏观因子 + 深度学习的贵金属交易决策系统。支持黄金 (GLD) 和白银 (SLV) 切换。
 
 GitHub: https://github.com/YuhaoDoong/BetaGold
 
@@ -156,4 +156,6 @@ streamlit run app.py
 | v2.3 | 3%止损 + 连续熔断 |
 | v2.4 | 全量数据更新 + 事件日历 + Straddle信号 + 统一策略 + 双套盈亏 |
 | v2.5 | 智能去重 + 前瞻分析 + 最优策略推荐 + Straddle持仓管理 |
-| **v2.6** | **15m K线 + Stoch RSI入场窗口 + Squeeze + 实时GC=F** |
+| v2.6 | 15m K线 + Stoch RSI入场窗口 + Squeeze + 实时GC=F |
+| v2.7 | 1h "反转+BB下轨" 入场窗口 (61% WR, 全间隔回测验证) |
+| **v3.0** | **白银 SLV 模型 + 资产切换 (GLD/SLV)** |
