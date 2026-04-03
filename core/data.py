@@ -367,18 +367,28 @@ def extend_oos_predictions(cfg: dict):
     if len(new_preds) == 0:
         return 0, f"已是最新 ({oos_last.date()})"
 
-    # 合理性检查: 宽度不应超过历史均值的 3 倍
+    # 合理性检查: 宽度和中心值都不应偏离历史太远
     hist_width = (oos["pred_upper_pct"] - oos["pred_lower_pct"]).median()
-    max_width = max(hist_width * 3, 15.0)  # 至少 15%
+    hist_center = ((oos["pred_upper_pct"] + oos["pred_lower_pct"]) / 2).median()
+    max_width = max(hist_width * 3, 15.0)
+    max_center_dev = max(hist_width * 0.5, 3.0)  # center 偏差不超过半个宽度
+
     for idx in new_preds.index:
-        w = new_preds.loc[idx, "pred_upper_pct"] - new_preds.loc[idx, "pred_lower_pct"]
+        u = new_preds.loc[idx, "pred_upper_pct"]
+        l = new_preds.loc[idx, "pred_lower_pct"]
+        w = u - l
+        center = (u + l) / 2
+
+        # clamp center
+        if abs(center - hist_center) > max_center_dev:
+            center = hist_center + max_center_dev * (1 if center > hist_center else -1)
+
+        # clamp width
         if w > max_width:
-            scale = max_width / w
-            center = (new_preds.loc[idx, "pred_upper_pct"] +
-                       new_preds.loc[idx, "pred_lower_pct"]) / 2
-            half = max_width / 2
-            new_preds.loc[idx, "pred_upper_pct"] = center + half
-            new_preds.loc[idx, "pred_lower_pct"] = center - half
+            w = max_width
+
+        new_preds.loc[idx, "pred_upper_pct"] = center + w / 2
+        new_preds.loc[idx, "pred_lower_pct"] = center - w / 2
 
     # 追加并保存
     combined = pd.concat([oos, new_preds])
