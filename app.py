@@ -868,8 +868,23 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         gld_est = gc_now / gc_gld_r if gc_now > 0 else last_close
         bp_est = (gld_est - next_lower) / (next_upper - next_lower) \
             if next_upper > next_lower else 0
-        zone = "看多" if bp_est < 0.30 else ("看空/止盈" if bp_est > 0.90 else "观望")
-        zone_icon = {"买入区": "🟢", "退出区": "🔴", "观望": "⚪"}
+        # 判断当前信号
+        _raw_sig = sig_df.loc[last_date]["signal_text"] \
+            if last_date in sig_df.index else ""
+        _has_open_buy = "BUY" in _raw_sig or "SELL PUT" in _raw_sig
+
+        if bp_est < 0.30:
+            zone = "看多"
+            zone_icon_v = "🟢"
+        elif bp_est > 0.90:
+            zone = "看空/止盈"
+            zone_icon_v = "🔴"
+        elif _has_open_buy:
+            zone = "持仓中"
+            zone_icon_v = "🟡"
+        else:
+            zone = "观望"
+            zone_icon_v = "⚪"
         ts = rt["timestamp"] if rt else ""
 
         # 信号预测价位 (蓝色背景)
@@ -892,8 +907,6 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             st.metric(f"看空/止盈 >{oi_tag}", f"${eff_bp090:.2f}",
                       delta=f"COMEX > ${eff_bp090*gc_gld_r:.0f} | 沪金 > ¥{eff_bp090*gc_gld_r*_cny/_g:.1f}")
         with c3:
-            _raw_sig = sig_df.loc[last_date]["signal_text"] \
-                if last_date in sig_df.index else ""
             # 转换为 期权/期货 双标签
             _sig_map = {
                 "BUY CALL": "Buy Call / 做多",
@@ -912,48 +925,39 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             xau_est = gc_now
             shfe_est = gc_now * _cny / _g
 
-            st.markdown('<div class="price-box">', unsafe_allow_html=True)
-            r1, r2, r3, r4, r5 = st.columns(5)
-            with r1:
-                st.metric("COMEX 纽约金", f"${gc_now:.1f}",
-                          delta=f"{zone_icon.get(zone,'')} {zone}")
-            with r2:
-                st.metric("伦敦金 XAU", f"${xau_est:.1f}",
-                          delta="≈COMEX")
-            with r3:
-                st.metric("GLD", f"${gld_est:.1f}",
-                          delta=f"bp≈{bp_est:.2f}")
-            with r4:
-                st.metric("沪金 AU", f"¥{shfe_est:.2f}",
-                          delta=f"USD/CNY={_cny:.4f}")
-            with r5:
-                st.metric("数据时间", ts if ts else "—",
-                          delta=f"数据: {last_date.date()} | 今日: {today_sgt}")
-            st.markdown('</div>', unsafe_allow_html=True)
+            # 根据资产类型显示对应期货
+            _is_gold = asset_key == "GLD"
+            _futures_label = "纽约金/伦敦金" if _is_gold else "纽约银"
+            _etf_label = "GLD" if _is_gold else "SLV"
 
-            # 币安合约 (7×24, 覆盖周末)
-            try:
-                from core.binance_data import fetch_binance_prices
-                _bn = fetch_binance_prices()
-                if _bn and ("xau_price" in _bn or "xag_price" in _bn):
-                    bn_cols = st.columns(3)
-                    with bn_cols[0]:
-                        if "xau_price" in _bn:
-                            st.metric("币安 XAU/USDT",
-                                      f"${_bn['xau_price']:.1f}",
-                                      delta=f"{_bn.get('xau_change',0):+.1f}% 24h")
-                    with bn_cols[1]:
-                        if "xag_price" in _bn:
-                            st.metric("币安 XAG/USDT",
-                                      f"${_bn['xag_price']:.2f}",
-                                      delta=f"{_bn.get('xag_change',0):+.1f}% 24h")
-                    with bn_cols[2]:
-                        if "gold_silver_ratio" in _bn:
-                            st.metric("金银比",
-                                      f"{_bn['gold_silver_ratio']:.1f}",
-                                      delta=_bn.get("timestamp", ""))
-            except Exception:
-                pass
+            st.markdown('<div class="price-box">', unsafe_allow_html=True)
+            r1, r2, r3, r4 = st.columns([3, 2, 2, 2])
+            with r1:
+                st.metric(f"{zone_icon_v} {_futures_label}",
+                          f"${gc_now:.1f}",
+                          delta=f"{zone} | {_etf_label}≈${gld_est:.1f} bp≈{bp_est:.2f}")
+            with r2:
+                st.metric("沪金" if _is_gold else "沪银",
+                          f"¥{shfe_est:.2f}",
+                          delta=f"CNY={_cny:.4f}")
+            with r3:
+                # 币安
+                try:
+                    from core.binance_data import fetch_binance_prices
+                    _bn = fetch_binance_prices()
+                    if _bn:
+                        _bn_key = "xau_price" if _is_gold else "xag_price"
+                        _bn_chg = "xau_change" if _is_gold else "xag_change"
+                        if _bn_key in _bn:
+                            st.metric("币安合约",
+                                      f"${_bn[_bn_key]:.1f}",
+                                      delta=f"{_bn.get(_bn_chg,0):+.1f}% 24h")
+                except Exception:
+                    st.metric("币安", "—")
+            with r4:
+                st.metric("时间", ts if ts else "—",
+                          delta=f"{last_date.date()}")
+            st.markdown('</div>', unsafe_allow_html=True)
 
         else:
             st.caption(f"实时数据未获取 | {asset_key} 收盘 ${last_close:.2f} ({last_date.date()})")
