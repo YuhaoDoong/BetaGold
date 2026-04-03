@@ -867,7 +867,7 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         gld_est = gc_now / gc_gld_r if gc_now > 0 else last_close
         bp_est = (gld_est - next_lower) / (next_upper - next_lower) \
             if next_upper > next_lower else 0
-        zone = "买入区" if bp_est < 0.30 else ("退出区" if bp_est > 0.90 else "观望")
+        zone = "看多" if bp_est < 0.30 else ("看空/止盈" if bp_est > 0.90 else "观望")
         zone_icon = {"买入区": "🟢", "退出区": "🔴", "观望": "⚪"}
         ts = rt["timestamp"] if rt else ""
 
@@ -885,10 +885,10 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         c1, c2, c3 = st.columns(3)
         with c1:
             oi_tag = " (OI修正)" if oi_adj_bp030 > 0 else ""
-            st.metric(f"买入 <{oi_tag}", f"${eff_bp030:.2f}",
+            st.metric(f"看多 <{oi_tag}", f"${eff_bp030:.2f}",
                       delta=f"COMEX < ${eff_bp030*gc_gld_r:.0f} | 沪金 < ¥{eff_bp030*gc_gld_r*_cny/_g:.1f}")
         with c2:
-            st.metric(f"退出 >{oi_tag}", f"${eff_bp090:.2f}",
+            st.metric(f"看空/止盈 >{oi_tag}", f"${eff_bp090:.2f}",
                       delta=f"COMEX > ${eff_bp090*gc_gld_r:.0f} | 沪金 > ¥{eff_bp090*gc_gld_r*_cny/_g:.1f}")
         with c3:
             sig_text = sig_df.loc[last_date]["signal_text"] \
@@ -920,8 +920,34 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                 st.metric("数据时间", ts if ts else "—",
                           delta=f"数据: {last_date.date()} | 今日: {today_sgt}")
             st.markdown('</div>', unsafe_allow_html=True)
+
+            # 币安行情 (XAU/USDT + XAG/USDT)
+            try:
+                from core.binance_data import fetch_binance_prices
+                _bn = fetch_binance_prices()
+                if _bn and ("xau_futures" in _bn or "xag_futures" in _bn):
+                    bn_cols = st.columns(4)
+                    with bn_cols[0]:
+                        if "xau_futures" in _bn:
+                            st.metric("币安 XAU/USDT", f"${_bn['xau_futures']:.1f}",
+                                      delta="合约")
+                    with bn_cols[1]:
+                        if "xau_spot" in _bn:
+                            st.metric("币安 PAXG", f"${_bn['xau_spot']:.1f}",
+                                      delta="现货")
+                    with bn_cols[2]:
+                        if "xag_futures" in _bn:
+                            st.metric("币安 XAG/USDT", f"${_bn['xag_futures']:.2f}",
+                                      delta="合约")
+                    with bn_cols[3]:
+                        if "gold_silver_ratio" in _bn:
+                            st.metric("金银比", f"{_bn['gold_silver_ratio']:.1f}",
+                                      delta=_bn.get("timestamp", ""))
+            except Exception:
+                pass
+
         else:
-            st.caption(f"实时数据未获取 | GLD 收盘 ${last_close:.2f} ({last_date.date()})")
+            st.caption(f"实时数据未获取 | {asset_key} 收盘 ${last_close:.2f} ({last_date.date()})")
 
     # ── 市场分析 ──
     st.divider()
@@ -1734,7 +1760,7 @@ def _render_options_section(eod_df, snap_date, last_close, next_bp090,
 # ══════════════════════════════════════════════════════════
 def main():
     today_sgt = get_today_sgt()
-    st.title(f"贵金属期权交易仪表板  ({today_sgt})")
+    st.title(f"贵金属交易仪表板  ({today_sgt})")
 
     # 自动检测并更新市场数据
     cfg_refresh = load_config()

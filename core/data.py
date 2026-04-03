@@ -367,6 +367,19 @@ def extend_oos_predictions(cfg: dict):
     if len(new_preds) == 0:
         return 0, f"已是最新 ({oos_last.date()})"
 
+    # 合理性检查: 宽度不应超过历史均值的 3 倍
+    hist_width = (oos["pred_upper_pct"] - oos["pred_lower_pct"]).median()
+    max_width = max(hist_width * 3, 15.0)  # 至少 15%
+    for idx in new_preds.index:
+        w = new_preds.loc[idx, "pred_upper_pct"] - new_preds.loc[idx, "pred_lower_pct"]
+        if w > max_width:
+            scale = max_width / w
+            center = (new_preds.loc[idx, "pred_upper_pct"] +
+                       new_preds.loc[idx, "pred_lower_pct"]) / 2
+            half = max_width / 2
+            new_preds.loc[idx, "pred_upper_pct"] = center + half
+            new_preds.loc[idx, "pred_lower_pct"] = center - half
+
     # 追加并保存
     combined = pd.concat([oos, new_preds])
     combined = combined[~combined.index.duplicated(keep="last")]
