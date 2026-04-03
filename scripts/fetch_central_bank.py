@@ -122,6 +122,42 @@ def compute_cb_features(monthly_df):
     return feat
 
 
+def fetch_eastmoney_china_gold():
+    """从东方财富获取中国黄金外汇储备 (月度, 免费API).
+
+    Returns: DataFrame or None
+    """
+    try:
+        all_rows = []
+        for page in range(1, 20):
+            url = (f"https://datacenter-web.eastmoney.com/api/data/v1/get?"
+                   f"reportName=RPT_ECONOMY_GOLD_CURRENCY&columns=ALL"
+                   f"&pageNumber={page}&pageSize=50"
+                   f"&sortColumns=REPORT_DATE&sortTypes=-1")
+            resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
+            data = resp.json()
+            if not data.get("result") or not data["result"].get("data"):
+                break
+            page_rows = data["result"]["data"]
+            all_rows.extend(page_rows)
+            if len(page_rows) < 50:
+                break
+        rows = all_rows
+        if rows:
+            df = pd.DataFrame(rows)
+            df.index = pd.to_datetime(df["REPORT_DATE"])
+            df.index.name = "Date"
+            # 转换: 万盎司 → 吨 (1盎司=31.1035克)
+            df["china_gold_tonnes"] = df["GOLD_RESERVES"].astype(float) * 10000 * 31.1035 / 1e6
+            df["china_gold_change"] = df["china_gold_tonnes"].diff()
+            logger.info(f"东方财富 中国黄金储备: {len(df)} rows, ~ {df.index[-1].date()}")
+            return df[["china_gold_tonnes", "china_gold_change",
+                        "GOLD_RESERVES", "GOLD_RESERVES_SAME", "GOLD_RESERVES_SEQUENTIAL"]]
+    except Exception as e:
+        logger.warning(f"东方财富 API 失败: {e}")
+    return None
+
+
 def update_central_bank(excel_path=None):
     """更新央行购金数据."""
     os.makedirs(DATA_DIR, exist_ok=True)
@@ -131,19 +167,27 @@ def update_central_bank(excel_path=None):
     monthly = None
 
     if excel_path and os.path.exists(excel_path):
-        # 从 WGC Excel 导入
         raw = parse_wgc_excel(excel_path)
         if raw is not None:
             monthly = raw
             monthly.to_csv(monthly_path)
             logger.info(f"Saved monthly data from Excel")
 
-    if monthly is None:
-        # 尝试 IMF API
-        imf_data = fetch_imf_gold_reserves()
-        if imf_data is not None:
-            logger.info("IMF data available (需要进一步解析)")
-            # IMF 数据格式复杂, 这里简化处理
+    # 东方财富: 中国黄金储备 (自动更新)
+    china_gold = fetch_eastmoney_china_gold()
+    if china_gold is not None:
+        china_path = os.path.join(DATA_DIR, "china_gold_reserves.csv")
+        china_gold.to_csv(china_path)
+        logger.info(f"中国黄金储备已更新: {china_gold.index[-1].date()}")
+
+        # 如果没有 WGC 全球数据, 用中国数据近似全球趋势
+        if monthly is None and not os.path.exists(monthly_path):
+            # 创建简化版: 用中国数据代表全球趋势 (中国占全球购金约30%)
+            monthly = pd.DataFrame(index=china_gold.index)
+            monthly["Global_Total"] = china_gold["china_gold_change"] * 3.3  # 近似放大
+            monthly["China, P.R.: Mainland"] = china_gold["china_gold_change"]
+            monthly.to_csv(monthly_path)
+            logger.info("用中国数据近似全球央行购金")
 
     if monthly is None and os.path.exists(monthly_path):
         monthly = pd.read_csv(monthly_path, index_col=0, parse_dates=True)
@@ -151,13 +195,16 @@ def update_central_bank(excel_path=None):
 
     if monthly is not None:
         features = compute_cb_features(monthly)
+
+        # 合并中国具体数据
+        if china_gold is not None:
+            features["cb_china_tonnes"] = china_gold["china_gold_tonnes"].reindex(features.index).ffill()
+            features["cb_china_change"] = china_gold["china_gold_change"].reindex(features.index).ffill()
+
         features.to_csv(features_path)
         logger.info(f"CB features saved: {features.index[-1].date()} ({len(features)} rows)")
     else:
         logger.warning("No central bank data available")
-        logger.info("请手动下载 WGC Excel:")
-        logger.info("  https://china.gold.org/goldhub/data/gold-reserves-by-country")
-        logger.info("  然后运行: python scripts/fetch_central_bank.py --excel <文件路径>")
 
 
 def main():
