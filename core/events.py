@@ -67,7 +67,30 @@ NFP_2025 = get_nfp_dates(2025)
 NFP_2026 = get_nfp_dates(2026)
 
 
-def get_all_events(start_date=None, end_date=None):
+# COMEX 期货交割日 (交割月倒数第三个交易日, 简化为25号附近)
+def get_futures_expiry(year, metal="gold"):
+    """COMEX 期货交割月的最后交易日 (近似: 交割月25日前的周五)."""
+    if metal == "gold":
+        months = [2, 4, 6, 8, 10, 12]
+    else:  # silver
+        months = [1, 3, 5, 7, 9, 12]
+    dates = []
+    for m in months:
+        # 近似: 交割月25号
+        d = date(year, m, 25)
+        # 退到最近的工作日
+        while d.weekday() > 4:
+            d -= timedelta(days=1)
+        dates.append(d)
+    return dates
+
+FUTURES_GOLD_2025 = get_futures_expiry(2025, "gold")
+FUTURES_GOLD_2026 = get_futures_expiry(2026, "gold")
+FUTURES_SILVER_2025 = get_futures_expiry(2025, "silver")
+FUTURES_SILVER_2026 = get_futures_expiry(2026, "silver")
+
+
+def get_all_events(start_date=None, end_date=None, asset="gold"):
     """获取指定范围内的所有事件.
 
     Returns: list of (date, event_type, label)
@@ -83,6 +106,14 @@ def get_all_events(start_date=None, end_date=None):
     for d in NFP_2025 + NFP_2026:
         events.append((pd.Timestamp(d), "NFP", "NFP"))
 
+    # 期货交割日
+    if asset == "gold":
+        for d in FUTURES_GOLD_2025 + FUTURES_GOLD_2026:
+            events.append((pd.Timestamp(d), "FUT_EXP", "GC交割"))
+    else:
+        for d in FUTURES_SILVER_2025 + FUTURES_SILVER_2026:
+            events.append((pd.Timestamp(d), "FUT_EXP", "SI交割"))
+
     if start_date:
         events = [(d, t, l) for d, t, l in events if d >= pd.Timestamp(start_date)]
     if end_date:
@@ -91,15 +122,16 @@ def get_all_events(start_date=None, end_date=None):
     return sorted(events, key=lambda x: x[0])
 
 
-def days_to_next_event(current_date, event_type=None):
+def days_to_next_event(current_date, event_type=None, asset="gold"):
     """距下一个事件的天数.
 
     Args:
-        event_type: None=任意, "FOMC", "OPEX", "NFP"
+        event_type: None=任意, "FOMC", "OPEX", "NFP", "FUT_EXP"
+        asset: "gold" or "silver"
 
     Returns: (days, event_type, event_date) or (999, None, None)
     """
-    events = get_all_events(start_date=current_date)
+    events = get_all_events(start_date=current_date, asset=asset)
     if event_type:
         events = [(d, t, l) for d, t, l in events if t == event_type]
 

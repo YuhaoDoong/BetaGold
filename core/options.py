@@ -11,11 +11,11 @@ import numpy as np
 import pandas as pd
 
 
-def _get_live_snapshot(spot, expiry_start=None, expiry_end=None):
+def _get_live_snapshot(spot, expiry_start=None, expiry_end=None, ticker="US.GLD"):
     """尝试从 Moomoo 获取实时期权报价."""
     try:
         from core.data import fetch_live_options
-        snap = fetch_live_options(spot, expiry_start, expiry_end)
+        snap = fetch_live_options(spot, expiry_start, expiry_end, ticker=ticker)
         if snap is not None and len(snap) > 0:
             snap["mid"] = (snap["bid_price"] + snap["ask_price"]) / 2
             # Moomoo 原生列已有 option_type, option_strike_price, strike_time 等
@@ -89,7 +89,7 @@ SINGLE_STOP_PCT = 50  # 单腿止损: 权利金亏损 N%
 # ══════════════════════════════════════════════════════════
 
 def get_strategy_table(signal_type, gld_price, exit_price, eod_df,
-                       use_live=True):
+                       use_live=True, option_ticker="US.GLD"):
     """获取期权策略推荐.
 
     优先用 Moomoo 实时报价, 降级到 EOD 快照.
@@ -101,7 +101,7 @@ def get_strategy_table(signal_type, gld_price, exit_price, eod_df,
     data_df = eod_df
     source = "EOD"
     if use_live:
-        live, src = _get_live_snapshot(gld_price)
+        live, src = _get_live_snapshot(gld_price, ticker=option_ticker)
         if live is not None and len(live) > 0:
             data_df = live
             source = "LIVE"

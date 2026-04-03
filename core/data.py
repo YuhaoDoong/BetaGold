@@ -415,7 +415,7 @@ def extend_oos_predictions(cfg: dict):
 
 
 def fetch_live_options(spot_price, expiry_start=None, expiry_end=None,
-                       strike_range=20):
+                       strike_range=20, ticker="US.GLD"):
     """从 Moomoo API 获取 GLD 期权实时报价.
 
     Args:
@@ -439,7 +439,7 @@ def fetch_live_options(spot_price, expiry_start=None, expiry_end=None,
         ctx = OpenQuoteContext(host="127.0.0.1", port=11111)
         try:
             ret, chain = ctx.get_option_chain(
-                "US.GLD", start=expiry_start, end=expiry_end)
+                ticker, start=expiry_start, end=expiry_end)
             if ret != RET_OK or len(chain) == 0:
                 return None
 

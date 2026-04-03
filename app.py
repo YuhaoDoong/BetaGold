@@ -1153,9 +1153,12 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                         color=cx.get(t["exit_type"],"gray"), alpha=0.7)
 
     # 事件日期标注 (FOMC/OPEX/NFP)
+    _asset_type = "gold" if asset_key == "GLD" else "silver"
     events_in_range = get_all_events(
-        viz_dates[0].strftime("%Y-%m-%d"), viz_dates[-1].strftime("%Y-%m-%d"))
-    ev_colors = {"FOMC": "#E91E63", "OPEX": "#FF9800", "NFP": "#3F51B5"}
+        viz_dates[0].strftime("%Y-%m-%d"), viz_dates[-1].strftime("%Y-%m-%d"),
+        asset=_asset_type)
+    ev_colors = {"FOMC": "#E91E63", "OPEX": "#FF9800", "NFP": "#3F51B5",
+                  "FUT_EXP": "#795548"}
     for ev_d, ev_type, ev_label in events_in_range:
         ev_xi = xi(ev_d)
         if ev_xi is not None:
@@ -2542,10 +2545,12 @@ def main():
         _rv_pred = _feat_pred["rv_10d"] if "rv_10d" in _feat_pred.columns \
             else pd.Series(20, index=close.index)
 
-        # 近期事件
-        _d_fomc, _, _fomc_d = days_to_next_event(last_date, "FOMC")
-        _d_opex, _, _opex_d = days_to_next_event(last_date, "OPEX")
-        _d_nfp, _, _nfp_d = days_to_next_event(last_date, "NFP")
+        # 近期事件 (含期货交割日)
+        _asset_ev = "gold" if asset_key == "GLD" else "silver"
+        _d_fomc, _, _fomc_d = days_to_next_event(last_date, "FOMC", _asset_ev)
+        _d_opex, _, _opex_d = days_to_next_event(last_date, "OPEX", _asset_ev)
+        _d_nfp, _, _nfp_d = days_to_next_event(last_date, "NFP", _asset_ev)
+        _d_fut, _, _fut_d = days_to_next_event(last_date, "FUT_EXP", _asset_ev)
 
         # Straddle 检测
         _st_today = detect_straddle_signal(
@@ -2569,7 +2574,8 @@ def main():
             st.markdown("**未来关键日程**")
             events_5d = get_all_events(
                 (last_date + timedelta(days=1)).strftime("%Y-%m-%d"),
-                (last_date + timedelta(days=10)).strftime("%Y-%m-%d"))
+                (last_date + timedelta(days=10)).strftime("%Y-%m-%d"),
+                asset=_asset_ev)
             if events_5d:
                 for ev_d, ev_t, ev_l in events_5d:
                     days_away = (ev_d - last_date).days
@@ -2580,7 +2586,7 @@ def main():
             if _is_straddle_pred:
                 st.warning(f"**Straddle 信号活跃**: {_straddle_reason_pred}\n\n"
                            "建议: 考虑做多波动率 (ATM Call+Put)")
-            elif min(_d_fomc, _d_opex, _d_nfp) <= 5:
+            elif min(_d_fomc, _d_opex, _d_nfp, _d_fut) <= 5:
                 st.info(f"临近事件日 — 关注波动率变化")
 
         with col_macro:
