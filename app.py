@@ -1843,12 +1843,32 @@ def main():
 
     mode = st.sidebar.radio("模式", ["盘中信号", "今日预测", "历史回看", "回测分析"])
 
-    # 数据状态
+    # 数据状态 + 更新提醒
     with st.sidebar.expander("数据状态", expanded=False):
         st.caption(f"今日 (SGT): {today_sgt}")
         st.caption(f"{asset_key} 最新: {last_date.date()}")
         for t, s in refresh_results:
             st.caption(f"{t}: {s}")
+
+        # 手动数据更新提醒
+        _cb_path = os.path.join(cfg_refresh["data_root"], "raw",
+                                 "central_bank", "cb_features.csv")
+        _etf_path = os.path.join(cfg_refresh["data_root"], "raw",
+                                  "market", "gold_etf_holdings.csv")
+        _stale = []
+        for _fp, _name, _max_days in [(_cb_path, "央行购金", 45),
+                                        (_etf_path, "黄金ETF", 35)]:
+            if os.path.exists(_fp):
+                _df = pd.read_csv(_fp, index_col=0, parse_dates=True)
+                _age = (pd.Timestamp(today_sgt) - _df.index[-1]).days
+                if _age > _max_days:
+                    _stale.append(f"{_name} ({_age}天前)")
+            else:
+                _stale.append(f"{_name} (无数据)")
+        if _stale:
+            st.warning(f"需要更新: {', '.join(_stale)}\n\n"
+                       "请下载 WGC 数据到 `Gold/data/download/` 后运行:\n"
+                       "`python scripts/parse_wgc_data.py`")
 
     if mode == "回测分析":
         # ── 回测模式 ──
