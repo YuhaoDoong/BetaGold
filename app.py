@@ -931,38 +931,27 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                           delta=f"数据: {last_date.date()} | 今日: {today_sgt}")
             st.markdown('</div>', unsafe_allow_html=True)
 
-            # 币安合约行情 (XAU/USDT + XAG/USDT)
+            # 币安合约 (7×24, 覆盖周末)
             try:
                 from core.binance_data import fetch_binance_prices
                 _bn = fetch_binance_prices()
                 if _bn and ("xau_price" in _bn or "xag_price" in _bn):
-                    bn_cols = st.columns(4)
+                    bn_cols = st.columns(3)
                     with bn_cols[0]:
                         if "xau_price" in _bn:
-                            _xau_chg = _bn.get("xau_change", 0)
                             st.metric("币安 XAU/USDT",
                                       f"${_bn['xau_price']:.1f}",
-                                      delta=f"{_xau_chg:+.1f}% 24h")
+                                      delta=f"{_bn.get('xau_change',0):+.1f}% 24h")
                     with bn_cols[1]:
                         if "xag_price" in _bn:
-                            _xag_chg = _bn.get("xag_change", 0)
                             st.metric("币安 XAG/USDT",
                                       f"${_bn['xag_price']:.2f}",
-                                      delta=f"{_xag_chg:+.1f}% 24h")
+                                      delta=f"{_bn.get('xag_change',0):+.1f}% 24h")
                     with bn_cols[2]:
                         if "gold_silver_ratio" in _bn:
                             st.metric("金银比",
-                                      f"{_bn['gold_silver_ratio']:.1f}")
-                    with bn_cols[3]:
-                        # 持仓量
-                        oi_parts = []
-                        if "xau_oi" in _bn:
-                            oi_parts.append(f"XAU OI: {_bn['xau_oi']:,.0f}")
-                        if "xag_oi" in _bn:
-                            oi_parts.append(f"XAG OI: {_bn['xag_oi']:,.0f}")
-                        st.metric("持仓量",
-                                  " | ".join(oi_parts) if oi_parts else "—",
-                                  delta=_bn.get("timestamp", ""))
+                                      f"{_bn['gold_silver_ratio']:.1f}",
+                                      delta=_bn.get("timestamp", ""))
             except Exception:
                 pass
 
