@@ -288,6 +288,13 @@ def update_features_full(cfg: dict):
             from fetch_cot import update_cot
             update_cot("gold")
             update_cot("silver")
+            # Disaggregated COT (Managed Money 分类)
+            try:
+                from fetch_cot_disagg import update_cot_disagg
+                update_cot_disagg("gold")
+                update_cot_disagg("silver")
+            except Exception:
+                pass
         except Exception:
             pass
 

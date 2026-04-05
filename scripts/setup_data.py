@@ -494,6 +494,54 @@ def build_features():
             features["cot_noncomm_net_pctile"] = features[
                 "cot_noncomm_net"].rolling(252, min_periods=60).rank(pct=True)
 
+    # ── COT Disaggregated (Managed Money 分类) ──
+    cot_disagg_path = os.path.join(RAW_COT, "gold_cot_disagg.csv")
+    if os.path.exists(cot_disagg_path):
+        cd = pd.read_csv(cot_disagg_path, index_col=0, parse_dates=True)
+        cd = cd.reindex(gld.index).ffill()
+        for col in ["MM_Net", "MM_Long", "MM_Short", "Swap_Net"]:
+            if col in cd.columns:
+                features[f"cot_{col.lower()}"] = cd[col]
+        if "MM_Net" in cd.columns:
+            features["cot_mm_net_pctile"] = cd["MM_Net"].reindex(
+                gld.index).ffill().rolling(252, min_periods=60).rank(pct=True)
+            features["cot_mm_net_change"] = cd["MM_Net"].reindex(
+                gld.index).ffill().diff()
+
+    # ── ETF 溢价率 ──
+    # Premium = (ETF_price / NAV_estimate - 1)
+    # NAV ≈ futures_price / ratio
+    gc_path = os.path.join(RAW_MARKET, "gold_futures.csv")
+    if os.path.exists(gc_path):
+        gc = pd.read_csv(gc_path, index_col=0, parse_dates=True)
+        gc_close = gc["Close"].reindex(gld.index).ffill()
+        ratio = gc_close / close
+        nav_est = gc_close / ratio.rolling(60).mean().replace(0, np.nan)
+        features["etf_premium"] = (close / nav_est - 1) * 100
+
+    # ── ETF 持仓变化 (如果有 WGC 数据) ──
+    etf_path = os.path.join(RAW_MARKET, "gold_etf_holdings.csv")
+    if os.path.exists(etf_path):
+        try:
+            etf = pd.read_csv(etf_path, index_col=0, parse_dates=True)
+            # 找总持仓列
+            total_col = [c for c in etf.columns if "total" in c.lower() or "global" in c.lower()]
+            if total_col:
+                etf_total = etf[total_col[0]].reindex(gld.index).ffill()
+                features["etf_holdings_change"] = etf_total.pct_change(20)
+        except Exception:
+            pass
+
+    # ── 中国黄金溢价 (如果有 WGC 数据) ──
+    premium_path = os.path.join(RAW_MARKET, "gold_premium_china.csv")
+    if os.path.exists(premium_path):
+        try:
+            prem = pd.read_csv(premium_path, index_col=0, parse_dates=True)
+            if "Premium_USD" in prem.columns:
+                features["china_premium"] = prem["Premium_USD"].reindex(gld.index).ffill()
+        except Exception:
+            pass
+
     # ── Central Bank (如果存在) ──
     cb_path = os.path.join(DATA_ROOT, "raw", "central_bank", "cb_features.csv")
     if os.path.exists(cb_path):
@@ -501,6 +549,8 @@ def build_features():
         cb = cb.reindex(gld.index).ffill()
         if "cb_global_12m_rolling" in cb.columns:
             features["cb_global_12m_rolling"] = cb["cb_global_12m_rolling"]
+        if "cb_china_net_tonnes" in cb.columns:
+            features["cb_china_net_tonnes"] = cb["cb_china_net_tonnes"]
 
     # ── 标签 (forward returns) ──
     labels = pd.DataFrame(index=gld.index)
