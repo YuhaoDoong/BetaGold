@@ -834,7 +834,7 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     eff_bp030 = oi_adj_bp030 if oi_adj_bp030 > 0 else next_bp030
     eff_bp090 = oi_adj_bp090 if oi_adj_bp090 > 0 else next_bp090
 
-    gc_gld_r = gc_gld_ratio if gc_gld_ratio else (10.9 if asset_key == "GLD" else 1.0)
+    gc_gld_r = gc_gld_ratio if gc_gld_ratio else (10.9 if asset_key == "GLD" else 1.11)
     _rt_ticker = "GC=F" if asset_key == "GLD" else "SI=F"
     rt = _get_realtime_prices(_rt_ticker)
     _cny = rt["usdcny"] if rt else (usdcny_rate if usdcny_rate else 7.0)
@@ -899,24 +899,25 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         </style>""", unsafe_allow_html=True)
 
         _is_gold = asset_key == "GLD"
-        _comex_label = "纽约金" if _is_gold else "纽约银"
+        _spot_label = "伦敦金" if _is_gold else "伦敦银"
         _shfe_label = "沪金" if _is_gold else "沪银"
         _etf_label = "GLD" if _is_gold else "SLV"
+        _price_fmt = ",.0f" if _is_gold else ",.2f"  # 黄金整数, 白银两位小数
 
-        # COMEX 价格为主, ETF 为辅
-        _buy_comex = eff_bp030 * gc_gld_r
-        _exit_comex = eff_bp090 * gc_gld_r
-        _buy_shfe = _buy_comex * _cny / _g
-        _exit_shfe = _exit_comex * _cny / _g
+        # 现货/期货价格为主, ETF 为辅
+        _buy_spot = eff_bp030 * gc_gld_r
+        _exit_spot = eff_bp090 * gc_gld_r
+        _buy_shfe = _buy_spot * _cny / _g
+        _exit_shfe = _exit_spot * _cny / _g
 
         oi_tag = " (OI修正)" if oi_adj_bp030 > 0 else ""
         st.markdown('<div class="signal-box">', unsafe_allow_html=True)
         c1, c2, c3 = st.columns(3)
         with c1:
-            st.metric(f"看多 <{oi_tag}", f"${_buy_comex:.0f}",
+            st.metric(f"看多 <{oi_tag}", f"${_buy_spot:{_price_fmt}}",
                       delta=f"{_etf_label} < ${eff_bp030:.2f} | {_shfe_label} < ¥{_buy_shfe:.1f}")
         with c2:
-            st.metric(f"看空/止盈 >{oi_tag}", f"${_exit_comex:.0f}",
+            st.metric(f"看空/止盈 >{oi_tag}", f"${_exit_spot:{_price_fmt}}",
                       delta=f"{_etf_label} > ${eff_bp090:.2f} | {_shfe_label} > ¥{_exit_shfe:.1f}")
         with c3:
             # 转换为 期权/期货 双标签
@@ -938,18 +939,19 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             shfe_est = gc_now * _cny / _g
 
             # 根据资产类型显示对应期货
-            _is_gold = asset_key == "GLD"
-            _futures_label = "纽约金/伦敦金" if _is_gold else "纽约银"
-            _etf_label = "GLD" if _is_gold else "SLV"
+            _is_gold_rt = asset_key == "GLD"
+            _spot_label_rt = "伦敦金" if _is_gold_rt else "伦敦银"
+            _etf_label_rt = "GLD" if _is_gold_rt else "SLV"
+            _pfmt = ".1f" if _is_gold_rt else ".2f"
 
             st.markdown('<div class="price-box">', unsafe_allow_html=True)
             r1, r2, r3, r4 = st.columns([3, 2, 2, 2])
             with r1:
-                st.metric(f"{zone_icon_v} {_futures_label}",
-                          f"${gc_now:.1f}",
-                          delta=f"{zone} | {_etf_label}≈${gld_est:.1f} bp≈{bp_est:.2f}")
+                st.metric(f"{zone_icon_v} {_spot_label_rt}",
+                          f"${gc_now:{_pfmt}}",
+                          delta=f"{zone} | {_etf_label_rt}≈${gld_est:{_pfmt}} bp≈{bp_est:.2f}")
             with r2:
-                st.metric("沪金" if _is_gold else "沪银",
+                st.metric("沪金" if _is_gold_rt else "沪银",
                           f"¥{shfe_est:.2f}",
                           delta=f"CNY={_cny:.4f}")
             with r3:
@@ -961,8 +963,9 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                         _bn_key = "xau_price" if _is_gold else "xag_price"
                         _bn_chg = "xau_change" if _is_gold else "xag_change"
                         if _bn_key in _bn:
+                            _bn_fmt = ".1f" if _is_gold_rt else ".2f"
                             st.metric("币安合约",
-                                      f"${_bn[_bn_key]:.1f}",
+                                      f"${_bn[_bn_key]:{_bn_fmt}}",
                                       delta=f"{_bn.get(_bn_chg,0):+.1f}% 24h")
                 except Exception:
                     st.metric("币安", "—")
