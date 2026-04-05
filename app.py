@@ -902,11 +902,17 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         _spot_label = "伦敦金" if _is_gold else "伦敦银"
         _shfe_label = "沪金" if _is_gold else "沪银"
         _etf_label = "GLD" if _is_gold else "SLV"
-        _price_fmt = ",.0f" if _is_gold else ",.2f"  # 黄金整数, 白银两位小数
+        _price_fmt = ",.0f" if _is_gold else ",.2f"
 
-        # 现货/期货价格为主, ETF 为辅
-        _buy_spot = eff_bp030 * gc_gld_r
-        _exit_spot = eff_bp090 * gc_gld_r
+        # 直接用实时期货价格 (不用 ETF 换算)
+        # gc_now 已经是 GC=F 或 SI=F 的真实价格
+        if gc_now > 0 and last_close > 0:
+            _spot_ratio = gc_now / last_close  # 实时期货/ETF比
+        else:
+            _spot_ratio = gc_gld_r
+
+        _buy_spot = eff_bp030 * _spot_ratio
+        _exit_spot = eff_bp090 * _spot_ratio
         _buy_shfe = _buy_spot * _cny / _g
         _exit_shfe = _exit_spot * _cny / _g
 
