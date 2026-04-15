@@ -1,5 +1,5 @@
 """
-GLD 期权交易仪表板
+金银交易仪表板
 
 Streamlit 交互式界面:
   - 今日预测: 5日区间 + 信号 + 期权策略
@@ -10,6 +10,7 @@ Streamlit 交互式界面:
     streamlit run app.py
 """
 import os
+import time
 import warnings
 import numpy as np
 import pandas as pd
@@ -37,13 +38,17 @@ from core.signals_1h import build_band_1h, generate_signals_1h, backtest_1h
 from core.options import get_strategy_table
 from core.oi_factors import (compute_oi_factors, adjust_range,
                              adjust_range_daily, adjust_band_history)
+from core.training_status import (get_model_age_days, is_stale, is_training,
+                                  start_training, stop_training,
+                                  get_training_log, get_training_elapsed,
+                                  DEFAULT_MAX_AGE_DAYS)
 
 # ── 中文字体 ──
 plt.rcParams["font.family"] = ["Arial Unicode MS", "PingFang HK",
                                 "Heiti TC", "sans-serif"]
 plt.rcParams["axes.unicode_minus"] = False
 
-st.set_page_config(page_title="GLD 交易仪表板", page_icon="📊",
+st.set_page_config(page_title="金银交易仪表板", page_icon="📊",
                    layout="wide", initial_sidebar_state="expanded")
 
 try:
@@ -191,7 +196,10 @@ def generate_chart(close, high, dates_all, upper_band, lower_band,
                    next_bp030=0, next_bp090=0, signal_type=None,
                    today_rv=0, oi_levels=None, oi_daily_range=None,
                    oi_events=None, oi_adj_bands=None,
-                   oi_adj_bp030=0, oi_adj_bp090=0):
+                   oi_adj_bp030=0, oi_adj_bp090=0,
+                   asset_key="GLD"):
+    _label = "GLD ($)" if asset_key == "GLD" else "SLV ($)"
+    _title_prefix = "GLD" if asset_key == "GLD" else "SLV"
     fig, ax = plt.subplots(figsize=(18, 9))
     trades = build_trades(close, high, dates_all, buy_call, sell_put, exit_sig)
 
@@ -463,14 +471,14 @@ def generate_chart(close, high, dates_all, upper_band, lower_band,
                         fontsize=7, color="green", fontweight="bold")
 
     # 格式
-    parts = ["GLD 交易仪表板"]
+    parts = [f"{_title_prefix} 交易仪表板"]
     if today is not None:
         parts.append(today.strftime("%Y-%m-%d"))
         parts.append(f"Regime: {regime.get(today, '?')}")
         if signal_type:
             parts.append(f"信号: {signal_type.replace('_', ' ')}")
     ax.set_title("  |  ".join(parts), fontsize=13, fontweight="bold")
-    ax.set_ylabel("GLD ($)", fontsize=11)
+    ax.set_ylabel(_label, fontsize=11)
     ax.grid(True, alpha=0.3)
     ax.xaxis.set_major_formatter(FuncFormatter(_fmt_tick))
     ax.xaxis.set_major_locator(MaxNLocator(integer=True, nbins=15))
@@ -478,7 +486,7 @@ def generate_chart(close, high, dates_all, upper_band, lower_band,
     ax.set_xlim(-0.5, len(plot_dates) - 0.5)
 
     legend_el = [
-        Line2D([0], [0], color="black", lw=1.5, label="GLD"),
+        Line2D([0], [0], color="black", lw=1.5, label=_title_prefix),
         Line2D([0], [0], color="green", lw=1, alpha=0.6, label="Upper Band"),
         Line2D([0], [0], color="magenta", lw=1, alpha=0.6,
                label="Lower Band"),
@@ -618,10 +626,12 @@ def _trade_stats(trades, buy_hold):
 
 def generate_backtest_chart(close, high, low, bp_dates, upper_band,
                             lower_band, buy_call, sell_put, exit_sig,
-                            regime, rv_pctile, gld_1h=None):
-    """v2.2 回测: v1.0(收盘) vs v2.2(H/L入场+12h止盈), 1Y/2Y/3Y."""
+                            regime, rv_pctile, gld_1h=None,
+                            asset_key="GLD"):
+    """v2.3 回测: 盘中H/L入场+12h止盈, 近6月/1年/2年."""
     from core.signals_v2 import run_backtest as run_v22
 
+    _asset_label = "GLD (黄金)" if asset_key == "GLD" else "SLV (白银)"
     last = bp_dates[-1]
     periods = [
         ("近6月", last - pd.DateOffset(months=6)),
@@ -630,7 +640,7 @@ def generate_backtest_chart(close, high, low, bp_dates, upper_band,
     ]
 
     fig, axes = plt.subplots(3, 1, figsize=(16, 16), sharex=False)
-    fig.suptitle("回测对比: v1.0 收盘价 vs v2.2 盘中H/L+12h止盈",
+    fig.suptitle(f"{_asset_label} 策略回测 (盘中H/L入场 + 12h止盈)",
                  fontsize=15, fontweight="bold")
 
     summary_rows = []
@@ -646,37 +656,27 @@ def generate_backtest_chart(close, high, low, bp_dates, upper_band,
         for d in period_dates:
             buy_hold[d] = close.get(d, base) / base * 100
 
-        # v1.0 回测 (收盘价)
-        trades_v1 = build_all_trades(close, high, bp_dates,
-                                      buy_call, sell_put, exit_sig,
-                                      start_date=start)
-        # v2.2 回测 (H/L入场 + 12h止盈)
-        trades_v2 = run_v22(close, high, low, upper_band, lower_band,
-                            regime, rv_pctile, gld_1h=gld_1h,
-                            start_date=start)
+        # v2.3 回测 (H/L入场 + 12h止盈)
+        trades = run_v22(close, high, low, upper_band, lower_band,
+                         regime, rv_pctile, gld_1h=gld_1h,
+                         start_date=start)
 
-        nav_v1 = _build_nav(trades_v1, period_dates)
-        nav_v2 = _build_nav(trades_v2, period_dates)
-        s1 = _trade_stats(trades_v1, buy_hold)
-        s2 = _trade_stats(trades_v2, buy_hold)
+        nav = _build_nav(trades, period_dates)
+        stats = _trade_stats(trades, buy_hold)
 
         # 画图
         ax.plot(buy_hold.index, buy_hold.values, color="gray", lw=1.2,
                 alpha=0.5, label="买入持有")
-        if s1:
-            ax.plot(nav_v1.index, nav_v1.values, color="#2196F3", lw=1.5,
-                    label=f"v1.0 收盘 ({s1['n']}笔 {s1['total']:+.1f}%)")
-        if s2:
-            ax.plot(nav_v2.index, nav_v2.values, color="#FF9800", lw=2,
-                    label=f"v2.2 盘中 ({s2['n']}笔 {s2['total']:+.1f}%)")
+        if stats:
+            ax.plot(nav.index, nav.values, color="#FF9800", lw=2,
+                    label=f"策略 ({stats['n']}笔 {stats['total']:+.1f}%)")
 
-        # 交易标注 (v2.2)
-        for t in trades_v2:
-            ce = "#FF9800"
-            if t["entry_date"] in nav_v2.index:
-                ax.scatter([t["entry_date"]], [nav_v2[t["entry_date"]]],
-                           marker="^", s=50, color=ce, edgecolors="black",
-                           linewidths=0.4, zorder=5)
+        # 交易标注
+        for t in trades:
+            if t["entry_date"] in nav.index:
+                ax.scatter([t["entry_date"]], [nav[t["entry_date"]]],
+                           marker="^", s=50, color="#FF9800",
+                           edgecolors="black", linewidths=0.4, zorder=5)
 
         # Regime 背景
         reg = regime.reindex(period_dates)
@@ -688,22 +688,18 @@ def generate_backtest_chart(close, high, low, bp_dates, upper_band,
                 ax.axvspan(s, e, alpha=0.03, color="green")
 
         ax.axhline(100, color="black", lw=0.5, ls=":", alpha=0.3)
-        ax.legend(loc="upper left", fontsize=8)
         ax.set_ylabel("净值 (起始=100)")
         ax.grid(True, alpha=0.3)
         ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
         ax.xaxis.set_major_locator(mdates.MonthLocator(interval=2))
 
         # 统计文本
-        if s2:
+        if stats:
             stats_text = (
-                f"v2.2: {s2['total']:+.1f}% ({s2['n']}笔 {s2['wr']:.0%}WR "
-                f"均{s2['avg']:+.1f}% 回撤{s2['max_dd']:.1f}% "
-                f"持仓{s2['hold']:.1f}d)"
-                f"  |  v1.0: {s1['total']:+.1f}% ({s1['n']}笔)"
-                f"  |  持有: {s2.get('bh', 0):+.1f}%")
-        elif s1:
-            stats_text = f"v1.0: {s1['total']:+.1f}% ({s1['n']}笔) | 持有: {s1['bh']:+.1f}%"
+                f"策略: {stats['total']:+.1f}% ({stats['n']}笔 {stats['wr']:.0%}WR "
+                f"均{stats['avg']:+.1f}% 回撤{stats['max_dd']:.1f}% "
+                f"持仓{stats['hold']:.1f}d)"
+                f"  |  持有: {stats.get('bh', 0):+.1f}%")
         else:
             stats_text = "无交易"
 
@@ -713,24 +709,18 @@ def generate_backtest_chart(close, high, low, bp_dates, upper_band,
         ax.set_title(f"{label} ({start.strftime('%Y-%m')} ~ "
                      f"{last.strftime('%Y-%m')})", fontsize=12,
                      fontweight="bold")
-        ax.set_ylabel("净值 (起始=100)")
-        ax.grid(True, alpha=0.3)
         ax.legend(loc="upper left", fontsize=8)
-        ax.axhline(100, color="black", lw=0.5, ls=":", alpha=0.3)
-        ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
-        ax.xaxis.set_major_locator(mdates.MonthLocator(interval=2))
 
         bh_running_max = buy_hold.cummax()
         bh_max_dd = ((buy_hold - bh_running_max) / bh_running_max * 100).min()
 
-        row = {"周期": label, "买入持有": f"{s2.get('bh', s1.get('bh', 0)):+.1f}%",
+        row = {"周期": label, "买入持有": f"{stats.get('bh', 0):+.1f}%" if stats else "—",
                "持有回撤": f"{bh_max_dd:.1f}%"}
-        for tag, s in [("v1.0", s1), ("v2.2", s2)]:
-            if s:
-                row[f"{tag}收益"] = f"{s['total']:+.1f}%"
-                row[f"{tag}交易"] = s["n"]
-                row[f"{tag}胜率"] = f"{s['wr']:.0%}"
-                row[f"{tag}回撤"] = f"{s['max_dd']:.1f}%"
+        if stats:
+            row["策略收益"] = f"{stats['total']:+.1f}%"
+            row["交易笔数"] = stats["n"]
+            row["胜率"] = f"{stats['wr']:.0%}"
+            row["最大回撤"] = f"{stats['max_dd']:.1f}%"
         summary_rows.append(row)
 
     plt.tight_layout(rect=[0, 0, 1, 0.96])
@@ -789,9 +779,10 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             st_autorefresh(interval=refresh_min * 60 * 1000,
                            key="intraday_refresh")
 
-    # GLD 1h
+    # 1h 数据
+    _1h_fname = "gld_1h.csv" if asset_key == "GLD" else "slv_1h.csv"
     gld_1h_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                               "..", "Gold", "data", "raw", "market", "gld_1h.csv")
+                               "..", "Gold", "data", "raw", "market", _1h_fname)
     gld_1h_path = os.path.normpath(gld_1h_path)
     gld_1h = pd.read_csv(gld_1h_path, index_col=0, parse_dates=True) \
         if os.path.exists(gld_1h_path) else None
@@ -807,9 +798,16 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         regime, rv_pctile, gld_1h=gld_1h,
         start_date=pd.Timestamp(today_sgt) - timedelta(days=180))
 
-    # 下一交易日阈值 (与 v1.0 完全一致)
+    # 下一交易日阈值
     from core.data import load_config, load_oos_predictions
-    range_df = load_oos_predictions(load_config())
+    _intra_cfg = load_config()
+    if asset_key == "SLV":
+        _slv_oos = os.path.join(_intra_cfg["data_root"], "models",
+                                "dl_range_slv_oos.parquet")
+        range_df = pd.read_parquet(_slv_oos) if os.path.exists(_slv_oos) \
+            else load_oos_predictions(_intra_cfg)
+    else:
+        range_df = load_oos_predictions(_intra_cfg)
     last_date = bp_dates[-1]
     last_close = close_d.get(last_date, 0)
     last_regime = regime.get(last_date, "?")
@@ -817,11 +815,11 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     next_upper, next_lower, next_bp030, next_bp090 = \
         compute_next_day_band(close_d, range_df, bp_dates, last_date)
 
-    # OI 微观结构修正 (期权到期压缩效应)
+    # OI 微观结构修正 (仅 GLD — 期权快照来自 GLD 期权链)
     oi_adj_bp030 = oi_adj_bp090 = 0
     _cfg_oi = load_config()
     _eod_oi, _snap_oi = load_latest_eod_snapshot(_cfg_oi)
-    if _eod_oi is not None and next_upper > next_lower:
+    if asset_key == "GLD" and _eod_oi is not None and next_upper > next_lower:
         _oi = compute_oi_factors(_eod_oi, last_close, ref_date=today_sgt)
         if _oi is not None:
             adj_u, adj_l, _oi_det = adjust_range(
@@ -1179,7 +1177,7 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                         fontweight="bold", ha="center", va="top")
 
     legend_el = [
-        Line2D([0],[0], color="k", lw=1.5, label="GLD"),
+        Line2D([0],[0], color="k", lw=1.5, label=asset_key),
         Line2D([0],[0], color="green", lw=1, alpha=0.5, label="Band"),
         Line2D([0],[0], color="#2196F3", lw=0.8, ls="--", label="Buy线"),
         Line2D([0],[0], color="#F44336", lw=0.8, ls="--", label="Exit线"),
@@ -1195,7 +1193,7 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     ax.set_title(f"盘中信号 (Band + H/L入场 + {EXIT_TIMEFRAME}止盈 + 事件日) | "
                  f"数据至 {last_date.date()} | Regime: {last_regime}",
                  fontsize=12, fontweight="bold")
-    ax.set_ylabel("GLD ($)")
+    ax.set_ylabel(f"{asset_key} ($)")
     ax.grid(True, alpha=0.3)
     ax.xaxis.set_major_formatter(FuncFormatter(_fmt_tick))
     ax.xaxis.set_major_locator(MaxNLocator(integer=True, nbins=15))
@@ -1617,7 +1615,7 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
 
         _sig_recs.append({
             "日期": d.strftime("%m/%d"),
-            "GLD": f"${c:.0f}",
+            asset_key: f"${c:.0f}",
             "策略": chosen,
             "原因": r["chosen_reason"],
             "5天涨跌": ret,
@@ -1676,7 +1674,7 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
 
             _urecs.append({
                 "日期": d.strftime("%m/%d"),
-                "GLD": f"${r['close']:.0f}",
+                asset_key: f"${r['close']:.0f}",
                 "推荐策略": f"{overlap}{r['chosen']}",
                 "5天涨跌": ret,
                 "5天波动": move,
@@ -1697,7 +1695,7 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
 - **入场**: 日线 Low 触及 bp<0.30 即入场 (盘中触发, 不等收盘)
 - **止盈尺度**: **{EXIT_TIMEFRAME}** (可配置: 1h/2h/4h/8h/12h)
 - **退出优先级**: BandExit (bp>0.90) > Pullback (涨>{PULLBACK_GAIN}%回撤>{PULLBACK_DD}%) > MACD弱化 > Timeout (10d)
-- **GLD 1h 数据**: {gld_1h_info}
+- **1h 数据**: {gld_1h_info}
 - **持仓周期**: 2-5天 (适合期权)
 - **回测 (2025-09~2026-03)**: 13笔 85%胜率 +37.5%累计 Sharpe=0.78
 """)
@@ -1724,7 +1722,7 @@ def _render_options_section(eod_df, snap_date, last_close, next_bp090,
     _rt = _get_realtime_prices()
     _gc_gld_r = gc_gld_ratio if gc_gld_ratio else 10.9
     current_gld = _rt["gc_price"] / _gc_gld_r if _rt else last_close
-    price_src = f"实时 GLD≈${current_gld:.1f}" if _rt else f"收盘 ${last_close:.2f}"
+    price_src = f"实时≈${current_gld:.1f}" if _rt else f"收盘 ${last_close:.2f}"
 
     st.caption(f"期权数据: EOD {snap_date} | {price_src} | 退出${eff_exit:.1f}")
 
@@ -1898,22 +1896,66 @@ def main():
                        "请下载 WGC 数据到 `Gold/data/download/` 后运行:\n"
                        "`python scripts/parse_wgc_data.py`")
 
+    # ══ 模型训练状态 + 控制 ══
+    _data_root = cfg_refresh["data_root"]
+    _model_age = get_model_age_days(_data_root)
+    _training = is_training()
+
+    # 侧边栏: 过期时顶部突出提示 (不展开也能看到)
+    if _training:
+        st.sidebar.info(f"🔄 模型训练中 ({get_training_elapsed()})")
+    elif _model_age is None:
+        st.sidebar.error("⚠️ 模型未训练")
+    elif _model_age > DEFAULT_MAX_AGE_DAYS:
+        st.sidebar.warning(
+            f"⚠️ 模型已 {_model_age:.0f} 天未训练 (建议每周更新)")
+
+    with st.sidebar.expander("模型训练", expanded=False):
+        if _model_age is None:
+            st.caption("模型状态: 未训练")
+        else:
+            st.caption(f"最后训练: {_model_age:.1f} 天前")
+            st.caption(f"建议频率: 每 {DEFAULT_MAX_AGE_DAYS} 天")
+
+        if _training:
+            st.caption(f"进行中: {get_training_elapsed()}")
+            if st.button("🛑 停止训练", key="btn_stop_train"):
+                ok, msg = stop_training()
+                st.toast(msg, icon="✅" if ok else "❌")
+                st.rerun()
+            with st.expander("训练日志 (最近30行)", expanded=False):
+                log = get_training_log(30)
+                st.code(log or "(日志为空)", language="text")
+        else:
+            _btn_label = ("🔄 重新训练模型"
+                          if _model_age is not None else "▶️ 开始训练")
+            st.caption("训练内容: LSTM+Transformer Ensemble 20折 Walk-Forward")
+            st.caption("预计耗时: 40~60 分钟")
+            if st.button(_btn_label, key="btn_start_train", type="primary"):
+                ok, msg = start_training()
+                st.toast(msg, icon="✅" if ok else "❌")
+                if ok:
+                    time.sleep(1)
+                    st.rerun()
+
     if mode == "回测分析":
         # ── 回测模式 ──
         st.divider()
-        st.subheader("回测对比: v1.0 收盘 vs v2.2 盘中+12h止盈")
+        st.subheader(f"{asset_key} 策略回测 (盘中H/L入场 + 12h止盈)")
 
-        # 加载 GLD 1h (用于 v2.2 止盈)
+        # 加载 1h 数据 (用于止盈)
+        _1h_file = "gld_1h.csv" if asset_key == "GLD" else "slv_1h.csv"
         _1h_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                "..", "Gold", "data", "raw", "market", "gld_1h.csv")
+                                "..", "Gold", "data", "raw", "market", _1h_file)
         _1h_path = os.path.normpath(_1h_path)
-        _gld_1h = pd.read_csv(_1h_path, index_col=0, parse_dates=True) \
+        _asset_1h = pd.read_csv(_1h_path, index_col=0, parse_dates=True) \
             if os.path.exists(_1h_path) else None
 
         bt_fig, bt_summary = generate_backtest_chart(
             close, high, low, bp_dates, upper_band, lower_band,
             buy_call, sell_put, exit_sig,
-            regime, rv_pctile, gld_1h=_gld_1h)
+            regime, rv_pctile, gld_1h=_asset_1h,
+            asset_key=asset_key)
         st.pyplot(bt_fig, use_container_width=True)
 
         if bt_summary:
@@ -1927,10 +1969,11 @@ def main():
                        facecolor="white", edgecolor="none")
         buf.seek(0)
         st.download_button("下载回测图", buf.getvalue(),
-                           file_name="backtest.png", mime="image/png")
+                           file_name=f"backtest_{asset_key.lower()}.png",
+                           mime="image/png")
         plt.close(bt_fig)
 
-        st.caption("注: 回测基于标的(GLD)价格变化, 非期权实际损益. "
+        st.caption(f"注: 回测基于标的({asset_key})价格变化, 非期权实际损益. "
                    "期权杠杆效应会放大实际收益/亏损.")
         return  # 回测模式不显示其他内容
 
@@ -2023,7 +2066,7 @@ def main():
         delta_pct = None
         if len(close) > 1:
             delta_pct = f"{(last_close / close.iloc[-2] - 1) * 100:+.2f}%"
-        st.metric("GLD", f"${last_close:.2f}", delta=delta_pct)
+        st.metric(asset_key, f"${last_close:.2f}", delta=delta_pct)
     with m2:
         st.metric("Regime", last_regime)
     with m3:
@@ -2048,7 +2091,8 @@ def main():
     eod_df = None
     snap_date = None
 
-    if mode == "今日预测" and pred_u_pct is not None:
+    # OI 因子仅对 GLD 有效 (期权快照数据来源于 GLD 期权链)
+    if mode == "今日预测" and pred_u_pct is not None and asset_key == "GLD":
         cfg = load_config()
         eod_df, snap_date = load_latest_eod_snapshot(cfg)
         if eod_df is not None:
@@ -2103,7 +2147,8 @@ def main():
         signal_type=sig_type_viz, today_rv=today_rv_chart,
         oi_levels=oi_chart_levels, oi_daily_range=oi_daily,
         oi_events=oi_events, oi_adj_bands=oi_hist_bands,
-        oi_adj_bp030=oi_adj_bp030, oi_adj_bp090=oi_adj_bp090)
+        oi_adj_bp030=oi_adj_bp030, oi_adj_bp090=oi_adj_bp090,
+        asset_key=asset_key)
 
     st.pyplot(fig, use_container_width=True)
 
@@ -2243,8 +2288,13 @@ def main():
             exit_suffix = f" (原${next_bp090:.2f})" \
                 if oi_adj_bp090 > 0 else ""
 
+            _is_gold_tbl = asset_key == "GLD"
+            _etf_col = "GLD (USD)" if _is_gold_tbl else "SLV (USD)"
+            _spot_col = "伦敦金现 XAU (USD/oz)" if _is_gold_tbl else "伦敦银现 XAG (USD/oz)"
+            _fut_col = "纽约金 COMEX (USD/oz)" if _is_gold_tbl else "纽约银 COMEX (USD/oz)"
+            _shfe_col = "沪金 AU (CNY/g)" if _is_gold_tbl else "沪银 AG (CNY/kg)"
             st.markdown(f"""
-| 价位 | GLD (USD) | 伦敦金现 XAU (USD/oz) | 纽约金 COMEX (USD/oz) | 沪金 AU (CNY/g) |
+| 价位 | {_etf_col} | {_spot_col} | {_fut_col} | {_shfe_col} |
 |------|-----------|----------------------|----------------------|----------------|
 | Band 上界 | ${next_upper:.2f} | ${xau_upper:.1f} | ${gc_upper:.1f} | ¥{shfe_upper:.2f} |
 | Band 下界 | ${next_lower:.2f} | ${xau_lower:.1f} | ${gc_lower:.1f} | ¥{shfe_lower:.2f} |
@@ -2255,7 +2305,7 @@ def main():
             src = (f"COMEX GC=${rt['gc_price']:.1f} | "
                    f"USD/CNY={_cny:.4f}"
                    if rt else
-                   f"GC/GLD={_ratio:.4f} (近60日均值)")
+                   f"期货/ETF={_ratio:.4f} (近60日均值)")
             st.caption(
                 f"换算来源: {src} ({rt_label}) | "
                 f"1盎司={_g}克 | "
@@ -2482,7 +2532,7 @@ def main():
                 f"**为什么是 {opex_str} 而不是其他日期?**")
             if dom_pct > 30:
                 lines.append(
-                    f"- GLD 期权有**月度**到期 (每月第三个周五) "
+                    f"- {asset_key} 期权有**月度**到期 (每月第三个周五) "
                     f"和**周度**到期")
                 lines.append(
                     f"- 当前这个到期日集中了 **{dom_pct:.0f}%** 的总 OI "
@@ -2643,7 +2693,7 @@ def main():
             s += " + EXIT" if s else "EXIT"
         records.append({
             "日期": d.strftime("%Y-%m-%d"),
-            "GLD": f"${close.get(d, 0):.2f}",
+            asset_key: f"${close.get(d, 0):.2f}",
             "bp": f"{bp.get(d, 0):.3f}",
             "Regime": regime.get(d, "?"),
             "RV%": f"{rv_pctile.get(d, 0):.0%}",

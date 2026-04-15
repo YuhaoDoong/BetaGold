@@ -95,10 +95,21 @@ Regime 分类器 (7因子) + 事件日历 (FOMC/OPEX/NFP)
 
 ## 模型
 
-### 区间预测 (日线 LSTM+Attention)
-- 20年训练 (2004-2026), Walk-Forward, 3种子集成, Conformal 80%
-- 预测: 未来5日 High/Low %, RV(10d)归一化
-- Quantile Loss (q=0.85/0.15), AdamW
+### 区间预测 (日线 LSTM+Transformer Ensemble)
+- 20年训练 (2004-2026), Walk-Forward 20 折, Conformal 80%
+- **双架构集成** (v3.2+): LSTM + Transformer 输出平均 → 校准
+  - 单 LSTM:       cov=71.3% width=6.96% tightness=0.102
+  - 单 Transformer: cov=69.8% width=6.74% tightness=0.104
+  - **Ensemble**:   cov=71.1% width=**6.50%** tightness=**0.109** (宽度最窄 +7%)
+- **Qlib Alpha158 因子** (v3.2+): KBAR / BETA / RSQR / QTLU / CORR / CNTP / SUMP 等 110 项
+- 预测: 未来5日 High/Low %, RV(10d) 归一化, Quantile Loss (q=0.85/0.15), AdamW
+
+### 训练频率
+- **建议每周训练一次**. Dashboard 侧边栏会在模型 > 7 天未训练时显示黄色警告
+- 侧边栏 "模型训练" 面板提供:
+  - 实时训练状态 + 已运行时长
+  - **一键启动训练**按钮 (后台 subprocess, 不阻塞页面)
+  - 训练日志滚动查看 + 手动停止
 
 ### Regime 分类器 (7因子)
 价格动量25% + 联储利率20% + 美元15% + 央行购金15% + 风险10% + 通胀10% + 实际利率5%
@@ -113,6 +124,7 @@ GoldDash/
 ├── app.py                    # Streamlit Dashboard
 ├── core/
 │   ├── data.py               # 数据加载 + 全量刷新 + 在线推理
+│   ├── training_status.py    # 模型训练状态 + 后台启动 (v3.2)
 │   ├── dl_range.py           # LSTM+Attention 模型 (含 save/load)
 │   ├── regime.py             # Regime 7因子分类器
 │   ├── signals.py            # v1.0 收盘价信号
@@ -160,4 +172,5 @@ streamlit run app.py
 | v2.6 | 15m K线 + Stoch RSI入场窗口 + Squeeze + 实时GC=F |
 | v2.7 | 1h "反转+BB下轨" 入场窗口 (61% WR, 全间隔回测验证) |
 | v3.0 | 白银 SLV 模型 + 资产切换 (GLD/SLV) |
-| **v3.1** | **币安行情 + 区间修复 + 看多看空信号 + 白银增强(59特征)** |
+| v3.1 | 币安行情 + 区间修复 + 看多看空信号 + 白银增强(59特征) |
+| **v3.2** | **Qlib Alpha158 因子 + LSTM+Transformer Ensemble + Dash 训练按钮 (每周训练提示)** |
