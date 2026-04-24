@@ -1873,6 +1873,11 @@ def main():
     with st.sidebar.expander("数据状态", expanded=False):
         st.caption(f"今日 (SGT): {today_sgt}")
         st.caption(f"{asset_key} 最新: {last_date.date()}")
+        st.caption("💡 每次刷新页面自动更新行情 + 特征 + 预测")
+        if st.button("🔄 立即刷新数据", key="btn_force_refresh",
+                      help="清空缓存并重新拉取行情/特征/预测"):
+            load_all.clear()
+            st.rerun()
         for t, s in refresh_results:
             st.caption(f"{t}: {s}")
 
@@ -1929,8 +1934,8 @@ def main():
         else:
             _btn_label = ("🔄 重新训练模型"
                           if _model_age is not None else "▶️ 开始训练")
-            st.caption("训练内容: LSTM+Transformer Ensemble 20折 Walk-Forward")
-            st.caption("预计耗时: 40~60 分钟")
+            st.caption("训练内容: LSTM+Transformer Ensemble 20折 Walk-Forward (单配置 A)")
+            st.caption("预计耗时: 40~60 分钟 (MPS), 全量网格需设 `DL_RANGE_FULL_GRID=1` (约 3 小时)")
             if st.button(_btn_label, key="btn_start_train", type="primary"):
                 ok, msg = start_training()
                 st.toast(msg, icon="✅" if ok else "❌")
