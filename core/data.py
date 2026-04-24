@@ -114,6 +114,57 @@ def auto_refresh_market_data(cfg: dict):
         ("usdcny_csv", "USD/CNY", "CNY=X"),
     ]
 
+    # 白银 ETF (config 未配置路径, 直接按约定位置增量下载)
+    market_root = os.path.dirname(cfg["resolved"].get("gld_csv", ""))
+    if market_root:
+        slv_path = os.path.join(market_root, "slv.csv")
+        si_path = os.path.join(market_root, "silver.csv")
+        for _path, _label, _ticker in [(slv_path, "SLV", "SLV"),
+                                        (si_path, "白银期货", "SI=F")]:
+            if not os.path.exists(_path):
+                continue
+            try:
+                import yfinance as yf
+                existing = pd.read_csv(_path, index_col=0, parse_dates=True)
+                last_date = existing.index[-1].date()
+                ref = today
+                wd = ref.weekday()
+                if wd == 5:
+                    last_bday = ref - timedelta(days=1)
+                elif wd == 6:
+                    last_bday = ref - timedelta(days=2)
+                else:
+                    last_bday = ref
+                if last_date >= last_bday:
+                    results.append((_label, f"已是最新 ({last_date})"))
+                    continue
+                start = last_date + timedelta(days=1)
+                new_data = yf.Ticker(_ticker).history(
+                    start=start.strftime("%Y-%m-%d"),
+                    end=(today + timedelta(days=1)).strftime("%Y-%m-%d"))
+                if new_data is None or len(new_data) == 0:
+                    results.append((_label, f"无新数据 (最新 {last_date})"))
+                    continue
+                new_data.index = pd.to_datetime(new_data.index).tz_localize(None)
+                new_data.index.name = "Date"
+                cols_keep = [c for c in ["Close", "High", "Low", "Open", "Volume"]
+                             if c in new_data.columns]
+                new_data = new_data[cols_keep]
+                new_data = new_data[new_data.index > existing.index[-1]]
+                if len(new_data) == 0:
+                    results.append((_label, f"无新数据 (最新 {last_date})"))
+                    continue
+                combined = pd.concat([existing, new_data])
+                combined.to_csv(_path)
+                results.append((_label,
+                    f"更新 {last_date} → {combined.index[-1].date()} "
+                    f"(+{len(new_data)}行)"))
+                logger.info("Updated %s: %s → %s (+%d rows)",
+                            _label, last_date, combined.index[-1].date(),
+                            len(new_data))
+            except Exception as e:
+                results.append((_label, f"更新失败: {e}"))
+
     # 1h 数据也刷新 (GLD 含盘前盘后, GC=F)
     market_dir = os.path.dirname(cfg["resolved"].get("gld_csv", ""))
     for fname, label, ticker, prepost in [
@@ -321,25 +372,35 @@ def update_features_full(cfg: dict):
         return 0, f"重建失败: {e}"
 
 
-def extend_oos_predictions(cfg: dict):
+def extend_oos_predictions(cfg: dict, asset: str = "gld"):
     """用保存的模型对最新数据做 inference, 扩展 OOS 预测到今天.
 
+    asset: "gld" | "slv", 决定使用哪套模型/特征/OOS 文件.
     流程:
       1. 加载 OOS parquet, 检查最后日期
       2. 加载特征, 找到 OOS 之后的新日期
       3. 加载模型权重, 对新日期做预测
       4. 追加到 OOS parquet
     """
-    oos_path = cfg["resolved"]["oos_predictions"]
-    model_path = os.path.join(os.path.dirname(oos_path), "dl_range_v2_model.pkl")
+    asset = asset.lower()
+    if asset == "slv":
+        data_root = cfg.get("data_root", "")
+        oos_path = os.path.join(data_root, "models", "dl_range_slv_oos.parquet")
+        model_path = os.path.join(data_root, "models", "dl_range_slv_model.pkl")
+        feat_path = os.path.join(data_root, "processed", "features_slv.parquet")
+    else:
+        oos_path = cfg["resolved"]["oos_predictions"]
+        model_path = os.path.join(os.path.dirname(oos_path), "dl_range_v2_model.pkl")
+        feat_path = cfg["resolved"]["features"]
 
-    if not os.path.exists(model_path):
-        return 0, "模型权重未找到, 请运行 setup_data.py 训练"
+    if not os.path.exists(model_path) or not os.path.exists(oos_path) \
+            or not os.path.exists(feat_path):
+        return 0, f"{asset.upper()} 模型/OOS/特征未找到, 跳过扩展"
 
     oos = pd.read_parquet(oos_path)
     oos_last = oos.index[-1]
 
-    features = pd.read_parquet(cfg["resolved"]["features"])
+    features = pd.read_parquet(feat_path)
     new_dates = features.index[features.index > oos_last]
 
     if len(new_dates) == 0:
@@ -376,7 +437,12 @@ def extend_oos_predictions(cfg: dict):
     else:
         rv_scale = np.ones(len(feat_window))
 
-    pred_u, pred_l = predictor.predict(feat_window.values, rv_scale)
+    try:
+        pred_u, pred_l = predictor.predict(feat_window.values, rv_scale)
+    except ValueError as e:
+        # 特征数量不匹配 (训练用旧特征集) — 等下次重训后自愈
+        logger.warning("OOS extend skipped for %s: %s", asset.upper(), e)
+        return 0, f"模型特征集过期 (需重训): {e}"
 
     # 对齐到日期
     pred_dates = feat_window.index[predictor.seq_len - 1:]

@@ -727,6 +727,111 @@ def generate_backtest_chart(close, high, low, bp_dates, upper_band,
     return fig, summary_rows
 
 
+def compute_daily_stoch_rsi(close: pd.Series,
+                             rsi_period: int = 14,
+                             stoch_period: int = 14,
+                             smooth_k: int = 3,
+                             smooth_d: int = 3):
+    """日线 Stoch RSI(14, 14, 3, 3). 返回 (K, D) 两条 Series."""
+    delta = close.diff()
+    gain = delta.clip(lower=0).rolling(rsi_period, min_periods=3).mean()
+    loss = (-delta.clip(upper=0)).rolling(rsi_period, min_periods=3).mean()
+    rs = gain / loss.replace(0, np.nan)
+    rsi = 100 - 100 / (1 + rs)
+    rsi_low = rsi.rolling(stoch_period, min_periods=3).min()
+    rsi_high = rsi.rolling(stoch_period, min_periods=3).max()
+    k_raw = ((rsi - rsi_low)
+             / (rsi_high - rsi_low).replace(0, np.nan)) * 100
+    k = k_raw.rolling(smooth_k, min_periods=1).mean()
+    d = k.rolling(smooth_d, min_periods=1).mean()
+    return k, d
+
+
+def render_daily_stoch_rsi(close: pd.Series, asset_key: str,
+                            lookback: int = 120):
+    """今日预测页面的日线 Stoch RSI 小图."""
+    k, d = compute_daily_stoch_rsi(close)
+    window_close = close.tail(lookback)
+    window_k = k.reindex(window_close.index)
+    window_d = d.reindex(window_close.index)
+
+    last_k = window_k.dropna().iloc[-1] if window_k.dropna().size else None
+    last_d = window_d.dropna().iloc[-1] if window_d.dropna().size else None
+
+    if last_k is None:
+        return
+
+    if last_k >= 80:
+        zone, color = "超买 (止盈/减仓窗口)", "#E53935"
+    elif last_k <= 20:
+        zone, color = "超卖 (潜在入场窗口)", "#43A047"
+    elif last_k > last_d and last_k < 50:
+        zone, color = "超卖区反转 (多头信号)", "#1E88E5"
+    elif last_k < last_d and last_k > 50:
+        zone, color = "超买区回落 (空头信号)", "#FB8C00"
+    else:
+        zone, color = "中性", "#757575"
+
+    col_a, col_b, col_c = st.columns([1, 1, 2])
+    with col_a:
+        st.metric(f"Stoch RSI K", f"{last_k:.0f}",
+                  delta=f"{last_k - last_d:+.1f} vs D")
+    with col_b:
+        st.metric("Stoch RSI D", f"{last_d:.0f}")
+    with col_c:
+        st.markdown(f"<div style='padding-top:18px'><b>状态: "
+                    f"<span style='color:{color}'>{zone}</span></b></div>",
+                    unsafe_allow_html=True)
+
+    fig, (ax_px, ax_st) = plt.subplots(
+        2, 1, figsize=(11, 5), sharex=True,
+        gridspec_kw={"height_ratios": [2, 1], "hspace": 0.08})
+
+    ax_px.plot(window_close.index, window_close.values, color="#1A237E",
+               lw=1.4, label=f"{asset_key} Close")
+    ax_px.scatter([window_close.index[-1]], [window_close.iloc[-1]],
+                  s=40, color=color, zorder=5,
+                  label=f"最新 ${window_close.iloc[-1]:.2f}")
+    ax_px.set_ylabel(f"{asset_key} ($)")
+    ax_px.grid(True, alpha=0.3)
+    ax_px.legend(loc="upper left", fontsize=9)
+    ax_px.set_title(f"{asset_key} 日线 Stoch RSI — {zone}",
+                    fontsize=11, fontweight="bold")
+
+    ax_st.axhspan(80, 100, color="#E53935", alpha=0.12)
+    ax_st.axhspan(0, 20, color="#43A047", alpha=0.12)
+    ax_st.axhline(80, color="#E53935", lw=0.8, ls="--", alpha=0.6)
+    ax_st.axhline(20, color="#43A047", lw=0.8, ls="--", alpha=0.6)
+    ax_st.axhline(50, color="gray", lw=0.6, ls=":", alpha=0.5)
+
+    ax_st.plot(window_k.index, window_k.values, color="#1E88E5",
+               lw=1.3, label="K")
+    ax_st.plot(window_d.index, window_d.values, color="#FB8C00",
+               lw=1.1, ls="--", label="D")
+    ax_st.scatter([window_k.index[-1]], [last_k], s=40, color=color, zorder=5)
+
+    ax_st.set_ylim(-2, 102)
+    ax_st.set_ylabel("Stoch RSI")
+    ax_st.set_xlabel("日期")
+    ax_st.grid(True, alpha=0.3)
+    ax_st.legend(loc="upper left", fontsize=9)
+
+    for ax in (ax_px, ax_st):
+        ax.xaxis.set_major_locator(mdates.AutoDateLocator(maxticks=8))
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%m/%d"))
+
+    plt.setp(ax_st.get_xticklabels(), rotation=30, ha="right", fontsize=8)
+
+    st.pyplot(fig, use_container_width=True)
+    plt.close(fig)
+
+    st.caption(
+        "💡 日线 Stoch RSI(14,14,3,3) — "
+        "**K<20** 超卖 (潜在做多入场) · "
+        "**K>80** 超买 (止盈/减仓) · "
+        "**K穿越D** 是时机信号. 与 Band 位置互为佐证.")
+
+
 def compute_next_day_band(close, range_df, bp_dates, today):
     """计算下一交易日 band 和信号阈值."""
     today_close_val = close.get(today, 0)
@@ -1809,10 +1914,18 @@ def main():
             refresh_results.append(("特征", feat_msg))
             if n_feat > 0:
                 refreshed.append(f"特征: {feat_msg}")
-            n_new, oos_msg = extend_oos_predictions(cfg_refresh)
-            refresh_results.append(("OOS预测", oos_msg))
+            n_new, oos_msg = extend_oos_predictions(cfg_refresh, asset="gld")
+            refresh_results.append(("GLD OOS", oos_msg))
             if n_new > 0:
-                refreshed.append(f"OOS: {oos_msg}")
+                refreshed.append(f"GLD OOS: {oos_msg}")
+            # SLV 同步扩展
+            try:
+                n_slv, slv_msg = extend_oos_predictions(cfg_refresh, asset="slv")
+                refresh_results.append(("SLV OOS", slv_msg))
+                if n_slv > 0:
+                    refreshed.append(f"SLV OOS: {slv_msg}")
+            except Exception as e:
+                refresh_results.append(("SLV OOS", f"失败: {e}"))
         except Exception as e:
             refresh_results.append(("OOS预测", f"失败: {e}"))
 
@@ -1861,18 +1974,31 @@ def main():
     is_bull = regime.reindex(bp_dates) == "Bull"
     buy_call, sell_put, exit_sig = generate_signals(bp_s, rv_p, is_bull)
 
+    # last_date = 最后一天有模型预测的日期 (用于 Band / 信号)
+    # price_date = 最新的现货收盘价日期 (用于顶部指标 / 图表)
+    # 二者可能不等 (例如 SLV 模型未重训, 但 slv.csv 已拉到最新)
     last_date = bp_dates[-1]
-    last_close = close.get(last_date, 0)
+    price_date = close.index[-1]
+    last_close = close.iloc[-1]  # 显示用: 最新实际收盘价
     last_bp = bp_s.get(last_date, 0)
-    last_regime = regime.get(last_date, "?")
+    last_regime = regime.get(last_date, regime.iloc[-1] if len(regime) else "?")
     last_rv = rv_p.get(last_date, 0)
+    _pred_stale_days = (price_date - last_date).days
 
     mode = st.sidebar.radio("模式", ["盘中信号", "今日预测", "历史回看", "回测分析"])
+
+    # 预测过期警告 (价格比预测新 > 2 天)
+    if _pred_stale_days > 2:
+        st.sidebar.warning(
+            f"⚠️ {asset_key} 预测停在 {last_date.date()}, "
+            f"实际价格已到 {price_date.date()} ({_pred_stale_days}天差)\n\n"
+            "请在侧边栏 '模型训练' 面板点击【重新训练模型】")
 
     # 数据状态 + 更新提醒
     with st.sidebar.expander("数据状态", expanded=False):
         st.caption(f"今日 (SGT): {today_sgt}")
-        st.caption(f"{asset_key} 最新: {last_date.date()}")
+        st.caption(f"{asset_key} 价格最新: {price_date.date()}")
+        st.caption(f"{asset_key} 预测最新: {last_date.date()}")
         st.caption("💡 每次刷新页面自动更新行情 + 特征 + 预测")
         if st.button("🔄 立即刷新数据", key="btn_force_refresh",
                       help="清空缓存并重新拉取行情/特征/预测"):
@@ -2169,6 +2295,10 @@ def main():
 
     # ── 预测模式额外内容 ──
     if mode == "今日预测":
+        st.divider()
+        st.subheader(f"📈 {asset_key} 日线 Stoch RSI — 超买/超卖 & 反转信号")
+        render_daily_stoch_rsi(close, asset_key, lookback=120)
+
         st.divider()
         c_a, c_b = st.columns(2)
 
