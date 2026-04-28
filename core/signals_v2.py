@@ -48,6 +48,13 @@ RV_FILTER_LOW = 0.50      # RV %tile < 此值 → BUY CALL
 RV_FILTER_HIGH = 0.85     # RV %tile > 此值 → SELL PUT
 RV_FILTER_ENABLED = True  # 默认开启 RV 极值过滤
 
+# Bear regime 做空 (实验性, 默认关闭):
+#   实证: Bear + bp_high>0.85 期货空头 67% 胜率 (近 5y, n=9 样本小)
+#         Bear + bp_low<0.30 追跌做空 60% 胜率 (n=10)
+#   样本太小, 默认关闭, 用户可手动开启
+BEAR_SHORT_ENABLED = False
+BEAR_SHORT_BP_HIGH = 0.85   # 触发阈值 (bp_high > 此值)
+
 # 兼容旧引用 (已不再用)
 EXIT_TIMEFRAME = "1d"
 MACD_MIN_GAIN = 999

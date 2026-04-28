@@ -1281,13 +1281,15 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             st.metric(f"看空/止盈 >{oi_tag}", f"${_exit_spot:{_price_fmt}}",
                       delta=f"{_etf_label} > ${eff_bp090:.2f} | {_shfe_label} > ¥{_exit_shfe:.1f}")
         with c3:
-            # 转换为 期权/期货 双标签
+            # 工具映射 (实证回测最优工具): 见 README v3.6.6
+            #   BUY CALL 类信号 → 期货多头 + 3% 止损 (96% wr vs 期权 73%)
+            #   SELL PUT 类信号 → 期权 Sell Put (100% wr vs 期货 68%)
             _sig_map = {
-                "BUY CALL": "Buy Call / 做多",
-                "SELL PUT": "Sell Put / 做多",
+                "BUY CALL": "期货多头 (推荐 96%) / Buy Call",
+                "SELL PUT": "Sell Put (推荐 100%)",
                 "EXIT": "平仓 / 做空",
-                "BUY CALL + EXIT": "Buy Call / 做多 (有退出)",
-                "SELL PUT + EXIT": "Sell Put / 做多 (有退出)",
+                "BUY CALL + EXIT": "期货多头 (有退出)",
+                "SELL PUT + EXIT": "Sell Put (有退出)",
             }
             sig_text = _sig_map.get(_raw_sig, _raw_sig if _raw_sig else "—")
             st.metric("最新信号", sig_text,
@@ -2211,6 +2213,27 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         for i, (stype, s) in enumerate(_uni_stats.get("by_type", {}).items()):
             with cols_stat[i]:
                 st.metric(stype, f"{s['win']}/{s['n']} ({s['wr']:.0%})")
+
+        # 期货 vs 期权对比 (按 BUY CALL 类 / SELL PUT 类 拆分)
+        _fut_stats = _uni_stats.get("futures", {})
+        if _fut_stats:
+            st.markdown("**📊 期货 vs 期权胜率对比** (相同方向性信号下)")
+            _fut_rows = []
+            for grp, fs in _fut_stats.items():
+                _fut_rows.append({
+                    "信号类型": grp,
+                    "n": fs["n"],
+                    "期权": f"{fs['opt_win']}/{fs['n']} ({fs['opt_wr']:.0%})",
+                    "期货 (无止损)": f"{fs['fut_win']}/{fs['n']} ({fs['fut_wr']:.0%})",
+                    "期货 (+3% 止损)": f"{fs['fut_stop_win']}/{fs['n']} ({fs['fut_stop_wr']:.0%})",
+                    "期货总 P&L": f"{fs['fut_stop_total_pnl']:+.1f}%",
+                    "期货 Avg/笔": f"{fs['fut_stop_avg_pnl']:+.2f}%",
+                })
+            st.dataframe(pd.DataFrame(_fut_rows),
+                          use_container_width=True, hide_index=True)
+            st.caption("BUY CALL 信号下期货胜率 (~96%) 显著高于期权 (~73%); "
+                       "SELL PUT 信号下期权 (~100%) 反胜期货 (~68%) — "
+                       "原因见 README v3.6.6")
 
         # 去重展示信号表
         _prev = None
@@ -3596,7 +3619,29 @@ def main():
 
         # 期权策略
         st.divider()
-        st.subheader("期权策略推荐")
+        st.subheader("交易工具推荐")
+
+        # 按 v3.6.6 实证: BUY CALL 信号下期货 96% > 期权 73%
+        if sig_type_viz == "BUY CALL":
+            st.success(
+                "📈 **首选: 期货多头 + 3% 止损** (实证胜率 96%, Sharpe 1.16)\n\n"
+                "- 低 RV 期权虽便宜但仍要付 IV premium ~2-2.5%\n"
+                "- 实际信号 Avg max_up +2.35%, 期权刚够 breakeven\n"
+                "- 期货线性 P&L 无 theta/vega 损耗\n\n"
+                "**备选**: Long Call (低 RV+临 FOMC 时考虑)")
+        elif sig_type_viz == "SELL PUT":
+            st.success(
+                "💵 **首选: 期权 Sell Put** (实证胜率 100%)\n\n"
+                "- 高 RV 反弹但持续性差, 期货仅 68% 胜率\n"
+                "- 卖 Put 收 IV premium, 横盘+上涨都赢\n"
+                "- 期货在震荡 regime 易被震出\n\n"
+                "**禁用**: 期货多头 (本 RV regime 下 Sharpe 反向)")
+        elif _is_straddle_pred:
+            st.info("🌀 **首选: Long Straddle** (临事件做多波动率)")
+        elif _is_short_vol_pred:
+            st.warning("🔒 **首选: Iron Condor 16Δ/5Δ** (做空波动率)")
+
+        st.subheader("期权策略详情")
         if eod_df is None:
             cfg = load_config()
             eod_df, snap_date = load_latest_eod_snapshot(cfg)

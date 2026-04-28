@@ -149,6 +149,20 @@ python scripts/backfill_intraday_signals.py --asset GLD --timeframe 60 \
 - 期货需要真正上涨, 在高 RV 震荡 regime 下吃亏
 - 实证: 期权 100% wr → 期货 68% wr
 
+### Regime 分段实验 (近 5 年, v3.6.7 验证)
+
+| Regime | 占比 | 做多 (期货) | 顶部做空 (bp>0.85) | 触底做空 | 最优策略 |
+|--------|------|-------------|---------------------|----------|----------|
+| **Bull** | ~47% | **84%** ✅ | 36% ❌ | — | 做多期货/Sell Put |
+| **Mixed** | ~49% | 45% | 36% | 42% | **Iron Condor 收 theta (83%)** |
+| **Bear** | ~4% | 30% ❌ | 67% (n=9) | 60% (n=10) | 做空 (样本小, 实验性) |
+
+**关键发现：**
+1. **Bull 顶部做空不可取** — 即使 bp 触及 0.85 上轨, 价格大多继续涨, 做空胜率仅 36%。Bull 顶部的正确动作是 **EXIT 平仓** (bp>0.90 触发), 不是做空开仓。
+2. **Mixed regime 多空都接近抛硬币** — 已交给 Iron Condor 收 theta (83% wr), 现状最优。
+3. **Bear regime 做空胜率高但样本极小** (5 年仅 9-10 笔), 默认关闭, 可通过 `BEAR_SHORT_ENABLED=True` 手动开启。
+4. **现状系统设计已接近 regime 最优**: Bull→做多 / Mixed→IC / Bear→空仓。增加交易频率会牺牲胜率。
+
 **关键洞察 (近 5 年回测验证)：**
 - RV 温水区 (50-85%) 是方向性信号最差区间 — 趋势不明且 IV 衰减不够极端
 - 排除温水区后: BUY CALL 胜率 81% → **88%**, Sharpe 0.53 → **0.61**
@@ -383,4 +397,5 @@ python scripts/backfill_intraday_signals.py --asset SLV --timeframe 60
 | v3.6.3 | 禁止方向性 + SHORT_VOL 矛盾 MIXED 组合 |
 | v3.6.4 | Vega 兼容矩阵: BUY CALL+STRADDLE / SELL PUT+SHORT_VOL ✅, 反向 ❌ |
 | v3.6.5 | 胜率定义按 vega/delta 实际盈亏: BUY CALL `max_up>1σ`, SELL PUT `max_down<1σ`, STRADDLE `move>1σ` (动态), SHORT_VOL `move<1.6σ` |
-| **v3.6.6** | **期货独立统计 (BUY CALL 类信号: 期权 73% → 期货 96%; SELL PUT 类信号: 期权 100% > 期货 68%). 系统建议: BUY CALL 用期货+3%止损, SELL PUT 用期权 Sell Put** |
+| v3.6.6 | 期货独立统计 + 工具映射推荐 (BUY CALL→期货, SELL PUT→期权) |
+| **v3.6.7** | **Dashboard 写明期货多头推荐 + 期货 vs 期权对比表 + Bear regime 做空选项 (实验性) + Regime 分段实验 (Bull 84% / Mixed 45% / Bear 30%): 验证现状已接近 regime 最优, Bull 顶部做空不可取 (36%)** |
