@@ -2335,6 +2335,68 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                      use_container_width=True, hide_index=True)
         st.caption("⚡=方向性+Straddle重叠 | 策略选择: EXIT优先 > Straddle(高分) > 方向性 | 倒序展示")
 
+    # ── 波动率交易历史 (STRADDLE + SHORT_VOL 回测记录) ──
+    from core.events import (backtest_straddle, backtest_short_vol,
+                              SHORT_VOL_STRIKE_SIGMA, SHORT_VOL_WING_SIGMA)
+    _vol_dates = features.index[features.index >= (pd.Timestamp(today_sgt) - timedelta(days=180))]
+    _st_trades = backtest_straddle(close_d, high_d, low_d, rv_s, _vol_dates)
+    _sv_trades = backtest_short_vol(close_d, high_d, low_d, rv_s, rv_pctile,
+                                      _vol_dates, regime=regime,
+                                      daily_range=(high_d - low_d) / close_d * 100)
+    if _st_trades or _sv_trades:
+        st.divider()
+        st.subheader(f"波动率交易历史 (近 180 天: STRADDLE {len(_st_trades)} 笔, "
+                     f"Iron Condor {len(_sv_trades)} 笔)")
+        _vol_recs = []
+        for t in _sv_trades:
+            _vol_recs.append({
+                "入场": t["entry_date"].strftime("%m/%d"),
+                "策略": "Iron Condor (做空波动率)",
+                f"入场 {asset_key}": f"${t['entry_price']:.2f}",
+                f"入场 {_viz_spot_label}": f"${t['entry_price'] * _viz_ratio:.1f}",
+                "RV": f"{t['rv']:.1f}%",
+                "出场": t["exit_date"].strftime("%m/%d"),
+                "max_move": f"{t['max_move']:.2f}%",
+                "短腿(1.6σ)": f"{t['short_strike_pct']:.2f}%",
+                "Credit": f"{t['credit_pct']:.2f}%",
+                "P&L": f"{t['pnl_pct']:+.2f}%",
+                "结果": "✓" if t["win"] else "✗",
+            })
+        for t in _st_trades:
+            _vol_recs.append({
+                "入场": t["entry_date"].strftime("%m/%d"),
+                "策略": "Straddle (做多波动率)",
+                f"入场 {asset_key}": f"${t['entry_price']:.2f}",
+                f"入场 {_viz_spot_label}": f"${t['entry_price'] * _viz_ratio:.1f}",
+                "RV": f"{t['rv']:.1f}%",
+                "出场": t["exit_date"].strftime("%m/%d"),
+                "max_move": f"{t['max_move']:.2f}%",
+                "短腿(1.6σ)": "—",
+                "Credit": f"cost {t['cost_pct']:.2f}%",
+                "P&L": f"{t['pnl_pct']:+.2f}%",
+                "结果": "✓" if t["pnl_pct"] > 0 else "✗",
+            })
+        # 按入场日倒序
+        _vol_recs.sort(key=lambda r: r["入场"], reverse=True)
+        st.dataframe(pd.DataFrame(_vol_recs),
+                      use_container_width=True, hide_index=True)
+        # 汇总
+        sv_wins = sum(1 for t in _sv_trades if t["win"])
+        st_wins = sum(1 for t in _st_trades if t["pnl_pct"] > 0)
+        sv_pnl = sum(t["pnl_pct"] for t in _sv_trades)
+        st_pnl = sum(t["pnl_pct"] for t in _st_trades)
+        cols_vol_sum = st.columns(2)
+        with cols_vol_sum[0]:
+            if _sv_trades:
+                st.metric("Iron Condor 汇总",
+                           f"{sv_wins}/{len(_sv_trades)} ({sv_wins/len(_sv_trades):.0%})",
+                           delta=f"总 {sv_pnl:+.1f}%")
+        with cols_vol_sum[1]:
+            if _st_trades:
+                st.metric("Straddle 汇总",
+                           f"{st_wins}/{len(_st_trades)} ({st_wins/len(_st_trades):.0%})",
+                           delta=f"总 {st_pnl:+.1f}%")
+
     # ── 回测交易记录 (ETF + 期货价位双视图) ──
     if trades:
         st.divider()

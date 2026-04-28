@@ -238,60 +238,18 @@ def build_unified_signals(dir_signals, straddle_df, close, high, low,
         ic_short = sigma_pct * SHORT_VOL_STRIKE_SIGMA
         ic_wing = sigma_pct * SHORT_VOL_WING_SIGMA
 
-        # 各策略 win 定义 (按 vega/delta 实际盈亏, 全部用动态 sigma_pct):
-        #   BUY CALL  long delta + long vega: max_up > 1σ
-        #             (真涨才赢, 横盘亏 theta+IV crush)
-        #   SELL PUT  long delta + short vega: max_down < 1σ
-        #             (跌不破 1σ 下方短 put strike, 横盘+上涨都赢)
-        #   STRADDLE  long gamma + long vega: |move| > 1σ (≥ premium)
-        #   SHORT_VOL short gamma + short vega: max_move < 1.6σ (留 credit)
-        #   期货多头 (FUT_LONG)  linear delta, vega=0, theta=0:
-        #             ret_5d > 0 即赢 (无 IV 成本)
-        def _dir_win(dt):
-            if move_up is None or move_down is None:
-                return None
-            if dt == "BUY CALL":
-                return move_up > sigma_pct
-            return move_down < sigma_pct  # SELL PUT
-
-        def _vol_win(vt):
-            if max_move is None:
-                return None
-            if vt == "STRADDLE":
-                return max_move > sigma_pct
-            return max_move < ic_short  # SHORT_VOL
-
-        # 期货多头胜率 (与期权并列, 用于对比)
-        fut_win = (ret_5d > 0) if ret_5d is not None else None
-        # 期货 + 3% 止损: 5天内 max_down 突破 3% 视为先止损, 否则按 ret_5d
-        if ret_5d is not None and move_down is not None:
-            if move_down > 3:
-                fut_stop_pnl = -3.0
-            else:
-                fut_stop_pnl = ret_5d
-            fut_stop_win = fut_stop_pnl > 0
-        else:
-            fut_stop_pnl = None
-            fut_stop_win = None
-
-        if ret_5d is not None:
-            if chosen == "EXIT":
-                win = ret_5d < 3
-            elif "+" in chosen:
-                base_dir, base_vol = chosen.split(" + ")
-                dw, vw = _dir_win(base_dir), _vol_win(base_vol)
-                if dw is None and vw is None:
-                    win = None
-                else:
-                    win = bool(dw) or bool(vw)
-            elif chosen in ("BUY CALL", "SELL PUT"):
-                win = _dir_win(chosen)
-            elif chosen in ("STRADDLE", "SHORT_VOL"):
-                win = _vol_win(chosen)
-            else:
-                win = ret_5d > -3
-        else:
-            win = None
+        # 胜率统一用 core/strategies/win_metrics.py (按 vega/delta 实际 P&L)
+        # 期货 P&L 用 core/strategies/futures_pnl.py
+        from core.strategies import (compute_win,
+                                       futures_pnl_with_stop, futures_win)
+        win = compute_win(chosen, ret_5d=ret_5d, move_up=move_up,
+                          move_down=move_down, max_move=max_move,
+                          sigma_pct=sigma_pct,
+                          ic_strike_sigma=SHORT_VOL_STRIKE_SIGMA)
+        fut_win = futures_win(ret_5d)
+        fut_stop_pnl = futures_pnl_with_stop(ret_5d, move_down, stop_pct=3.0)
+        fut_stop_win = (fut_stop_pnl > 0
+                         if fut_stop_pnl is not None else None)
 
         records.append({
             "date": d,
