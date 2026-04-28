@@ -19,6 +19,8 @@ from .win_metrics import (
 from .futures_pnl import (
     futures_pnl,
     futures_pnl_with_stop,
+    futures_win,
+    futures_stop_win,
 )
 
 __all__ = [
@@ -29,4 +31,6 @@ __all__ = [
     "WIN_DEFINITIONS",
     "futures_pnl",
     "futures_pnl_with_stop",
+    "futures_win",
+    "futures_stop_win",
 ]
