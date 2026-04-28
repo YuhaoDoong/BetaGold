@@ -2111,87 +2111,128 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         })
 
     # 波动率交易: STRADDLE (做多波动率) + SHORT_VOL (Iron Condor)
-    # 含 MIXED 组合中的波动率部分 (BUY CALL + STRADDLE 等)
+    # 显示近 30 天所有 vol 交易 (持仓中 + 已平仓), 与方向性一致
     from core.events import (SHORT_VOL_STRIKE_SIGMA,
                               SHORT_VOL_WING_SIGMA,
-                              SHORT_VOL_PREMIUM_RATIO)
-    for d, r in _unified_viz.iterrows():
-        chosen = r["chosen"]
-        is_straddle = "STRADDLE" in chosen
-        is_short_vol = "SHORT_VOL" in chosen
-        if not (is_straddle or is_short_vol):
-            continue
-        c = r["close"]
-        days_held = (last_date - d).days
+                              SHORT_VOL_PREMIUM_RATIO,
+                              backtest_straddle as _bt_straddle,
+                              backtest_short_vol as _bt_short_vol)
 
-        # 入场后的波动 (max_up / max_down)
-        post_h = high_d[(high_d.index >= d) & (high_d.index <= last_date)]
-        post_l = low_d[(low_d.index >= d) & (low_d.index <= last_date)]
-        if len(post_h) > 0 and len(post_l) > 0:
-            mu = (post_h.max() / c - 1) * 100
-            md = (1 - post_l.min() / c) * 100
-            move_since = max(mu, md)
-        else:
-            move_since = 0
+    _vol_window_start = last_date - timedelta(days=30)
+    _vol_dates_pm = features.index[features.index >= _vol_window_start]
+    _st_pm = _bt_straddle(close_d, high_d, low_d, rv_s, _vol_dates_pm)
+    _sv_pm = _bt_short_vol(close_d, high_d, low_d, rv_s, rv_pctile,
+                            _vol_dates_pm, regime=regime,
+                            daily_range=(high_d - low_d) / close_d * 100)
 
-        rv_today = rv_s.get(d, 20)
-        sigma = rv_today / 100 * (5/252)**0.5 * 100  # 1σ over 5d
-
-        if is_straddle:
-            # 做多波动率: cost = 1σ (Long Straddle premium)
+    def _vol_status_active(strategy, c, mu, md, move_since, sigma):
+        """实时 (持仓中) 状态文字 + 当前 P&L."""
+        if strategy == "STRADDLE":
             cost = sigma
             est_pnl = move_since - cost
-            # 止盈: 波动 > cost (即 1σ); 早平: 移动达到 50% target
-            target = cost
-            # 状态判断
-            if days_held > 5:
-                status = "已到期"
-            elif move_since > cost * 1.5:
-                status = "可早平 (移动 > 1.5σ, 锁 50%+ 利润)"
+            if move_since > cost * 1.5:
+                status = "🟢 可早平 (移动>1.5σ)"
             elif move_since > cost:
-                status = "盈利中 (移动 > 1σ)"
+                status = "🟢 盈利中 (移动>1σ)"
             else:
-                status = "持仓中 (待移动 > cost)"
-            exit_cond = f"5d 到期 / 移动>{target:.1f}%"
-            label = chosen if chosen == "STRADDLE" else f"{chosen} (含做多波动率)"
-
-        else:  # SHORT_VOL (IC)
-            short_strike = sigma * SHORT_VOL_STRIKE_SIGMA   # 1.6σ
-            wing_strike = sigma * SHORT_VOL_WING_SIGMA      # 3σ
-            credit = sigma * SHORT_VOL_PREMIUM_RATIO        # 净 credit
-            # P&L 仿 backtest_short_vol
+                status = "🟡 持仓中 (待移动>cost)"
+            return status, est_pnl, cost
+        else:  # SHORT_VOL
+            short_strike = sigma * SHORT_VOL_STRIKE_SIGMA
+            wing_strike = sigma * SHORT_VOL_WING_SIGMA
+            credit = sigma * SHORT_VOL_PREMIUM_RATIO
             if move_since <= short_strike:
                 est_pnl = credit
             elif move_since >= wing_strike:
                 est_pnl = credit - (wing_strike - short_strike)
             else:
                 est_pnl = credit - (move_since - short_strike)
-            target = credit * 0.5  # 50% credit 早平
-            if days_held > 5:
-                status = "已到期"
-            elif move_since >= wing_strike:
-                status = "翼锁定亏损 (移动 > 3σ)"
+            target = credit * 0.5
+            if move_since >= wing_strike:
+                status = "🔴 翼锁定亏损 (>3σ)"
             elif move_since >= short_strike:
-                status = "突破短腿 (考虑止损)"
+                status = "🔴 突破短腿 (考虑止损)"
             elif est_pnl >= target:
-                status = "可早平 (锁 50% credit)"
+                status = "🟢 可早平 (锁50%credit)"
             else:
-                status = "持仓中 (待 theta 衰减)"
-            exit_cond = f"5d 到期 / >{wing_strike:.1f}% 翼锁定 / 50% credit 早平"
-            label = chosen if chosen == "SHORT_VOL" else f"{chosen} (含做空波动率)"
+                status = "🟡 持仓中 (待theta衰减)"
+            return status, est_pnl, target
 
-        if days_held > 5:
-            continue  # 已到期不显示
-
+    # SHORT_VOL Iron Condor: 用 backtest_short_vol 的真实交易记录
+    for t in _sv_pm:
+        d = t["entry_date"]
+        c = t["entry_price"]
+        days_held = (last_date - d).days
+        sigma = t["sigma_pct"]
+        if days_held <= 5:
+            # 持仓中: 实时 P&L
+            post_h = high_d[(high_d.index >= d) & (high_d.index <= last_date)]
+            post_l = low_d[(low_d.index >= d) & (low_d.index <= last_date)]
+            if len(post_h) > 0 and len(post_l) > 0:
+                move_since = max((post_h.max()/c - 1)*100,
+                                  (1 - post_l.min()/c)*100)
+            else:
+                move_since = 0
+            status, est_pnl, target = _vol_status_active(
+                "SHORT_VOL", c, 0, 0, move_since, sigma)
+            current_str = f"{est_pnl:+.2f}% (持中)"
+            wing = sigma * SHORT_VOL_WING_SIGMA
+            exit_cond = f"5d 到期/>{wing:.1f}%翼锁/50%credit早平"
+        else:
+            # 已平仓: 用 backtest 终值
+            status = (f"已平仓 {t['exit_date'].strftime('%m/%d')}"
+                       f" {('赢' if t['win'] else '亏')}")
+            est_pnl = t["pnl_pct"]
+            current_str = f"{est_pnl:+.2f}% (终)"
+            target = t["credit_pct"] * 0.5
+            exit_cond = f"已结束 max_move={t['max_move']:.2f}%"
         tp_recs.append({
             "日期": d.strftime("%m/%d"),
             "状态": status,
-            "策略": label,
+            "策略": "Iron Condor (做空波动率)",
             f"入场 {asset_key}": f"${c:.2f}",
             f"入场 {_viz_spot_label}": f"${c * _viz_ratio:.1f}",
             "入场源": "收盘",
-            "当前盈亏": f"{est_pnl:+.2f}%",
-            "止盈位": f"{target:.2f}%" if is_short_vol else f"波动>{target:.2f}%",
+            "当前盈亏": current_str,
+            "止盈位": f"{target:.2f}%",
+            "BandExit": exit_cond,
+        })
+
+    # STRADDLE: 用 backtest_straddle 的真实交易记录
+    for t in _st_pm:
+        d = t["entry_date"]
+        c = t["entry_price"]
+        days_held = (last_date - d).days
+        sigma = t["cost_pct"]  # 1σ premium
+        if days_held <= 5:
+            post_h = high_d[(high_d.index >= d) & (high_d.index <= last_date)]
+            post_l = low_d[(low_d.index >= d) & (low_d.index <= last_date)]
+            if len(post_h) > 0 and len(post_l) > 0:
+                move_since = max((post_h.max()/c - 1)*100,
+                                  (1 - post_l.min()/c)*100)
+            else:
+                move_since = 0
+            status, est_pnl, cost = _vol_status_active(
+                "STRADDLE", c, 0, 0, move_since, sigma)
+            current_str = f"{est_pnl:+.2f}% (持中)"
+            target = cost
+            exit_cond = f"5d 到期 / 移动>{target:.2f}%"
+        else:
+            status = (f"已平仓 {t['exit_date'].strftime('%m/%d')}"
+                       f" {('赢' if t['pnl_pct']>0 else '亏')}")
+            est_pnl = t["pnl_pct"]
+            current_str = f"{est_pnl:+.2f}% (终)"
+            target = sigma
+            exit_cond = f"已结束 max_move={t['max_move']:.2f}%"
+        tp_recs.append({
+            "日期": d.strftime("%m/%d"),
+            "状态": status,
+            "策略": "Straddle (做多波动率)",
+            f"入场 {asset_key}": f"${c:.2f}",
+            f"入场 {_viz_spot_label}": f"${c * _viz_ratio:.1f}",
+            "入场源": "收盘",
+            "当前盈亏": current_str,
+            "止盈位": f"波动>{target:.2f}%",
             "BandExit": exit_cond,
         })
 
