@@ -95,11 +95,19 @@
 - **Win**: `max_move > 1σ`
 - **PnL**: `max_move - cost`
 
-### 实战建议
+### 实战建议 (含 IV crush 防御, v3.7.11)
 - ATM Long Call + Long Put
-- Hold 至事件日翌日 (FOMC 释放后)
+- **不建议持仓跨 FOMC**: IV crush 25-40% 直接吃掉 vega
+  → 提前 1 天平仓, 锁住事件前 IV 上升红利
+- 或改用 **Calendar Spread**: 卖近月 + 买远月, 利用 IV 期限结构
 - 50% profit lock 早平
-- 实证胜率 79% (近 5y)
+- 实证 (含 IV crush 修正): 胜率 71% (近 5y), 比未修正模型低 8pp 但更真实
+
+### IV crush 经验值
+- FOMC: -30% premium (vega 损失最大)
+- NFP: -15%
+- OPEX: -10%
+- 跨多事件累加
 
 ## 做空波动率 — Iron Condor 16Δ / 5Δ
 

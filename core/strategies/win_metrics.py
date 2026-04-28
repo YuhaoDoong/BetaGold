@@ -58,7 +58,8 @@ def compute_dir_win(dir_type: str, move_up: Optional[float],
 
 
 def compute_vol_win(vol_type: str, max_move: Optional[float],
-                    sigma_pct: float, ic_strike_sigma: float = 1.6
+                    sigma_pct: float, ic_strike_sigma: float = 1.6,
+                    iv_crush_factor: float = 0.0,
                     ) -> Optional[bool]:
     """波动率策略胜率 (STRADDLE / SHORT_VOL).
 
@@ -67,11 +68,19 @@ def compute_vol_win(vol_type: str, max_move: Optional[float],
         max_move: 持仓期最大单向移动 % (max(move_up, move_down))
         sigma_pct: 1σ 波动 %
         ic_strike_sigma: SHORT_VOL IC 短腿距离倍数 (默认 1.6)
+        iv_crush_factor: 跨事件后 IV crush 损失比例 (long vol 累加)
+            FOMC ~0.30, NFP ~0.15, OPEX ~0.10. 多事件相加.
+            STRADDLE 是 long vega → 抬高 win 阈值 (赢条件更难)
+            SHORT_VOL 是 short vega → 降低 win 阈值 (IV crush 帮短 vol)
     """
     if vol_type == "STRADDLE":
-        return _safe_compare(max_move, sigma_pct, ">")
+        # Long vol: 真实 cost = sigma + iv_crush_loss → win 阈值上调
+        return _safe_compare(max_move, sigma_pct * (1 + iv_crush_factor), ">")
     if vol_type == "SHORT_VOL":
-        return _safe_compare(max_move, sigma_pct * ic_strike_sigma, "<")
+        # Short vol: IV crush 帮我们, 短腿空间相当于变宽
+        return _safe_compare(max_move,
+                              sigma_pct * ic_strike_sigma * (1 + iv_crush_factor * 0.5),
+                              "<")
     return None
 
 

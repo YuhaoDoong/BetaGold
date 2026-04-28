@@ -3775,8 +3775,15 @@ def main():
                            f"做空: {_short_vol_reason_pred}\n\n"
                            "建议按 score 较高方向操作")
             elif _is_straddle_pred:
+                # IV crush 检查: 持仓窗口 (5d) 内若跨 FOMC, 警告 vega 损失
+                _iv_warn = ""
+                if _d_fomc <= 5:
+                    _iv_warn += f"\n\n⚠️ **IV Crush 风险**: 距 FOMC {_d_fomc} 天, 持仓 5 天大概率跨过事件公布。FOMC 后 IV 通常暴跌 25-40%, Long Straddle 是 long vega → 预计 vega 损失 ≈ premium × 0.30。需要价格移动 > 1.3σ 才能覆盖。\n建议:\n- 提前 1 天平仓（避开 IV crush）, 或\n- 改用 Calendar Spread（卖近月+买远月, 利用 IV 期限结构）"
+                if _d_nfp <= 5:
+                    _iv_warn += f"\n⚠️ 距 NFP {_d_nfp} 天, IV crush ≈ 15%"
                 st.warning(f"**做多波动率信号**: {_straddle_reason_pred}\n\n"
-                           "建议: 考虑做多波动率 (ATM Call+Put / 长 Strangle)")
+                           "建议: 考虑做多波动率 (ATM Call+Put / 长 Strangle)"
+                           + _iv_warn)
             elif _is_short_vol_pred:
                 st.warning(f"**做空波动率信号**: {_short_vol_reason_pred}\n\n"
                            "建议: 考虑做空波动率 (Iron Condor / 短 Strangle), "

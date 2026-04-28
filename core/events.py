@@ -272,15 +272,32 @@ def detect_straddle_signal(rv_series, dates_index,
     return pd.DataFrame(records, index=dates_index)
 
 
+# IV crush 经验值 (跨事件后 IV 暴跌幅度, 用于扣除 Straddle vega 损失):
+#   FOMC: 议息会议后 IV 通常降 25-40% → 取 0.30
+#   NFP:  非农数据后 IV 降 10-20% → 取 0.15
+#   OPEX: 月度到期日, IV 影响较间接 → 取 0.10
+IV_CRUSH_FOMC = 0.30
+IV_CRUSH_NFP = 0.15
+IV_CRUSH_OPEX = 0.10
+
+
 def backtest_straddle(close, high, low, rv_series, dates_index,
-                       hold_days=STRADDLE_HOLD_DAYS, **kwargs):
-    """Straddle 信号回测.
+                       hold_days=STRADDLE_HOLD_DAYS,
+                       iv_crush_adj=True, **kwargs):
+    """Straddle 信号回测 (含 IV crush 修正).
 
-    成本估算: price × RV/100 × sqrt(hold_days/252)
-    盈利: max(上涨幅度, 下跌幅度) - 成本
-    胜率: 波动 > 成本 即为胜
+    P&L 模型:
+      gross_cost = RV × √(hold/252) × 100  (1σ ATM premium 估算)
+      iv_crush_loss = gross_cost × Σ(crush_factor for each event in hold window)
+        - FOMC 跨过: 30% 扣除
+        - NFP  跨过: 15% 扣除
+        - OPEX 跨过: 10% 扣除
+      pnl = max_move - gross_cost - iv_crush_loss
+      win = max_move > gross_cost + iv_crush_loss
 
-    Returns: list of trade dicts
+    iv_crush_adj=False 时退回旧模型 (无 IV crush 扣除, 仅供对比).
+
+    Returns: list of trade dicts (含 iv_crush_loss / spans_events 字段)
     """
     import numpy as np
 
@@ -308,6 +325,27 @@ def backtest_straddle(close, high, low, rv_series, dates_index,
 
         cost_pct = rv / 100 * sqrt_h252 * 100
 
+        # 检测持仓窗口 (hold_days 内) 是否跨事件 → IV crush 损失
+        d_fomc, _, _ = days_to_next_event(d, "FOMC")
+        d_nfp, _, _ = days_to_next_event(d, "NFP")
+        d_opex, _, _ = days_to_next_event(d, "OPEX")
+        spans_fomc = d_fomc <= hold_days
+        spans_nfp = d_nfp <= hold_days
+        spans_opex = d_opex <= hold_days
+
+        iv_crush_loss = 0.0
+        events_hit = []
+        if iv_crush_adj:
+            if spans_fomc:
+                iv_crush_loss += cost_pct * IV_CRUSH_FOMC
+                events_hit.append(f"FOMC(-{IV_CRUSH_FOMC:.0%})")
+            if spans_nfp:
+                iv_crush_loss += cost_pct * IV_CRUSH_NFP
+                events_hit.append(f"NFP(-{IV_CRUSH_NFP:.0%})")
+            if spans_opex:
+                iv_crush_loss += cost_pct * IV_CRUSH_OPEX
+                events_hit.append(f"OPEX(-{IV_CRUSH_OPEX:.0%})")
+
         loc = close.index.get_loc(d)
         if loc + hold_days >= len(close):
             end_loc = len(close) - 1
@@ -324,15 +362,20 @@ def backtest_straddle(close, high, low, rv_series, dates_index,
         move_down = (1 - window_low / c) * 100
         max_move = max(move_up, move_down)
 
-        pnl_pct = max_move - cost_pct
+        # 实际 P&L = 价格移动 - 入场成本 - IV crush 损失
+        pnl_pct = max_move - cost_pct - iv_crush_loss
+        win = max_move > cost_pct + iv_crush_loss
         direction = "上涨" if move_up > move_down else "下跌"
 
         trades.append({
             "entry_date": d, "exit_date": exit_date,
             "entry_price": c, "rv": rv,
             "cost_pct": cost_pct,
+            "iv_crush_loss": iv_crush_loss,
+            "events_hit": ",".join(events_hit) if events_hit else "—",
             "max_move": max_move, "direction": direction,
             "pnl_pct": pnl_pct,
+            "win": win,
             "reason": reason, "next_event": next_event,
             "partial": partial,
         })

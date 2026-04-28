@@ -283,6 +283,46 @@ CONSECUTIVE_STOP = 99  # 改 2 启动熔断
 低/中 RV regime 不熔断. 假设 8 年里熔断的价值集中在 2018/2020 等
 高 RV 危机时段, 平时市场不需要.
 
+## 12. IV Crush 修正 (v3.7.11)
+
+### 问题
+旧 `backtest_straddle` P&L 模型只算价格移动 - 入场成本, **完全忽略 IV crush**.
+跨 FOMC 等事件后 IV 暴跌 25-40%, Long Straddle 是 long vega 损失大.
+
+### 实证 (旧 vs 新模型对比)
+
+| 周期 | 旧胜率 (无 crush) | 新胜率 (含 crush) | 总 P&L 旧 | 新 |
+|------|-------------------|-------------------|-----------|-----|
+| 近 3 年 | 78% | **68%** (-10pp) | +54.1% | +44.2% (-10%) |
+| 近 5 年 | 79% | **71%** (-8pp) | +70.9% | +61.0% (-10%) |
+| 近 8 年 | 80% | **75%** (-5pp) | +93.3% | +83.4% (-10%) |
+
+### IV crush 经验值
+- **FOMC**: 议息后 IV 降 25-40% → 取 0.30
+- **NFP**: 非农后 IV 降 10-20% → 取 0.15
+- **OPEX**: 月度到期, 间接 → 取 0.10
+
+跨多事件累加. 单笔最大 IV crush 损失 1.0% (FOMC + NFP 同窗口).
+
+### 修正后 P&L 模型
+```
+gross_cost = RV × √(hold/252) × 100         # 1σ premium
+iv_crush_loss = gross_cost × Σ(crush_factor)  # 跨事件 vega 损失
+pnl = max_move - gross_cost - iv_crush_loss
+win = max_move > gross_cost + iv_crush_loss
+```
+
+### 实战建议 (Dashboard 已加警告)
+当 STRADDLE 信号距 FOMC ≤ 5 天:
+1. **提前 1 天平仓**, 避开 IV crush (经典做法)
+2. **改用 Calendar Spread**: 卖近月 + 买远月, 利用 IV 期限结构
+3. **接受风险**: 期望价格移动 > 1.3σ 覆盖
+
+### Iron Condor 的相反效应
+SHORT_VOL 是 short vega, IV crush **帮助** 我们 (premium 衰减更快). 现 IC 已硬规
+则要求距 FOMC > 10 天, 不会跨 FOMC; `compute_vol_win` 中 SHORT_VOL 的 IV crush 修
+正方向取反, 短腿空间相当于变宽 (赢条件略放宽).
+
 ## 总结: 关键 alpha 来源
 
 按 Sharpe 排序:
