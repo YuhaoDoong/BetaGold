@@ -998,7 +998,8 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                           asset_key="GLD"):
     """真实策略: Band 开窗 + 盘中触发入场 + bp090 退出 + 3% 止损."""
     from core.signals_v2 import (generate_daily_signals, run_backtest,
-                                  PULLBACK_GAIN, PULLBACK_DD)
+                                  PULLBACK_GAIN, PULLBACK_DD,
+                                  MAX_HOLD_DAYS)
 
     # 时区
     tz_name = st.sidebar.selectbox("时区", list(TZ_OPTIONS.keys()),
@@ -2077,15 +2078,20 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             entry_p = close_d.get(buy_d, 0)
             entry_src = "收盘"
 
-        # 状态: 已平仓 vs 持仓中
+        # 状态判定:
+        #   1. 在 trade_exits 中 → 已平仓 (run_backtest 实际执行的交易)
+        #   2. 不在但 days_held <= MAX_HOLD_DAYS → 真正的持仓中
+        #   3. 不在但 days_held > MAX_HOLD_DAYS → 信号未执行 (被 in_trade
+        #      / 熔断等阻塞), 不该标"持仓中"; 跳过不显示
+        days_since_entry = (last_date - buy_d).days
         if buy_d in trade_exits:
             ex_d, ex_type, ex_gain = trade_exits[buy_d]
             status = f"已平仓 {ex_type} {ex_gain:+.1f}% "\
                      f"({(ex_d - buy_d).days}d)"
             current_gain_str = f"{ex_gain:+.1f}% (终)"
             pb_stop = 0
-        else:
-            status = "持仓中"
+        elif days_since_entry <= MAX_HOLD_DAYS:
+            status = f"持仓中 ({days_since_entry}d)"
             post = high_d[(high_d.index >= buy_d) &
                           (high_d.index <= last_date)]
             pk = post.max() if len(post) > 0 else entry_p
@@ -2096,6 +2102,10 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             current_gain_str = f"{current_gain:+.1f}%"
             pb_stop = pk * (1 - PULLBACK_DD / 100) \
                 if gain > PULLBACK_GAIN else 0
+        else:
+            # 信号触发但未实际入场 (in_trade 阻塞 / 连续熔断 / RV 过滤)
+            # 此类不应作为"持仓中" — 跳过不显示
+            continue
 
         tp_recs.append({
             "_sort_dt": buy_d,
