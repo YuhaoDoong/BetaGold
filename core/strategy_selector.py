@@ -206,25 +206,29 @@ def build_unified_signals(dir_signals, straddle_df, close, high, low,
         rv_today = (svr["rv"] if svr is not None
                     else (sr["rv"] if sr is not None else 20))
         sigma_pct = rv_today * (hold_days / 252) ** 0.5
+        # SHORT_VOL 用 IC 1.6σ 短腿距离 (与 backtest_short_vol 一致)
+        from core.events import (SHORT_VOL_STRIKE_SIGMA,
+                                  SHORT_VOL_WING_SIGMA)
+        ic_short = sigma_pct * SHORT_VOL_STRIKE_SIGMA
+        ic_wing = sigma_pct * SHORT_VOL_WING_SIGMA
 
         if ret_5d is not None:
-            chosen_root = chosen.replace(" + ", "+")
             if chosen == "EXIT":
                 win = ret_5d < 3
             elif "STRADDLE" in chosen and "SHORT_VOL" not in chosen \
                     and "+" not in chosen:
                 win = max_move > straddle_cost_pct if max_move else None
             elif "SHORT_VOL" in chosen and "+" not in chosen:
-                # 做空波动率: 波动 < 1σ 才赚 premium
-                win = max_move < sigma_pct if max_move is not None else None
+                # 做空波动率 IC: 波动 < 1.6σ 短腿即赢 (留 credit)
+                win = max_move < ic_short if max_move is not None else None
             elif "+" in chosen:
-                # MIXED: 方向性赢 OR 波动率赢 都算 (任一对) → win=True
+                # MIXED: 方向性赢 OR 波动率赢 都算
                 dir_win = ret_5d > -3
                 if "STRADDLE" in chosen:
                     vol_win = (max_move > straddle_cost_pct
                                if max_move else False)
                 else:
-                    vol_win = (max_move < sigma_pct
+                    vol_win = (max_move < ic_short
                                if max_move is not None else False)
                 win = dir_win or vol_win
             else:
@@ -248,6 +252,12 @@ def build_unified_signals(dir_signals, straddle_df, close, high, low,
             "win": win,
         })
 
+    if not records:
+        return pd.DataFrame(columns=[
+            "close", "dir_signal", "straddle_signal", "straddle_score",
+            "short_vol_signal", "short_vol_score", "chosen", "chosen_reason",
+            "ret_5d", "max_move_5d", "sigma_pct", "win",
+        ])
     return pd.DataFrame(records).set_index("date")
 
 
