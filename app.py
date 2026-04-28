@@ -2186,26 +2186,61 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     # 方向性: 数据源用 run_backtest 真实交易 (含活跃持仓), 不再用 sig_df.buy_signal
     # (后者会含被 in_trade=True 阻塞的"信号未执行"日, 误标持仓中)
     # 显示最近 10 笔 (含已平仓 + 活跃)
+    # v3.7.17: 活跃持仓改用实时价 (gc_now / _viz_ratio) 实时判定退出触发
     for t in trades[-10:][::-1] if trades else []:
         buy_d = t["entry_date"]
         ep = t["entry_price"]
         is_active = t.get("active", False) and t.get("exit_date") is None
 
         if is_active:
-            # 活跃持仓: 实时算 P&L + 止盈位
+            # 活跃持仓: 实时价 + 实时 P&L + 实时退出触发判定
             days_since_entry = (last_date - buy_d).days
-            status = f"🟡 持仓中 ({days_since_entry}d)"
             post = high_d[(high_d.index >= buy_d) &
                           (high_d.index <= last_date)]
-            pk = post.max() if len(post) > 0 else ep
-            gain = (pk / ep - 1) * 100 if ep > 0 else 0
-            current_p = close_d.get(last_date, ep)
+            pk_close = post.max() if len(post) > 0 else ep
+            # 用实时价更新 peak (盘中可能创新高)
+            current_p = (gc_now / _viz_ratio if (gc_now > 0 and _viz_ratio > 0)
+                         else close_d.get(last_date, ep))
+            pk = max(pk_close, current_p)
+            gain_peak = (pk / ep - 1) * 100 if ep > 0 else 0
             current_gain = (current_p / ep - 1) * 100 if ep > 0 else 0
-            current_gain_str = f"{current_gain:+.1f}%"
+            current_gain_str = f"{current_gain:+.1f}% (实时)"
             pb_stop = pk * (1 - PULLBACK_DD / 100) \
-                if gain > PULLBACK_GAIN else 0
+                if gain_peak > PULLBACK_GAIN else 0
+
+            # 实时退出触发判定 (4 个条件)
+            sl_price = ep * (1 - 3.0 / 100)  # 3% StopLoss 价位
+            triggered = []
+            if current_p <= sl_price:
+                triggered.append(f"🚨 StopLoss (实时${current_p:.2f} ≤ ${sl_price:.2f})")
+            if pk > 0 and current_p >= eff_bp090:
+                triggered.append(f"🚨 BandExit (实时${current_p:.2f} ≥ bp090 ${eff_bp090:.2f})")
+            if pb_stop > 0 and current_p <= pb_stop:
+                triggered.append(f"🚨 Pullback 止盈 (实时${current_p:.2f} ≤ ${pb_stop:.2f})")
+            if days_since_entry >= MAX_HOLD_DAYS:
+                triggered.append(f"🚨 Timeout 安全帽 ({days_since_entry}d ≥ {MAX_HOLD_DAYS}d)")
+
+            if triggered:
+                status = "🚨 **立即平仓** — " + " | ".join(triggered)
+            else:
+                # 接近退出: 距任一阈值 < 1% 时预警
+                near_sl = (current_p / sl_price - 1) * 100
+                near_pb = ((current_p / pb_stop - 1) * 100
+                            if pb_stop > 0 else 99)
+                near_be = (eff_bp090 / current_p - 1) * 100
+                if near_sl < 1.0:
+                    status = f"⚠️ 接近 StopLoss ({near_sl:+.1f}% 距阈值)"
+                elif near_be < 1.0:
+                    status = f"⚠️ 接近 BandExit ({near_be:+.1f}% 距阈值)"
+                elif pb_stop > 0 and near_pb < 1.0:
+                    status = f"⚠️ 接近 Pullback ({near_pb:+.1f}% 距阈值)"
+                elif current_gain > 0:
+                    status = f"🟢 持仓中盈利 ({days_since_entry}d, +{current_gain:.1f}%)"
+                else:
+                    status = f"🟡 持仓中 ({days_since_entry}d, {current_gain:+.1f}%)"
+
             exit_d_str = "—"
-            exit_reason = "持仓中"
+            exit_reason = "持仓中" if not triggered else "**触发退出 (见状态)**"
         else:
             # 已平仓
             ex_d, ex_type, ex_gain = t["exit_date"], t["exit_type"], t["gain"]
@@ -2304,19 +2339,35 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         days_held = (_real_last_date - d).days
         sigma = t["sigma_pct"]
         if days_held <= 5:
-            # 持仓中: 实时 P&L
+            # 持仓中: 实时 P&L (含 gc_now 实时价位)
             post_h = high_d[(high_d.index >= d) & (high_d.index <= _real_last_date)]
             post_l = low_d[(low_d.index >= d) & (low_d.index <= _real_last_date)]
+            current_p_rt = (gc_now / _viz_ratio if (gc_now > 0 and _viz_ratio > 0)
+                             else close_d.get(_real_last_date, c))
             if len(post_h) > 0 and len(post_l) > 0:
-                move_since = max((post_h.max()/c - 1)*100,
-                                  (1 - post_l.min()/c)*100)
+                # 实时价可能突破 close 高/低
+                rt_up = (max(post_h.max(), current_p_rt) / c - 1) * 100
+                rt_dn = (1 - min(post_l.min(), current_p_rt) / c) * 100
+                move_since = max(rt_up, rt_dn)
             else:
-                move_since = 0
+                move_since = abs((current_p_rt / c - 1) * 100)
             status, est_pnl, target = _vol_status_active(
                 "SHORT_VOL", c, 0, 0, move_since, sigma)
-            current_str = f"{est_pnl:+.2f}% (持中)"
             wing = sigma * SHORT_VOL_WING_SIGMA
-            band_str = f"5d 到期/>{wing:.1f}%翼锁"
+            short_strike = sigma * SHORT_VOL_STRIKE_SIGMA
+            # 实时退出触发判定
+            if move_since >= wing:
+                status = f"🚨 **立即平仓** — 翼锁定 (move {move_since:.1f}% ≥ {wing:.1f}%)"
+            elif move_since >= short_strike:
+                status = f"🚨 突破短腿建议止损 (move {move_since:.1f}% ≥ {short_strike:.1f}%)"
+            elif est_pnl >= target:
+                status = f"🟢 可早平 — 锁 50% credit (est P&L +{est_pnl:.2f}%)"
+            elif days_held >= 5:
+                status = f"⏰ 已到 5d 持仓上限"
+            else:
+                status = f"🟡 持仓中 ({days_held}d, theta 衰减)"
+            current_str = f"{est_pnl:+.2f}% (实时)"
+            band_str = f">{short_strike:.1f}%短腿/{wing:.1f}%翼锁"
             exit_d_str = "—"
             exit_reason = "持仓中"
         else:
@@ -2363,15 +2414,27 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         if days_held <= 5:
             post_h = high_d[(high_d.index >= d) & (high_d.index <= _real_last_date)]
             post_l = low_d[(low_d.index >= d) & (low_d.index <= _real_last_date)]
+            current_p_rt = (gc_now / _viz_ratio if (gc_now > 0 and _viz_ratio > 0)
+                             else close_d.get(_real_last_date, c))
             if len(post_h) > 0 and len(post_l) > 0:
-                move_since = max((post_h.max()/c - 1)*100,
-                                  (1 - post_l.min()/c)*100)
+                rt_up = (max(post_h.max(), current_p_rt) / c - 1) * 100
+                rt_dn = (1 - min(post_l.min(), current_p_rt) / c) * 100
+                move_since = max(rt_up, rt_dn)
             else:
-                move_since = 0
+                move_since = abs((current_p_rt / c - 1) * 100)
             status, est_pnl, cost = _vol_status_active(
                 "STRADDLE", c, 0, 0, move_since, sigma)
-            current_str = f"{est_pnl:+.2f}% (持中)"
             target = cost
+            # 实时退出触发判定
+            if move_since > cost * 1.5:
+                status = f"🟢 **可早平** — 移动 {move_since:.2f}% > 1.5σ, 锁 50%+ 利润"
+            elif move_since > cost:
+                status = f"🟢 盈利中 — 移动 {move_since:.2f}% > 1σ ({cost:.2f}%)"
+            elif days_held >= 5:
+                status = f"⏰ 已到 5d 上限 (move {move_since:.2f}% < cost {cost:.2f}%)"
+            else:
+                status = f"🟡 持仓中 ({days_held}d, 待移动 > {cost:.2f}%)"
+            current_str = f"{est_pnl:+.2f}% (实时)"
             band_str = f"5d 到期 / 移动>{target:.2f}%"
             exit_d_str = "—"
             exit_reason = "持仓中"
