@@ -2118,12 +2118,30 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                               backtest_straddle as _bt_straddle,
                               backtest_short_vol as _bt_short_vol)
 
-    _vol_window_start = last_date - timedelta(days=30)
-    _vol_dates_pm = features.index[features.index >= _vol_window_start]
-    _st_pm = _bt_straddle(close_d, high_d, low_d, rv_s, _vol_dates_pm)
-    _sv_pm = _bt_short_vol(close_d, high_d, low_d, rv_s, rv_pctile,
-                            _vol_dates_pm, regime=regime,
-                            daily_range=(high_d - low_d) / close_d * 100)
+    # 用 close_d 实际最新日, 不依赖 bp_dates[-1] (可能滞后)
+    _real_last_date = close_d.index[-1]
+    _vol_window_start = _real_last_date - timedelta(days=30)
+    # 用 close_d.index 而非 features.index, 确保不漏天
+    _vol_dates_pm = close_d.index[close_d.index >= _vol_window_start]
+
+    _st_pm, _sv_pm = [], []
+    _vol_err = None
+    try:
+        _st_pm = _bt_straddle(close_d, high_d, low_d, rv_s, _vol_dates_pm)
+        _sv_pm = _bt_short_vol(close_d, high_d, low_d, rv_s, rv_pctile,
+                                _vol_dates_pm, regime=regime,
+                                daily_range=(high_d - low_d) / close_d * 100)
+    except Exception as _e:
+        _vol_err = repr(_e)
+
+    # 诊断: 显示后端实际返回的 vol 交易数 (帮助定位缓存/数据问题)
+    _diag = (f"📊 波动率交易后端诊断 (近 30 天, "
+             f"窗口 {_vol_window_start.date()} → {_real_last_date.date()}, "
+             f"{len(_vol_dates_pm)} 天): "
+             f"Straddle {len(_st_pm)} 笔, Iron Condor {len(_sv_pm)} 笔")
+    if _vol_err:
+        _diag += f" ⚠️ 错误: {_vol_err}"
+    st.caption(_diag)
 
     def _vol_status_active(strategy, c, mu, md, move_since, sigma):
         """实时 (持仓中) 状态文字 + 当前 P&L."""
@@ -2162,12 +2180,12 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     for t in _sv_pm:
         d = t["entry_date"]
         c = t["entry_price"]
-        days_held = (last_date - d).days
+        days_held = (_real_last_date - d).days
         sigma = t["sigma_pct"]
         if days_held <= 5:
             # 持仓中: 实时 P&L
-            post_h = high_d[(high_d.index >= d) & (high_d.index <= last_date)]
-            post_l = low_d[(low_d.index >= d) & (low_d.index <= last_date)]
+            post_h = high_d[(high_d.index >= d) & (high_d.index <= _real_last_date)]
+            post_l = low_d[(low_d.index >= d) & (low_d.index <= _real_last_date)]
             if len(post_h) > 0 and len(post_l) > 0:
                 move_since = max((post_h.max()/c - 1)*100,
                                   (1 - post_l.min()/c)*100)
@@ -2202,11 +2220,11 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     for t in _st_pm:
         d = t["entry_date"]
         c = t["entry_price"]
-        days_held = (last_date - d).days
+        days_held = (_real_last_date - d).days
         sigma = t["cost_pct"]  # 1σ premium
         if days_held <= 5:
-            post_h = high_d[(high_d.index >= d) & (high_d.index <= last_date)]
-            post_l = low_d[(low_d.index >= d) & (low_d.index <= last_date)]
+            post_h = high_d[(high_d.index >= d) & (high_d.index <= _real_last_date)]
+            post_l = low_d[(low_d.index >= d) & (low_d.index <= _real_last_date)]
             if len(post_h) > 0 and len(post_l) > 0:
                 move_since = max((post_h.max()/c - 1)*100,
                                   (1 - post_l.min()/c)*100)
