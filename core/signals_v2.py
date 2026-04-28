@@ -38,7 +38,9 @@ EXIT_BP = 0.90
 STOP_LOSS_PCT = 3.0
 PULLBACK_GAIN = 2.0       # 持仓管理 "止盈位" 列就是基于这俩计算
 PULLBACK_DD = 1.5
-CONSECUTIVE_STOP = 2
+CONSECUTIVE_STOP = 99     # v3.7.8 默认禁用 (A/B 实证不提升胜率, 错杀赢面)
+                          # 改 2 启用经典连续 2 止损熔断
+                          # 详见 docs/EXPERIMENTS.md §11 "熔断 A/B"
 MAX_HOLD_DAYS = 30
 DEFAULT_TZ_OFFSET = 8
 # RV 极值过滤 (v3.6.1, 5y 全配置扫描后选定):
