@@ -15,9 +15,13 @@ import pandas as pd
 import numpy as np
 
 
-STRADDLE_PRIORITY_SCORE = 5      # 做多波动率 score >= 此值时优先
-SHORT_VOL_PRIORITY_SCORE = 5     # 做空波动率 score >= 此值时优先
-VOL_DIR_BOTH_STRONG = 4          # 波动率与方向性都 >= 此值时同时推荐 (MIXED)
+STRADDLE_PRIORITY_SCORE = 6      # 做多波动率 score >= 此值 → 单走 STRADDLE
+SHORT_VOL_PRIORITY_SCORE = 6     # 做空波动率 score >= 此值 → 单走 SHORT_VOL
+VOL_DIR_BOTH_STRONG = 4          # 4 ≤ vol_score < priority → MIXED (同向加重)
+                                  # 优先级 (vega 同向时):
+                                  #   score ≥ 6: 单走 vol (vol 信号极强, 方向已被 vol 覆盖)
+                                  #   4 ≤ score < 6: MIXED (中强双重 alpha)
+                                  #   score < 4: 单走方向性
 
 
 def dedupe_unified(unified_df, close_d, log_price_fn=None,
@@ -205,20 +209,25 @@ def build_unified_signals(dir_signals, straddle_df, close, high, low,
                     chosen_reason = (f"方向性优先(vega矛盾 vs {vol_type}, "
                                      f"score={vol_score})")
             else:
-                # vega 同向 → 可 MIXED
-                if vol_score >= VOL_DIR_BOTH_STRONG:
-                    chosen = f"{dir_type} + {vol_type}"
-                    chosen_reason = (f"方向+{vol_type}同强同向"
-                                     f"(vol={vol_score})")
-                elif (vol_type == "STRADDLE"
-                      and vol_score >= STRADDLE_PRIORITY_SCORE) or \
-                     (vol_type == "SHORT_VOL"
-                      and vol_score >= SHORT_VOL_PRIORITY_SCORE):
+                # vega 同向: 按 score 高低分三档
+                #   ≥ priority (6): 单走 vol (vol 已覆盖方向, 不重复)
+                #   ≥ both_strong (4): MIXED (中强双重 alpha)
+                #   else: 单走方向性
+                vol_priority = (STRADDLE_PRIORITY_SCORE
+                                if vol_type == "STRADDLE"
+                                else SHORT_VOL_PRIORITY_SCORE)
+                if vol_score >= vol_priority:
                     chosen = vol_type
-                    chosen_reason = f"{vol_type}优先(score={vol_score})"
+                    chosen_reason = (f"{vol_type}极强单走"
+                                     f"(score={vol_score}≥{vol_priority})")
+                elif vol_score >= VOL_DIR_BOTH_STRONG:
+                    chosen = f"{dir_type} + {vol_type}"
+                    chosen_reason = (f"方向+{vol_type}中强 MIXED"
+                                     f"(vol={vol_score})")
                 else:
                     chosen = dir_type
-                    chosen_reason = f"方向性优先({vol_type} score={vol_score})"
+                    chosen_reason = (f"方向性优先({vol_type} 弱"
+                                     f", score={vol_score})")
         elif dir_type:
             chosen = dir_type
             chosen_reason = "仅方向性"

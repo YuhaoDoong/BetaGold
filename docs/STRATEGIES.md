@@ -170,6 +170,19 @@
 
 不兼容时方向性优先, 仅当 vol score 极强 (≥ priority + 2) 才覆盖。
 
+### Vega 同向时的三档优先级 (v3.7.10 修复)
+
+```
+STRADDLE / SHORT_VOL score:
+  ≥ 6 (priority): 单走 vol  ← vol 信号极强, 双向覆盖足够, 不重复方向
+  4-5 (中强):     MIXED      ← 双重 alpha 加重
+  < 4 (弱):       单走方向性  ← vol 信号不显著
+```
+
+旧 bug: `if score >= 4: MIXED` 在前, `elif score >= 5: 单 STRADDLE` 不可达。
+score=5/6/7 全部走 MIXED, 单 STRADDLE 分支死代码。
+修复后 3月17 STRADDLE score=7 → 正确单走 STRADDLE.
+
 ## 胜率定义 (按 vega/delta 实际盈亏)
 
 所有阈值用 **动态 sigma_pct = RV × √(hold_days/252)**, 自动适应当时波动环境。
