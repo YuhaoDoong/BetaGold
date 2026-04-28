@@ -77,7 +77,11 @@ python scripts/backfill_intraday_signals.py --asset SLV --timeframe 60
 | v3.6.x | 完整策略矩阵: 做多/做空波动率 + 方向性 RV 过滤 + 期货独立统计 + 工具映射 |
 | v3.7 | 模块化重构 (core/strategies/) + 4 文档拆分 + 持仓管理 SHORT_VOL |
 | v3.7.x | 修复持仓管理时间倒序 + 活跃持仓暴露 + 完整交易历史合并 |
-| **v3.7.8** | **熔断 A/B 验证 + 默认关闭 (实证不提升胜率, 错杀赢面)** |
+| v3.7.8 | 熔断 A/B 验证 + 默认关闭 (实证不提升胜率, 错杀赢面) |
+| v3.7.9 | 持仓管理加退出日 + 退出原因列 |
+| v3.7.10 | 修复 MIXED 优先级 bug (score≥6 单走 vol, 4-5 才 MIXED) |
+| v3.7.11-13 | IV crush 模块化 (core/iv_crush.py) + 用真实 GVZ 数据校准 |
+| **v3.7.14** | **IV crush 调整默认关闭 (GLD 实证不显著), 保留模块 + Dashboard 实时显示 IV/RV 比率作风险参考** |
 
 ## 用户偏好
 

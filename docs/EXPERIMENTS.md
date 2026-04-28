@@ -283,45 +283,80 @@ CONSECUTIVE_STOP = 99  # 改 2 启动熔断
 低/中 RV regime 不熔断. 假设 8 年里熔断的价值集中在 2018/2020 等
 高 RV 危机时段, 平时市场不需要.
 
-## 12. IV Crush 修正 (v3.7.11)
+## 12. IV Crush 实证测量 (v3.7.11 → v3.7.14)
 
-### 问题
-旧 `backtest_straddle` P&L 模型只算价格移动 - 入场成本, **完全忽略 IV crush**.
-跨 FOMC 等事件后 IV 暴跌 25-40%, Long Straddle 是 long vega 损失大.
+### 演进
+- v3.7.11: 用业内经验值 (FOMC=30%, NFP=15%, OPEX=10%) 加 IV crush 修正
+- v3.7.12: 用真实 GVZ 数据校准, 经验值 30% → 5% (实证 GLD 与 SPX 截然不同)
+- v3.7.13: 模块化为 core/iv_crush.py
+- **v3.7.14**: **默认关闭 IV crush 调整**, 保留模块 + Dashboard 显示 IV/RV 作参考
 
-### 实证 (旧 vs 新模型对比)
+### 实证 vs 业内 SPX 经验
 
-| 周期 | 旧胜率 (无 crush) | 新胜率 (含 crush) | 总 P&L 旧 | 新 |
-|------|-------------------|-------------------|-----------|-----|
-| 近 3 年 | 78% | **68%** (-10pp) | +54.1% | +44.2% (-10%) |
-| 近 5 年 | 79% | **71%** (-8pp) | +70.9% | +61.0% (-10%) |
-| 近 8 年 | 80% | **75%** (-5pp) | +93.3% | +83.4% (-10%) |
+| 事件 | SPX 经验 (业内) | **GLD 实证 (GVZ)** | 差距 |
+|------|-----------------|--------------------|------|
+| FOMC | 30-60% | **-0.1% (mean)** | 极小 |
+| NFP | 10-20% | **-2.8%** | 较小 |
+| OPEX | (不显著) | -5.4% (中位 -0.6%) | 不稳定 |
 
-### IV crush 经验值
-- **FOMC**: 议息后 IV 降 25-40% → 取 0.30
-- **NFP**: 非农后 IV 降 10-20% → 取 0.15
-- **OPEX**: 月度到期, 间接 → 取 0.10
+GLD GVZ 数据 (2025-2026 FOMC):
+| 日期 | pre GVZ | on day | post | rel drop |
+|------|---------|--------|------|----------|
+| 2025-09-17 | 18.4 | 17.4 | 16.4 | -10.5% (真 crush) |
+| 2025-05-07 | 24.7 | 23.0 | 22.6 | -8.7% |
+| **2026-01-29** | 39.7 | 46.0 | **44.1** | **+11.1% (反向上涨)** |
+| **2026-03-18** | 28.0 | 29.4 | **31.1** | **+11.0% (反向上涨)** |
 
-跨多事件累加. 单笔最大 IV crush 损失 1.0% (FOMC + NFP 同窗口).
+按 pre-event GVZ 高低分组:
+- 低 IV (< 中位 20.3): FOMC 后 +2.1% (反而升)
+- 高 IV (≥ 中位 20.3): FOMC 后 -2.2% (轻微 crush)
 
-### 修正后 P&L 模型
+### 为什么 GLD 不像 SPX 那样 crush?
+1. 黄金对 FOMC 反应延迟 (依赖实际利率/美元变化, 不立即定价)
+2. 避险对冲需求维持期权 vega premium
+3. 期限结构平稳, 无明显 contango spike
+4. GVZ 基线已较低 (~17), 没有 SPX 那种事件前飙升空间
+
+### v3.7.14 决策: 默认关闭
+
+实证表现差距:
+| 配置 | 近 5y 胜率 | 近 5y 总 P&L |
+|------|-----------|---------------|
+| 无 crush 修正 | 79% | +70.9% |
+| 5% crush 修正 (v3.7.12) | 73% | +68.0% |
+| 30% crush 修正 (v3.7.11) | 71% | +61.0% |
+
+5% 修正对 GLD 几乎是白噪声水平 (-2pp 胜率). 默认关闭, 保留代码:
+```python
+# core/events.py
+def backtest_straddle(..., iv_crush_adj=False):  # v3.7.14 默认关闭
 ```
-gross_cost = RV × √(hold/252) × 100         # 1σ premium
-iv_crush_loss = gross_cost × Σ(crush_factor)  # 跨事件 vega 损失
-pnl = max_move - gross_cost - iv_crush_loss
-win = max_move > gross_cost + iv_crush_loss
+
+### 保留模块的理由
+1. **Dashboard 实时风险显示**: IV/RV 比率让交易员看清是否有事件溢价
+2. **未来扩展**: SPY/QQQ 等强 crush 资产可直接 iv_crush_adj=True
+3. **维护成本低**: 已模块化在 core/iv_crush.py
+4. **教育意义**: 让用户知道经典 SPX 经验不适用 GLD
+
+### IV/RV 风险等级标准 (v3.7.14)
+```
+比率 < 1.2: 低风险, 无显著事件溢价
+1.2-1.5:    中等溢价
+> 1.5:      高风险, 显著事件溢价, crush 概率上升
 ```
 
-### 实战建议 (Dashboard 已加警告)
-当 STRADDLE 信号距 FOMC ≤ 5 天:
-1. **提前 1 天平仓**, 避开 IV crush (经典做法)
-2. **改用 Calendar Spread**: 卖近月 + 买远月, 利用 IV 期限结构
-3. **接受风险**: 期望价格移动 > 1.3σ 覆盖
+数据源: FRED CBOE Gold ETF Volatility Index (GVZCLS), 2009-09-18 至今
 
-### Iron Condor 的相反效应
-SHORT_VOL 是 short vega, IV crush **帮助** 我们 (premium 衰减更快). 现 IC 已硬规
-则要求距 FOMC > 10 天, 不会跨 FOMC; `compute_vol_win` 中 SHORT_VOL 的 IV crush 修
-正方向取反, 短腿空间相当于变宽 (赢条件略放宽).
+### 模块 API (core/iv_crush.py)
+```python
+from core.iv_crush import (
+    iv_rv_ratio,            # 计算 GVZ / RV 比率
+    crush_risk_label,       # 比率 → (level, desc)
+    measure_event_iv_crush, # 用 GVZ 实测一组事件
+    predict_event_crush,    # 预测某日 crush (3 mode)
+    event_crush_summary,    # 多事件类型汇总
+)
+```
 
 ## 总结: 关键 alpha 来源
 

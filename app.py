@@ -3775,36 +3775,34 @@ def main():
                            f"做空: {_short_vol_reason_pred}\n\n"
                            "建议按 score 较高方向操作")
             elif _is_straddle_pred:
-                # IV crush 检查 (用真实 GVZ 数据驱动, 非经验值):
-                # IV/RV ratio 是关键, > 1.5 = 显著事件溢价, crush 风险高
-                from core.iv_crush import (iv_rv_ratio, crush_risk_label,
-                                            predict_event_crush)
+                # IV/RV 比率作为风险参考 (不调 P&L)
+                # 实证 GLD GVZ FOMC 后 mean -0.1%, IV crush 不显著
+                from core.iv_crush import (crush_risk_label,
+                                            RATIO_HIGH_THRESHOLD,
+                                            RATIO_MEDIUM_THRESHOLD)
                 _gvz_now = (_feat_pred["gvz"].get(last_date, np.nan)
                             if "gvz" in _feat_pred.columns else np.nan)
-                _iv_warn = ""
+                _iv_info = ""
                 if not np.isnan(_gvz_now) and _rv_val > 0:
                     _ratio = _gvz_now / _rv_val
                     _level, _desc = crush_risk_label(_ratio)
-                    _iv_warn += f"\n\n📊 **IV/RV 比率**: {_desc}"
-
-                # 跨 FOMC: 用动态 crush 预测 (基于 IV/RV 比率)
+                    _iv_info = (
+                        f"\n\n📊 **IV / RV 比率**: GVZ={_gvz_now:.1f}, "
+                        f"RV={_rv_val:.1f}, 比率={_ratio:.2f} ({_level}风险)\n"
+                        f"  · 比率 < {RATIO_MEDIUM_THRESHOLD}: 无显著事件溢价\n"
+                        f"  · {RATIO_MEDIUM_THRESHOLD} ~ {RATIO_HIGH_THRESHOLD}: 中等溢价\n"
+                        f"  · > {RATIO_HIGH_THRESHOLD}: 显著事件溢价, crush 风险高\n"
+                        f"  · GLD 实证 FOMC 后 GVZ 平均 -0.1% (远小于 SPX 30-60%)\n"
+                        f"  · 当前比率仅供参考, 不调整 P&L"
+                    )
                 if _d_fomc <= 5:
-                    _crush_est = predict_event_crush(
-                        last_date, _feat_pred.get("gvz", pd.Series()),
-                        _rv_pred, "FOMC", mode="dynamic")
-                    _iv_warn += (f"\n\n⚠️ **距 FOMC {_d_fomc} 天**, 持仓 5d 大概率跨事件公布。\n"
-                                 f"GLD 实证: FOMC 后 GVZ 平均 -0.1% (远小于 SPX 的 30-60%), "
-                                 f"但当前 IV/RV={_ratio:.2f} → 动态预估 crush ≈ {_crush_est*100:.0f}% × premium\n"
-                                 "建议:\n"
-                                 "- 提前 1 天平仓 (避开尾部 crush 风险), 或\n"
-                                 "- 持有跨过事件 (GLD 历史上多次 IV 反向上涨), 或\n"
-                                 "- 用 Calendar Spread (卖近月+买远月, 吃近月 crush)")
-                if _d_nfp <= 5:
-                    _iv_warn += f"\n⚠️ 距 NFP {_d_nfp} 天, GLD 实证 crush ≈ 3%"
+                    _iv_info += (f"\n\n⚠️ 距 FOMC {_d_fomc} 天: 历史上 60% 概率"
+                                 f" GLD IV 反而上涨, 40% 概率 crush > 5%. "
+                                 "如担心尾部风险可提前 1 天平仓 / 改 Calendar Spread.")
 
                 st.warning(f"**做多波动率信号**: {_straddle_reason_pred}\n\n"
                            "建议: 考虑做多波动率 (ATM Call+Put / 长 Strangle)"
-                           + _iv_warn)
+                           + _iv_info)
             elif _is_short_vol_pred:
                 st.warning(f"**做空波动率信号**: {_short_vol_reason_pred}\n\n"
                            "建议: 考虑做空波动率 (Iron Condor / 短 Strangle), "

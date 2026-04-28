@@ -282,7 +282,12 @@ IV_CRUSH_OPEX = IV_CRUSH_CONSERVATIVE["OPEX"]   # 0.05
 
 def backtest_straddle(close, high, low, rv_series, dates_index,
                        hold_days=STRADDLE_HOLD_DAYS,
-                       iv_crush_adj=True, **kwargs):
+                       iv_crush_adj=False, **kwargs):
+    # iv_crush_adj 默认 False (v3.7.14):
+    # GLD GVZ 实证 FOMC mean -0.1%, 与 SPX/VIX 30-60% 完全不同.
+    # IV crush 修正对 GLD 几乎是白噪声, 故默认关闭.
+    # Dashboard 仍显示 IV/RV ratio 作为风险参考, 但不调 P&L.
+    # 若用 SPY/QQQ 等强 crush 资产, 可手动 iv_crush_adj=True 启用.
     """Straddle 信号回测 (含 IV crush 修正).
 
     P&L 模型:
