@@ -318,4 +318,22 @@ def run_backtest(close_d, high_d, low_d,
             peak = h
             in_trade = True
 
+    # 末尾若仍在持仓中, 标记为活跃持仓 (供 Dashboard 持仓管理使用)
+    # 用 exit_date=None 区分: 已平仓的 trades 都有 exit_date.
+    if in_trade:
+        trades.append({
+            "entry_date": entry_dt,
+            "exit_date": None,
+            "entry_price": entry_price,
+            "exit_price": None,
+            "type": entry_type,
+            "exit_type": "ACTIVE",
+            "gain": None,
+            "hold_days": None,
+            "peak": peak,
+            "entry_source": entry_source or "—",
+            "exit_source": None,
+            "active": True,
+        })
+
     return trades

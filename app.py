@@ -643,6 +643,8 @@ def _build_nav(trades, period_dates):
     nav.iloc[0] = 100.0
     cur = 100.0
     for t in trades:
+        if t.get("active") or t.get("exit_date") is None:
+            continue
         ed, xd = t["entry_date"], t["exit_date"]
         g = t["gain"] / 100
         if ed in nav.index:
@@ -793,6 +795,8 @@ def generate_backtest_chart(close, high, low, bp_dates, upper_band,
 
         # 交易标注
         for t in trades:
+            if t.get("active") or t.get("exit_date") is None:
+                continue
             if t["entry_date"] in nav.index:
                 ax.scatter([t["entry_date"]], [nav[t["entry_date"]]],
                            marker="^", s=50, color="#FF9800",
@@ -1498,8 +1502,10 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         ax.scatter([xi(d)], [entry_p * _r], marker=marker, s=size,
                    color=color, edgecolors=edge, lw=1.0, zorder=6)
 
-    # 回测止盈标注 (淡色)
-    tdf_viz = pd.DataFrame(trades) if trades else pd.DataFrame()
+    # 回测止盈标注 (淡色); 跳过活跃持仓 (无 exit_date)
+    _closed = [t for t in trades
+               if not t.get("active") and t.get("exit_date") is not None]
+    tdf_viz = pd.DataFrame(_closed) if _closed else pd.DataFrame()
     if len(tdf_viz) > 0:
         for _, t in tdf_viz.iterrows():
             xd = t["exit_date"]
@@ -2059,62 +2065,45 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     st.divider()
     st.subheader("持仓管理")
 
-    trade_exits = {}
-    for t in trades:
-        trade_exits[t["entry_date"]] = (t["exit_date"], t["exit_type"], t["gain"])
-
     tp_recs = []
 
-    # 方向性: 显示最近 10 笔 (含已平仓), 状态列区分; 倒序最新在最前
-    buy_rows = sig_df[sig_df["buy_signal"]]
-    for buy_d in buy_rows.index[-10:][::-1]:
-        br = buy_rows.loc[buy_d]
-        # 入场价: 优先从盘中触发 log 取最差代表价 (买取最高).
-        _lp = _log_price(buy_d, "BUY")
-        if _lp is not None:
-            entry_p = _lp
-            entry_src = f"盘中×{_log_n_triggers(buy_d, 'BUY')}"
-        else:
-            entry_p = close_d.get(buy_d, 0)
-            entry_src = "收盘"
+    # 方向性: 数据源用 run_backtest 真实交易 (含活跃持仓), 不再用 sig_df.buy_signal
+    # (后者会含被 in_trade=True 阻塞的"信号未执行"日, 误标持仓中)
+    # 显示最近 10 笔 (含已平仓 + 活跃)
+    for t in trades[-10:][::-1] if trades else []:
+        buy_d = t["entry_date"]
+        ep = t["entry_price"]
+        is_active = t.get("active", False) and t.get("exit_date") is None
 
-        # 状态判定:
-        #   1. 在 trade_exits 中 → 已平仓 (run_backtest 实际执行的交易)
-        #   2. 不在但 days_held <= MAX_HOLD_DAYS → 真正的持仓中
-        #   3. 不在但 days_held > MAX_HOLD_DAYS → 信号未执行 (被 in_trade
-        #      / 熔断等阻塞), 不该标"持仓中"; 跳过不显示
-        days_since_entry = (last_date - buy_d).days
-        if buy_d in trade_exits:
-            ex_d, ex_type, ex_gain = trade_exits[buy_d]
-            status = f"已平仓 {ex_type} {ex_gain:+.1f}% "\
-                     f"({(ex_d - buy_d).days}d)"
-            current_gain_str = f"{ex_gain:+.1f}% (终)"
-            pb_stop = 0
-        elif days_since_entry <= MAX_HOLD_DAYS:
-            status = f"持仓中 ({days_since_entry}d)"
+        if is_active:
+            # 活跃持仓: 实时算 P&L + 止盈位
+            days_since_entry = (last_date - buy_d).days
+            status = f"🟡 持仓中 ({days_since_entry}d)"
             post = high_d[(high_d.index >= buy_d) &
                           (high_d.index <= last_date)]
-            pk = post.max() if len(post) > 0 else entry_p
-            gain = (pk / entry_p - 1) * 100 if entry_p > 0 else 0
-            current_p = close_d.get(last_date, entry_p)
-            current_gain = (current_p / entry_p - 1) * 100 \
-                if entry_p > 0 else 0
+            pk = post.max() if len(post) > 0 else ep
+            gain = (pk / ep - 1) * 100 if ep > 0 else 0
+            current_p = close_d.get(last_date, ep)
+            current_gain = (current_p / ep - 1) * 100 if ep > 0 else 0
             current_gain_str = f"{current_gain:+.1f}%"
             pb_stop = pk * (1 - PULLBACK_DD / 100) \
                 if gain > PULLBACK_GAIN else 0
         else:
-            # 信号触发但未实际入场 (in_trade 阻塞 / 连续熔断 / RV 过滤)
-            # 此类不应作为"持仓中" — 跳过不显示
-            continue
+            # 已平仓
+            ex_d, ex_type, ex_gain = t["exit_date"], t["exit_type"], t["gain"]
+            status = (f"已平仓 {ex_type} {ex_gain:+.1f}% "
+                      f"({(ex_d - buy_d).days}d)")
+            current_gain_str = f"{ex_gain:+.1f}% (终)"
+            pb_stop = 0
 
         tp_recs.append({
             "_sort_dt": buy_d,
             "日期": buy_d.strftime("%m/%d"),
             "状态": status,
-            "策略": br["buy_type"],
-            f"入场 {asset_key}": f"${entry_p:.2f}",
-            f"入场 {_viz_spot_label}": f"${entry_p * _viz_ratio:.1f}",
-            "入场源": entry_src,
+            "策略": t["type"],
+            f"入场 {asset_key}": f"${ep:.2f}",
+            f"入场 {_viz_spot_label}": f"${ep * _viz_ratio:.1f}",
+            "入场源": t.get("entry_source", "—"),
             "当前盈亏": current_gain_str,
             "止盈位": f"${pb_stop:.1f}" if pb_stop > 0 else "—",
             "BandExit": f"${eff_bp090:.1f} ({_viz_spot_label} "
@@ -2384,8 +2373,10 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
 
     _all_recs = []
 
-    # 方向性交易 (含完整退出信息)
+    # 方向性交易 (含完整退出信息); 跳过活跃持仓 (exit_date=None)
     for t in (trades or []):
+        if t.get("active") or t.get("exit_date") is None:
+            continue
         ep, xp, g = t["entry_price"], t["exit_price"], t["gain"]
         _all_recs.append({
             "入场日": t["entry_date"],
@@ -2458,9 +2449,11 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
 
         # 按策略分组汇总
         cols_sum = st.columns(4)
-        n_dir = len(trades or [])
-        n_dir_win = sum(1 for t in (trades or []) if t["gain"] > 0)
-        dir_pnl = sum(t["gain"] for t in (trades or []))
+        _closed_trades = [t for t in (trades or [])
+                          if not t.get("active") and t.get("exit_date") is not None]
+        n_dir_win = sum(1 for t in _closed_trades if t["gain"] > 0)
+        dir_pnl = sum(t["gain"] for t in _closed_trades)
+        n_dir = len(_closed_trades)
         n_sv = len(_sv_trades)
         n_sv_win = sum(1 for t in _sv_trades if t["win"])
         sv_pnl = sum(t["pnl_pct"] for t in _sv_trades)
