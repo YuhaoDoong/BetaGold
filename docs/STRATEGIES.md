@@ -171,12 +171,17 @@
 - **Loss range**: `1.6σ ≤ max_move < 3σ` → credit - (max_move - 1.6σ)
 - **Max Loss**: `max_move ≥ 3σ` → credit - 1.4σ (翼锁定)
 
-### 实战建议
-- 16Δ short strikes, 5Δ wings
-- DTE < 21 天 (theta 衰减最快)
-- 50% credit 早平 (锁利润)
-- 200% credit 强制止损 (突破短腿前)
+### 实战建议 (DTE vs 持仓天数)
+- **选 21-30 DTE 期权链** (theta 加速段 sweet spot, 不是 5-DTE)
+- **持仓 5 天后早平** (变成 16-25 DTE, 锁 50% credit 利润)
+- 16Δ short strikes (≈ 1.6σ), 5Δ wings (≈ 3σ)
+- 200% credit 强制止损 (max_move 突破短腿前)
 - 单笔仓位 ≤ 总资金 5%
+
+**为什么不用 5-DTE 期权**:
+- 5 DTE 期权 gamma 极端高, 价格小动就被 short strike ITM
+- Theta 衰减虽快但 gamma 风险 >> theta 收益
+- 21-30 DTE 是 theta/gamma 平衡的最优区间
 
 ### 实证 (近 5y)
 - 91 笔, **89% 胜率**

@@ -1981,33 +1981,149 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     else:
         st.caption("GC=F K线数据暂时不可用")
 
-    # ── 期权策略预判 ──
+    # ── 期权策略实时面板 (4 策略并列, 当日活跃信号高亮) ──
     st.divider()
-    st.subheader("期权策略推荐")
-    _cfg_opt2 = load_config()
-    _eod_opt2, _snap_opt2 = load_latest_eod_snapshot(_cfg_opt2)
-    _sig_now2 = None
-    if last_date in sig_df.index:
-        _r2 = sig_df.loc[last_date]
-        if _r2["buy_signal"]:
-            _sig_now2 = _r2["buy_type"].replace(" ", "_") if _r2["buy_type"] else "BUY_CALL"
-        if _r2["exit_signal"]:
+    st.subheader("期权策略实时面板")
+    st.caption("4 类策略并列展示, 入场信号触发时对应策略高亮 ✅, 否则灰显示 (未激活)")
+
+    # 当日各策略激活状态
+    _r2 = sig_df.loc[last_date] if last_date in sig_df.index else None
+    _uni_today = (_unified_viz_raw.loc[last_date]
+                  if last_date in _unified_viz_raw.index else None)
+    _chosen_today = _uni_today["chosen"] if _uni_today is not None else None
+    _is_buy_call = (_chosen_today is not None and "BUY CALL" in _chosen_today)
+    _is_sell_put = (_chosen_today is not None and "SELL PUT" in _chosen_today)
+    _is_straddle_now = (_chosen_today is not None and "STRADDLE" in _chosen_today)
+    _is_short_vol_now = (_chosen_today is not None and "SHORT_VOL" in _chosen_today)
+
+    # 当前价位 + 估算 1σ (5d hold)
+    _spot = gc_now if gc_now > 0 else last_close * _viz_ratio
+    _gld_spot = last_close
+    _sigma_5d = (rv / 100) * (5/252)**0.5 * _gld_spot  # GLD ATM 1σ ($)
+    _sigma_pct = (rv / 100) * (5/252)**0.5 * 100       # 1σ %
+
+    # 推荐 DTE 范围 (期权 hold_days=5 但 DTE 选 21-45 sweet spot)
+    _dte_buy = "30-45 DTE"   # Long Call/Put 长期权选择
+    _dte_sell = "21-30 DTE"  # Short Put / IC 短期权选择 (theta 加速段)
+
+    cols_strat = st.columns(4)
+
+    # 策略 1: BUY CALL (低 RV, 期货优先 / 期权备选)
+    with cols_strat[0]:
+        if _is_buy_call:
+            st.success(f"✅ **BUY CALL 激活**\n\n"
+                       f"**首选: 期货多头 + 3% 止损**\n"
+                       f"(实证 96% wr, 见 v3.6.6)\n\n"
+                       f"备选: Long Call\n"
+                       f"- DTE: {_dte_buy}\n"
+                       f"- Strike: ATM (~${_gld_spot:.0f})\n"
+                       f"- 最小成本 ≈ {_sigma_pct:.1f}% × spot")
+        else:
+            st.markdown(f"⚪ **BUY CALL** (未激活)\n\n"
+                        f"触发条件: Bull + bp_low<0.30 + RV%tile<0.50\n\n"
+                        f"备选工具: 期货 / Long Call\n"
+                        f"DTE: {_dte_buy}")
+
+    # 策略 2: SELL PUT (高 RV, 期权 100% 胜率, 期货不优)
+    with cols_strat[1]:
+        if _is_sell_put:
+            _put_strike_low = _gld_spot - 1.0 * _sigma_5d
+            st.success(f"✅ **SELL PUT 激活**\n\n"
+                       f"**首选: 期权 Sell Put**\n"
+                       f"(实证 100% wr, 见 v3.6.6)\n\n"
+                       f"- DTE: {_dte_sell}\n"
+                       f"- Strike: 1σ 下方 ≈ ${_put_strike_low:.0f}\n"
+                       f"- 收 premium ≈ {_sigma_pct*0.5:.2f}%\n"
+                       f"- ⚠️ 期货 wr 仅 68%, 不推荐")
+        else:
+            st.markdown(f"⚪ **SELL PUT** (未激活)\n\n"
+                        f"触发条件: Bull + bp_low<0.30 + RV%tile>0.85\n\n"
+                        f"工具: 期权 Sell Put (高 RV 收 IV)\n"
+                        f"DTE: {_dte_sell}")
+
+    # 策略 3: Long Straddle (做多波动率)
+    with cols_strat[2]:
+        if _is_straddle_now:
+            _call_strike = round(_gld_spot)
+            _put_strike = round(_gld_spot)
+            # IV/RV 比率
+            _gvz = features['gvz'].get(last_date, np.nan) \
+                if 'gvz' in features.columns else np.nan
+            _iv_rv = _gvz / rv if (not np.isnan(_gvz) and rv > 0) else np.nan
+            _iv_warn = (f"\n📊 IV/RV={_iv_rv:.2f}"
+                         if not np.isnan(_iv_rv) else "")
+            st.success(f"✅ **Long Straddle 激活**\n\n"
+                       f"- DTE: {_dte_buy}\n"
+                       f"- Strike: ATM ${_call_strike}\n"
+                       f"  Long Call ${_call_strike} +\n"
+                       f"  Long Put ${_put_strike}\n"
+                       f"- 成本 ≈ {_sigma_pct*2:.1f}% (双腿)\n"
+                       f"- 赢条件: |move| > 1σ ({_sigma_pct:.1f}%)\n"
+                       f"- 50% 利润早平"
+                       + _iv_warn)
+        else:
+            st.markdown(f"⚪ **Long Straddle** (未激活)\n\n"
+                        f"触发: RV<20% + 临 FOMC/NFP/OPEX, score≥3\n\n"
+                        f"DTE: {_dte_buy} (sweet spot, gamma+vega 均衡)\n"
+                        f"非 5-DTE (gamma 太极端)")
+
+    # 策略 4: Iron Condor (做空波动率)
+    with cols_strat[3]:
+        if _is_short_vol_now:
+            _ic_short_call = round(_gld_spot + 1.6 * _sigma_5d)
+            _ic_long_call = round(_gld_spot + 3.0 * _sigma_5d)
+            _ic_short_put = round(_gld_spot - 1.6 * _sigma_5d)
+            _ic_long_put = round(_gld_spot - 3.0 * _sigma_5d)
+            st.success(f"✅ **Iron Condor 激活**\n\n"
+                       f"- DTE: {_dte_sell}\n"
+                       f"- Short Put: ${_ic_short_put} (1.6σ)\n"
+                       f"- Long Put:  ${_ic_long_put} (3σ 翼)\n"
+                       f"- Short Call: ${_ic_short_call} (1.6σ)\n"
+                       f"- Long Call:  ${_ic_long_call} (3σ 翼)\n"
+                       f"- 收 credit ≈ {_sigma_pct*0.4:.2f}%\n"
+                       f"- 50% credit 早平")
+        else:
+            st.markdown(f"⚪ **Iron Condor** (未激活)\n\n"
+                        f"触发: RV%tile∈[0.35,0.65] + 远离事件 + 趋势回落\n\n"
+                        f"DTE: {_dte_sell}\n"
+                        f"非 5-DTE (gamma 风险)")
+
+    # ── DTE 与 持仓天数说明 ──
+    with st.expander("ℹ️ DTE vs 持仓天数 (展开看)"):
+        st.markdown("""
+        - **DTE (Days To Expiry)**: 期权到期日距今天数 — 决定 theta 衰减速度
+        - **持仓天数 (Holding Period)**: 系统 hold_days=5d 是**平均持仓**, 不是 DTE
+        - 实战流程: 选 30 DTE 期权链 → 持仓 5 天 (变成 25 DTE) → 50% credit 早平
+
+        | 策略 | 推荐 DTE | 原因 |
+        |------|---------|------|
+        | Long Call/Put / Straddle | 30-45 DTE | gamma 适中, vega 充足 |
+        | Sell Put / Iron Condor | 21-30 DTE | theta 加速段 (sweet spot) |
+
+        **不用 5-DTE 期权**: gamma 极端, 价格小动就被 ITM, gamma 风险 >> theta 收益
+        """)
+
+    # 底部: EOD chain 详细面板 (保留旧版)
+    st.divider()
+    with st.expander("EOD 期权链详细 (Moomoo / Yfinance)"):
+        _cfg_opt2 = load_config()
+        _eod_opt2, _snap_opt2 = load_latest_eod_snapshot(_cfg_opt2)
+        _sig_now2 = None
+        if _r2 is not None and _r2["buy_signal"]:
+            _sig_now2 = (_r2["buy_type"].replace(" ", "_")
+                         if _r2["buy_type"] else "BUY_CALL")
+        if _r2 is not None and _r2["exit_signal"]:
             _sig_now2 = _sig_now2 or "EXIT"
-    # 检查统一策略中是否推荐 Straddle (用 raw, 今日状态不去重)
-    _uni_today = _unified_viz_raw.loc[last_date] \
-        if last_date in _unified_viz_raw.index else None
-    _straddle_active2 = _uni_today is not None and _uni_today.get("chosen") == "STRADDLE"
-    _straddle_reason2 = _uni_today["chosen_reason"] if _straddle_active2 else ""
-    # 如果统一策略推荐 Straddle, 覆盖方向性信号
-    if _straddle_active2:
-        _sig_now2 = "STRADDLE"
-    _render_options_section(_eod_opt2, _snap_opt2, last_close, eff_bp090,
-                            oi_adj_bp090=oi_adj_bp090,
-                            gc_gld_ratio=gc_gld_ratio,
-                            today_sgt=today_sgt, current_signal=_sig_now2,
-                            straddle_active=_straddle_active2,
-                            straddle_reason=_straddle_reason2,
-                            rv_val=rv)
+        if _is_straddle_now:
+            _sig_now2 = "STRADDLE"
+        _render_options_section(_eod_opt2, _snap_opt2, last_close, eff_bp090,
+                                oi_adj_bp090=oi_adj_bp090,
+                                gc_gld_ratio=gc_gld_ratio,
+                                today_sgt=today_sgt, current_signal=_sig_now2,
+                                straddle_active=_is_straddle_now,
+                                straddle_reason=(_uni_today["chosen_reason"]
+                                                  if _is_straddle_now else ""),
+                                rv_val=rv)
 
     # ── 今日临时交易记录 (盘中累积, 第二天清零, 只 worst 进持仓管理) ──
     st.divider()
