@@ -75,7 +75,9 @@ python scripts/backfill_intraday_signals.py --asset SLV --timeframe 60
 | v3.0-v3.4 | 白银扩展 + Qlib Alpha158 + Ensemble 模型 + 多周期 Stoch RSI + 伦敦金价位 |
 | v3.5 | 盘中触发模块: 参数化规则 (Stoch RSI/MACD/KDJ) + 持久 log + 历史回填 |
 | v3.6.x | 完整策略矩阵: 做多/做空波动率 + 方向性 RV 过滤 + 期货独立统计 + 工具映射 |
-| **v3.7** | **模块化重构 (core/strategies/) + 4 文档拆分 + 持仓管理 SHORT_VOL + 波动率交易历史回测表** |
+| v3.7 | 模块化重构 (core/strategies/) + 4 文档拆分 + 持仓管理 SHORT_VOL |
+| v3.7.x | 修复持仓管理时间倒序 + 活跃持仓暴露 + 完整交易历史合并 |
+| **v3.7.8** | **熔断 A/B 验证 + 默认关闭 (实证不提升胜率, 错杀赢面)** |
 
 ## 用户偏好
 

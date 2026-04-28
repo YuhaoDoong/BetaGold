@@ -21,7 +21,10 @@
   STOP_LOSS_PCT    = 3.0    # 单笔止损 %
   PULLBACK_GAIN    = 2.0    # Pullback 触发: 峰值涨幅 > N%
   PULLBACK_DD      = 1.5    # Pullback 触发: 从峰值回撤 >= N%
-  CONSECUTIVE_STOP = 2      # 连续止损熔断笔数
+  CONSECUTIVE_STOP = 99     # 熔断默认禁用 (实证: 不提升胜率)
+                          # 保留参数, 调小可启用 (eg. =2 启动连续 2 止损熔断)
+                          # A/B 实证 (近 5y): 关熔断 +52.6% / CS=2 +47.4%
+                          # 详见 docs/EXPERIMENTS.md "熔断 A/B"
   MAX_HOLD_DAYS    = 30     # 安全帽 (远大于实际持仓 2-5 天)
 """
 
