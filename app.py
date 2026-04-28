@@ -2098,6 +2098,7 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                 if gain > PULLBACK_GAIN else 0
 
         tp_recs.append({
+            "_sort_dt": buy_d,
             "日期": buy_d.strftime("%m/%d"),
             "状态": status,
             "策略": br["buy_type"],
@@ -2205,6 +2206,7 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             target = t["credit_pct"] * 0.5
             exit_cond = f"已结束 max_move={t['max_move']:.2f}%"
         tp_recs.append({
+            "_sort_dt": d,
             "日期": d.strftime("%m/%d"),
             "状态": status,
             "策略": "Iron Condor (做空波动率)",
@@ -2243,6 +2245,7 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             target = sigma
             exit_cond = f"已结束 max_move={t['max_move']:.2f}%"
         tp_recs.append({
+            "_sort_dt": d,
             "日期": d.strftime("%m/%d"),
             "状态": status,
             "策略": "Straddle (做多波动率)",
@@ -2255,7 +2258,10 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         })
 
     if tp_recs:
-        st.dataframe(pd.DataFrame(tp_recs), use_container_width=True, hide_index=True)
+        # 按真实时间倒序 (跨策略统一排序, 最新在最前)
+        tp_recs.sort(key=lambda r: r["_sort_dt"], reverse=True)
+        _tp_df = pd.DataFrame(tp_recs).drop(columns=["_sort_dt"])
+        st.dataframe(_tp_df, use_container_width=True, hide_index=True)
     else:
         st.caption("无未平仓持仓")
 
