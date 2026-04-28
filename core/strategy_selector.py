@@ -179,33 +179,44 @@ def build_unified_signals(dir_signals, straddle_df, close, high, low,
             chosen = "EXIT"
             chosen_reason = "退出信号"
         elif vol_type and dir_type:
-            if vol_type == "SHORT_VOL":
-                # 方向性 (long gamma) 与 SHORT_VOL (short gamma) 逻辑矛盾,
-                # 不允许 MIXED. 方向性主动信号 > SHORT_VOL 被动收 theta.
-                if vol_score >= SHORT_VOL_PRIORITY_SCORE + 2:
-                    # SHORT_VOL 极强 (score ≥ 7) 且方向性弱 → 走 SHORT_VOL
+            # Vega 兼容矩阵 (按 vega 方向判断 MIXED 是否合理):
+            #   BUY CALL  = long vega  (低 RV 入场, 赌 vol 涨)
+            #   SELL PUT  = short vega (高 RV 入场, 收 IV premium)
+            #   STRADDLE  = long vega
+            #   SHORT_VOL = short vega
+            # 只有 vega 方向相同才允许 MIXED, 否则取主动信号 (方向性).
+            dir_long_vega = (dir_type == "BUY CALL")
+            vol_long_vega = (vol_type == "STRADDLE")
+            vega_compatible = (dir_long_vega == vol_long_vega)
+
+            if not vega_compatible:
+                # 矛盾: BUY CALL+SHORT_VOL 或 SELL PUT+STRADDLE
+                vol_priority = (STRADDLE_PRIORITY_SCORE
+                                if vol_type == "STRADDLE"
+                                else SHORT_VOL_PRIORITY_SCORE)
+                if vol_score >= vol_priority + 2:
                     chosen = vol_type
-                    chosen_reason = (f"SHORT_VOL极强(score={vol_score})"
-                                     f"覆盖方向性")
+                    chosen_reason = (f"{vol_type}极强(score={vol_score})"
+                                     f"覆盖矛盾方向性")
                 else:
                     chosen = dir_type
-                    chosen_reason = (f"方向性优先(SHORT_VOL矛盾, "
+                    chosen_reason = (f"方向性优先(vega矛盾 vs {vol_type}, "
                                      f"score={vol_score})")
-            elif vol_type == "STRADDLE":
-                # 方向性与 STRADDLE 都是 long gamma, 可叠加为 MIXED
+            else:
+                # vega 同向 → 可 MIXED
                 if vol_score >= VOL_DIR_BOTH_STRONG:
                     chosen = f"{dir_type} + {vol_type}"
-                    chosen_reason = (f"方向+STRADDLE同强"
+                    chosen_reason = (f"方向+{vol_type}同强同向"
                                      f"(vol={vol_score})")
-                elif vol_score >= STRADDLE_PRIORITY_SCORE:
+                elif (vol_type == "STRADDLE"
+                      and vol_score >= STRADDLE_PRIORITY_SCORE) or \
+                     (vol_type == "SHORT_VOL"
+                      and vol_score >= SHORT_VOL_PRIORITY_SCORE):
                     chosen = vol_type
-                    chosen_reason = f"STRADDLE优先(score={vol_score})"
+                    chosen_reason = f"{vol_type}优先(score={vol_score})"
                 else:
                     chosen = dir_type
-                    chosen_reason = f"方向性优先(STRADDLE score={vol_score})"
-            else:
-                chosen = dir_type
-                chosen_reason = "方向性"
+                    chosen_reason = f"方向性优先({vol_type} score={vol_score})"
         elif dir_type:
             chosen = dir_type
             chosen_reason = "仅方向性"
