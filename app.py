@@ -2110,29 +2110,89 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                         f"${eff_bp090 * _viz_ratio:.1f})",
         })
 
-    # Straddle: 只显示未超期且未止盈的
+    # 波动率交易: STRADDLE (做多波动率) + SHORT_VOL (Iron Condor)
+    # 含 MIXED 组合中的波动率部分 (BUY CALL + STRADDLE 等)
+    from core.events import (SHORT_VOL_STRIKE_SIGMA,
+                              SHORT_VOL_WING_SIGMA,
+                              SHORT_VOL_PREMIUM_RATIO)
     for d, r in _unified_viz.iterrows():
-        if r["chosen"] != "STRADDLE":
+        chosen = r["chosen"]
+        is_straddle = "STRADDLE" in chosen
+        is_short_vol = "SHORT_VOL" in chosen
+        if not (is_straddle or is_short_vol):
             continue
         c = r["close"]
         days_held = (last_date - d).days
+
+        # 入场后的波动 (max_up / max_down)
+        post_h = high_d[(high_d.index >= d) & (high_d.index <= last_date)]
+        post_l = low_d[(low_d.index >= d) & (low_d.index <= last_date)]
+        if len(post_h) > 0 and len(post_l) > 0:
+            mu = (post_h.max() / c - 1) * 100
+            md = (1 - post_l.min() / c) * 100
+            move_since = max(mu, md)
+        else:
+            move_since = 0
+
+        rv_today = rv_s.get(d, 20)
+        sigma = rv_today / 100 * (5/252)**0.5 * 100  # 1σ over 5d
+
+        if is_straddle:
+            # 做多波动率: cost = 1σ (Long Straddle premium)
+            cost = sigma
+            est_pnl = move_since - cost
+            # 止盈: 波动 > cost (即 1σ); 早平: 移动达到 50% target
+            target = cost
+            # 状态判断
+            if days_held > 5:
+                status = "已到期"
+            elif move_since > cost * 1.5:
+                status = "可早平 (移动 > 1.5σ, 锁 50%+ 利润)"
+            elif move_since > cost:
+                status = "盈利中 (移动 > 1σ)"
+            else:
+                status = "持仓中 (待移动 > cost)"
+            exit_cond = f"5d 到期 / 移动>{target:.1f}%"
+            label = chosen if chosen == "STRADDLE" else f"{chosen} (含做多波动率)"
+
+        else:  # SHORT_VOL (IC)
+            short_strike = sigma * SHORT_VOL_STRIKE_SIGMA   # 1.6σ
+            wing_strike = sigma * SHORT_VOL_WING_SIGMA      # 3σ
+            credit = sigma * SHORT_VOL_PREMIUM_RATIO        # 净 credit
+            # P&L 仿 backtest_short_vol
+            if move_since <= short_strike:
+                est_pnl = credit
+            elif move_since >= wing_strike:
+                est_pnl = credit - (wing_strike - short_strike)
+            else:
+                est_pnl = credit - (move_since - short_strike)
+            target = credit * 0.5  # 50% credit 早平
+            if days_held > 5:
+                status = "已到期"
+            elif move_since >= wing_strike:
+                status = "翼锁定亏损 (移动 > 3σ)"
+            elif move_since >= short_strike:
+                status = "突破短腿 (考虑止损)"
+            elif est_pnl >= target:
+                status = "可早平 (锁 50% credit)"
+            else:
+                status = "持仓中 (待 theta 衰减)"
+            exit_cond = f"5d 到期 / >{wing_strike:.1f}% 翼锁定 / 50% credit 早平"
+            label = chosen if chosen == "SHORT_VOL" else f"{chosen} (含做空波动率)"
+
         if days_held > 5:
-            continue  # 已超期
-        move_since = max(
-            (high_d[high_d.index >= d].max() / c - 1) * 100 if len(high_d[high_d.index >= d]) > 0 else 0,
-            (1 - low_d[low_d.index >= d].min() / c) * 100 if len(low_d[low_d.index >= d]) > 0 else 0
-        )
-        est_cost = rv_s.get(d, 20) / 100 * (5/252)**0.5 * 100
-        est_pnl = move_since - est_cost
+            continue  # 已到期不显示
 
         tp_recs.append({
             "日期": d.strftime("%m/%d"),
-            "策略": "STRADDLE",
-            f"入场 {asset_key}": f"${c:.1f}",
+            "状态": status,
+            "策略": label,
+            f"入场 {asset_key}": f"${c:.2f}",
             f"入场 {_viz_spot_label}": f"${c * _viz_ratio:.1f}",
-            "当前盈亏": f"~{est_pnl:+.1f}%",
-            "止盈位": f"波动>{est_cost:.1f}%",
-            "BandExit": "事件结束平仓",
+            "入场源": "收盘",
+            "当前盈亏": f"{est_pnl:+.2f}%",
+            "止盈位": f"{target:.2f}%" if is_short_vol else f"波动>{target:.2f}%",
+            "BandExit": exit_cond,
         })
 
     if tp_recs:

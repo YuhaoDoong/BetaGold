@@ -163,6 +163,17 @@ python scripts/backfill_intraday_signals.py --asset GLD --timeframe 60 \
 3. **Bear regime 做空胜率高但样本极小** (5 年仅 9-10 笔), 默认关闭, 可通过 `BEAR_SHORT_ENABLED=True` 手动开启。
 4. **现状系统设计已接近 regime 最优**: Bull→做多 / Mixed→IC / Bear→空仓。增加交易频率会牺牲胜率。
 
+### 波动率策略与 Regime 关系 (v3.6.8 验证)
+
+| 策略 | 是否限 regime | 实证表现 | 结论 |
+|------|----------------|----------|------|
+| **STRADDLE 做多波动率** | 否 (regime-agnostic) | Bull 71% / Mixed **90%** / Bear 0 笔* | 完全无视 regime, Mixed 最佳 |
+| **SHORT_VOL Iron Condor** | Bear 屏蔽 | Bull 85% / Mixed 95% / Bear 67% (n=3) | 保留 Bear 屏蔽 (尾部风险) |
+
+*STRADDLE 在 Bear 不触发是因入场需 RV<20% 低位, Bear 通常 vol 高位 — **自然过滤**而非显式屏蔽
+
+**结论：STRADDLE 完全可以无视 regime, Mixed 反而是最佳战场（90% 胜率超 Bull 19pp）。SHORT_VOL Bear 屏蔽是合理的尾部风险防御 — 取消屏蔽仅多 3 笔交易但暴露 panic gap 风险，性价比不高。**
+
 **关键洞察 (近 5 年回测验证)：**
 - RV 温水区 (50-85%) 是方向性信号最差区间 — 趋势不明且 IV 衰减不够极端
 - 排除温水区后: BUY CALL 胜率 81% → **88%**, Sharpe 0.53 → **0.61**
@@ -398,4 +409,5 @@ python scripts/backfill_intraday_signals.py --asset SLV --timeframe 60
 | v3.6.4 | Vega 兼容矩阵: BUY CALL+STRADDLE / SELL PUT+SHORT_VOL ✅, 反向 ❌ |
 | v3.6.5 | 胜率定义按 vega/delta 实际盈亏: BUY CALL `max_up>1σ`, SELL PUT `max_down<1σ`, STRADDLE `move>1σ` (动态), SHORT_VOL `move<1.6σ` |
 | v3.6.6 | 期货独立统计 + 工具映射推荐 (BUY CALL→期货, SELL PUT→期权) |
-| **v3.6.7** | **Dashboard 写明期货多头推荐 + 期货 vs 期权对比表 + Bear regime 做空选项 (实验性) + Regime 分段实验 (Bull 84% / Mixed 45% / Bear 30%): 验证现状已接近 regime 最优, Bull 顶部做空不可取 (36%)** |
+| v3.6.7 | Dashboard 期货多头推荐 + Regime 分段实验验证现状最优 |
+| **v3.6.8** | **持仓管理添加波动率交易 (STRADDLE + SHORT_VOL): 含 MIXED 中的波动率部分, 状态/盈亏/早平/止损建议齐全 + 验证 STRADDLE 已 regime-agnostic (Mixed 90% 最优), SHORT_VOL 保留 Bear 屏蔽** |
