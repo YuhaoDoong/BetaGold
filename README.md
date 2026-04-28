@@ -129,13 +129,25 @@ python scripts/backfill_intraday_signals.py --asset GLD --timeframe 60 \
 
 ## 信号系统
 
-### 完整策略矩阵 (v3.6+)
+### 完整策略矩阵 (v3.6.6+)
 
-| RV %tile | 方向性 | 波动率 | 推荐期权策略 |
-|----------|--------|--------|--------------|
-| < 50% (低/中性) | ✅ **BUY CALL** | 做多 (RV<20%) | 买 ATM Call/Put 或 Long Straddle |
-| 50-85% (温水) | ❌ 屏蔽 | ✅ **做空 IC** | **Iron Condor (16Δ/5Δ)** |
-| > 85% (恐慌) | ✅ **SELL PUT** | 做多 (临界) | 卖 OTM Put / Long Straddle |
+| RV %tile | 方向性信号 | 推荐工具 (实证最优) | 备选波动率策略 |
+|----------|-----------|---------------------|----------------|
+| < 50% (低/中性) | **BUY CALL 类** | **期货多头 + 3% 止损 (96% wr)** ✨ | Long Straddle (RV < 20% + 临 FOMC) |
+| 50-85% (温水) | ❌ 屏蔽 | ❌ 不交易方向性 | **Iron Condor 16Δ/5Δ (83% wr)** |
+| > 85% (恐慌) | **SELL PUT 类** | **期权 Sell Put (100% wr)** ✨ | Long Straddle (临界) |
+
+**为什么 BUY CALL 信号下用期货而非期权？**
+- 低 RV 入场, IV 已压缩但买 Call 仍需付 premium (~2-2.5%)
+- BUY CALL 信号实际 Avg max_up 仅 +2.35%，刚够 breakeven
+- 期货线性 P&L 没 theta/vega 损耗, 价格涨多少赚多少
+- 实证: 期权 73% wr / Sharpe 0.23 → 期货 96% wr / Sharpe 1.16
+
+**为什么 SELL PUT 信号下用期权而非期货？**
+- 高 RV 入场, 反弹但持续性差
+- 期权 Sell Put 收 IV premium, 横盘+上涨都赢, 仅大跌输
+- 期货需要真正上涨, 在高 RV 震荡 regime 下吃亏
+- 实证: 期权 100% wr → 期货 68% wr
 
 **关键洞察 (近 5 年回测验证)：**
 - RV 温水区 (50-85%) 是方向性信号最差区间 — 趋势不明且 IV 衰减不够极端
@@ -366,4 +378,9 @@ python scripts/backfill_intraday_signals.py --asset SLV --timeframe 60
 | v3.4 | SLV 价位 / 比例 / 实时期货独立修正 + 主图改伦敦金/银 + 5 日区间双视图 |
 | v3.5 | 盘中触发模块: 参数化规则 (Stoch RSI / MACD / KDJ) + 持久 log + 历史回填 + 主图/持仓/近期信号/回测全部读 log 真实触发价 + Straddle ★ 标记 + ETF/期货双视图汇总 |
 | v3.6 | 完整策略矩阵: 做空波动率 Iron Condor 16Δ/5Δ (89% 胜率) + 方向性 RV 极值过滤 + 状态栏 5 列 (新增波动率信号) + 今日预测 RV 走势图 + 三方策略竞争 |
-| **v3.6.1** | **RV 阈值调优 (0.25/0.75 → 0.50/0.85): BUY CALL 胜率 81% → 88%, Sharpe 0.53 → 0.61, 屏蔽真正的温水区 50-85% 而非误伤低 RV 的 BUY CALL 机会; 修复 rv_filter=False 时 SELL PUT 误判 bug** |
+| v3.6.1 | RV 阈值调优 (0.25/0.75 → 0.50/0.85): BUY CALL 胜率 81% → 88%, 屏蔽真正温水区 |
+| v3.6.2 | Fix SHORT_VOL 胜率定义 (1σ → 1.6σ IC strike): 33% → 85% |
+| v3.6.3 | 禁止方向性 + SHORT_VOL 矛盾 MIXED 组合 |
+| v3.6.4 | Vega 兼容矩阵: BUY CALL+STRADDLE / SELL PUT+SHORT_VOL ✅, 反向 ❌ |
+| v3.6.5 | 胜率定义按 vega/delta 实际盈亏: BUY CALL `max_up>1σ`, SELL PUT `max_down<1σ`, STRADDLE `move>1σ` (动态), SHORT_VOL `move<1.6σ` |
+| **v3.6.6** | **期货独立统计 (BUY CALL 类信号: 期权 73% → 期货 96%; SELL PUT 类信号: 期权 100% > 期货 68%). 系统建议: BUY CALL 用期货+3%止损, SELL PUT 用期权 Sell Put** |

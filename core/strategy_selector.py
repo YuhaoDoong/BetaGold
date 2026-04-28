@@ -245,6 +245,8 @@ def build_unified_signals(dir_signals, straddle_df, close, high, low,
         #             (跌不破 1σ 下方短 put strike, 横盘+上涨都赢)
         #   STRADDLE  long gamma + long vega: |move| > 1σ (≥ premium)
         #   SHORT_VOL short gamma + short vega: max_move < 1.6σ (留 credit)
+        #   期货多头 (FUT_LONG)  linear delta, vega=0, theta=0:
+        #             ret_5d > 0 即赢 (无 IV 成本)
         def _dir_win(dt):
             if move_up is None or move_down is None:
                 return None
@@ -258,6 +260,19 @@ def build_unified_signals(dir_signals, straddle_df, close, high, low,
             if vt == "STRADDLE":
                 return max_move > sigma_pct
             return max_move < ic_short  # SHORT_VOL
+
+        # 期货多头胜率 (与期权并列, 用于对比)
+        fut_win = (ret_5d > 0) if ret_5d is not None else None
+        # 期货 + 3% 止损: 5天内 max_down 突破 3% 视为先止损, 否则按 ret_5d
+        if ret_5d is not None and move_down is not None:
+            if move_down > 3:
+                fut_stop_pnl = -3.0
+            else:
+                fut_stop_pnl = ret_5d
+            fut_stop_win = fut_stop_pnl > 0
+        else:
+            fut_stop_pnl = None
+            fut_stop_win = None
 
         if ret_5d is not None:
             if chosen == "EXIT":
@@ -286,6 +301,9 @@ def build_unified_signals(dir_signals, straddle_df, close, high, low,
             "straddle_score": straddle_score,
             "short_vol_signal": has_short_vol,
             "short_vol_score": short_vol_score,
+            "fut_win": fut_win,
+            "fut_stop_win": fut_stop_win,
+            "fut_stop_pnl": fut_stop_pnl,
             "chosen": chosen,
             "chosen_reason": chosen_reason,
             "ret_5d": ret_5d,
@@ -297,7 +315,9 @@ def build_unified_signals(dir_signals, straddle_df, close, high, low,
     if not records:
         return pd.DataFrame(columns=[
             "close", "dir_signal", "straddle_signal", "straddle_score",
-            "short_vol_signal", "short_vol_score", "chosen", "chosen_reason",
+            "short_vol_signal", "short_vol_score",
+            "fut_win", "fut_stop_win", "fut_stop_pnl",
+            "chosen", "chosen_reason",
             "ret_5d", "max_move_5d", "sigma_pct", "win",
         ])
     return pd.DataFrame(records).set_index("date")
@@ -344,10 +364,39 @@ def compute_unified_stats(unified_df):
             "wr": w / len(sub) if len(sub) > 0 else 0,
         }
 
+    # 期货独立统计 (按方向性类型拆分: BUY CALL 信号 vs SELL PUT 信号)
+    fut_stats = {}
+    dir_groups = {
+        "BUY CALL 类": ["BUY CALL", "BUY CALL + STRADDLE"],
+        "SELL PUT 类": ["SELL PUT", "SELL PUT + SHORT_VOL"],
+        "全部方向性": ["BUY CALL", "SELL PUT",
+                       "BUY CALL + STRADDLE", "SELL PUT + SHORT_VOL"],
+    }
+    for grp_name, types in dir_groups.items():
+        sub = valid[valid["chosen"].isin(types)]
+        fut_valid = sub[sub["fut_win"].notna()]
+        if len(fut_valid) == 0:
+            continue
+        opt_wins = int(fut_valid["win_bool"].apply(bool).sum())
+        fut_wins = int(fut_valid["fut_win"].apply(bool).sum())
+        fut_stop_wins = int(fut_valid["fut_stop_win"].apply(bool).sum())
+        fut_stats[grp_name] = {
+            "n": len(fut_valid),
+            "opt_win": opt_wins,
+            "opt_wr": opt_wins / len(fut_valid),
+            "fut_win": fut_wins,
+            "fut_wr": fut_wins / len(fut_valid),
+            "fut_stop_win": fut_stop_wins,
+            "fut_stop_wr": fut_stop_wins / len(fut_valid),
+            "fut_stop_total_pnl": float(fut_valid["fut_stop_pnl"].sum()),
+            "fut_stop_avg_pnl": float(fut_valid["fut_stop_pnl"].mean()),
+        }
+
     return {
         "total": total,
         "wins": int(wins),
         "win_rate": wins / total,
         "by_type": by_type,
+        "futures": fut_stats,
         "deduped_count": len(deduped),
     }
