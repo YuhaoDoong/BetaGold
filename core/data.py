@@ -1,6 +1,7 @@
 """数据加载模块 — 从 config.yaml 指定的路径读取所有数据."""
 
 import os
+import sys
 import logging
 from glob import glob
 from datetime import datetime, timezone, timedelta
@@ -352,6 +353,21 @@ def update_features_full(cfg: dict):
         # 5. 全量重建特征 (从原始数据计算)
         setup_data.build_features()
 
+        # 5b. 重建白银特征 (调用 Gold 的 build_features_slv)
+        try:
+            for p in ("/Users/yhdong/Gold", "/Users/yhdong/Gold/src"):
+                if p not in sys.path:
+                    sys.path.insert(0, p)
+            from src.features.build_features_slv import build_slv_features
+            from src.config_loader import load_config as _load_gold_config
+            _gold_cfg = _load_gold_config()
+            slv_feat = build_slv_features(_gold_cfg)
+            slv_out = os.path.join(data_root, "processed", "features_slv.parquet")
+            slv_feat.to_parquet(slv_out)
+            logger.info("SLV features rebuilt → %s", slv_out)
+        except Exception as e:
+            logger.warning("SLV feature rebuild failed: %s", e)
+
         _FEATURE_REBUILT_TODAY = True
 
         feat_new = pd.read_parquet(feat_path)
@@ -406,25 +422,46 @@ def extend_oos_predictions(cfg: dict, asset: str = "gld"):
     if len(new_dates) == 0:
         return 0, f"已是最新 ({oos_last.date()})"
 
-    from core.dl_range import DLRangePredictor, select_features
     import numpy as np
 
-    predictor = DLRangePredictor.load(model_path)
+    # 优先用 Gold 的多架构 Ensemble 类; 老的单 LSTM pkl 也兼容
+    try:
+        for p in ("/Users/yhdong/Gold", "/Users/yhdong/Gold/src"):
+            if p not in sys.path:
+                sys.path.insert(0, p)
+        from src.models.dl_range_predictor import DLRangePredictor as GoldPredictor
+        predictor = GoldPredictor.load(model_path)
+    except Exception as e:
+        logger.warning("Gold predictor load failed (%s), fallback to GoldDash class", e)
+        from core.dl_range import DLRangePredictor
+        predictor = DLRangePredictor.load(model_path)
+
+    from core.dl_range import select_features
     n_expected = predictor.scaler.n_features_in_
-    feat_cols = select_features(features)
 
-    # 精确匹配模型训练时的特征数量
-    if len(feat_cols) < n_expected:
-        # 补齐缺失特征 (填0)
-        from core.dl_range import SELECTED_FEATURES
-        for f in SELECTED_FEATURES:
-            if f not in features.columns:
-                features[f] = 0
+    # 优先使用训练时保存的特征列 (dl_range_v2_features.txt), 避免顺序错位
+    feat_cols_path = os.path.join(os.path.dirname(model_path),
+                                  "dl_range_v2_features.txt"
+                                  if asset != "slv"
+                                  else "dl_range_slv_features.txt")
+    if os.path.exists(feat_cols_path):
+        with open(feat_cols_path) as fh:
+            saved_cols = [c.strip() for c in fh if c.strip()]
+        # 缺失列补 0
+        for c in saved_cols:
+            if c not in features.columns:
+                features[c] = 0
+        feat_cols = saved_cols
+    else:
         feat_cols = select_features(features)
-
-    # 如果还是不匹配 (多了), 截取到 n_expected 个
-    if len(feat_cols) > n_expected:
-        feat_cols = feat_cols[:n_expected]
+        if len(feat_cols) < n_expected:
+            from core.dl_range import SELECTED_FEATURES
+            for f in SELECTED_FEATURES:
+                if f not in features.columns:
+                    features[f] = 0
+            feat_cols = select_features(features)
+        if len(feat_cols) > n_expected:
+            feat_cols = feat_cols[:n_expected]
 
     # 需要 seq_len 根历史 + 新日期
     start_idx = max(0, features.index.get_loc(oos_last) - predictor.seq_len - 5)

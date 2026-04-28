@@ -1,25 +1,28 @@
-"""v2.2 信号系统 — v1.0 Band + 盘中H/L入场 + 多尺度止盈.
+"""信号系统 — 与 Dashboard 显示策略 1:1 一致.
 
-架构:
-  Band: v1.0 日线模型 (20年训练, 校准可靠)
-  入场: 日线 Low 触及 bp < BUY_BP 即入场
-  止盈: 在可配置的时间尺度上检测退出 (默认 12h)
-    优先级: BandExit (bp>EXIT_BP) > Pullback (峰值回撤) > MACD弱化 > Timeout
-  持仓: 2-5天
+策略 (与持仓管理表 / K线区显示一致):
+  入场: 日线 bp_low < BUY_BP (开窗) + 盘中真实触发 (Stoch RSI / MACD / KDJ 确认)
+        入场价从盘中 log 取代表价 (默认 worst); 没 log 兜底当日收盘
+  退出 (优先级):
+    1. StopLoss: 入场后日内 low 跌破 -STOP_LOSS_PCT%
+    2. BandExit: 日线 bp_high > EXIT_BP → 优先 log EXIT 代表价, 兜底 bp090
+    3. Pullback: 持仓期间峰值涨幅 > PULLBACK_GAIN% 且当前回撤 >= PULLBACK_DD%
+       → 这就是持仓管理 "止盈位" 列显示的那条线
+  风控: 连续 CONSECUTIVE_STOP 笔止损后暂停买入 (bp>0.5 恢复)
+  安全帽: MAX_HOLD_DAYS 强平 (实际 2-5 天就走完了)
 
-注意:
-  - 信号基于金价, 不限定交易品种 (期权/期货/现货均可)
-  - 期权策略是独立的推荐层, 不影响核心信号
-  - 时间不限定美盘, GLD 含盘前盘后, GC=F 覆盖全球时段
+不再用 (这些没在 dashboard 显示):
+  ✗ 12h K线 resample (粒度全用日线 high/low, 与持仓管理 peak 对齐)
+  ✗ MACD 弱化止盈 (没在任何区块显示)
 
-参数 (全部可配置):
-  EXIT_TIMEFRAME = "12h"   # 止盈检测尺度 (1h/2h/4h/8h/12h)
-  PULLBACK_GAIN  = 2.0     # Pullback 触发: 持仓期涨幅>N%
-  PULLBACK_DD    = 1.5     # Pullback 触发: 从峰值回撤>N%
-  MACD_MIN_GAIN  = 1.0     # MACD弱化止盈: 至少盈利>N%
-  MAX_HOLD_DAYS  = 10      # 最大持仓天数
-  BUY_BP         = 0.30    # 买入阈值 (Band Position)
-  EXIT_BP        = 0.90    # 退出阈值
+参数:
+  BUY_BP           = 0.30   # 买入阈值 (Band Position)
+  EXIT_BP          = 0.90   # 退出阈值
+  STOP_LOSS_PCT    = 3.0    # 单笔止损 %
+  PULLBACK_GAIN    = 2.0    # Pullback 触发: 峰值涨幅 > N%
+  PULLBACK_DD      = 1.5    # Pullback 触发: 从峰值回撤 >= N%
+  CONSECUTIVE_STOP = 2      # 连续止损熔断笔数
+  MAX_HOLD_DAYS    = 30     # 安全帽 (远大于实际持仓 2-5 天)
 """
 
 import numpy as np
@@ -27,16 +30,22 @@ import pandas as pd
 from datetime import timedelta
 
 # ── 可配置参数 ──
-EXIT_TIMEFRAME = "12h"
-PULLBACK_GAIN = 2.0
-PULLBACK_DD = 1.5
-MACD_MIN_GAIN = 1.0
-MAX_HOLD_DAYS = 10
 BUY_BP = 0.30
 EXIT_BP = 0.90
-STOP_LOSS_PCT = 3.0       # 单笔止损: 入场后跌超N%
-CONSECUTIVE_STOP = 2      # 连续止损N笔后暂停买入信号
-DEFAULT_TZ_OFFSET = 8     # SGT
+STOP_LOSS_PCT = 3.0
+PULLBACK_GAIN = 2.0       # 持仓管理 "止盈位" 列就是基于这俩计算
+PULLBACK_DD = 1.5
+CONSECUTIVE_STOP = 2
+MAX_HOLD_DAYS = 30
+DEFAULT_TZ_OFFSET = 8
+# RV 极值过滤 (回测验证: 排除 25-75% 中位区间, 大涨>3% 概率 21% → 32%)
+RV_FILTER_LOW = 0.25      # RV %tile < 此值 → BUY CALL (vol 压缩, 突破)
+RV_FILTER_HIGH = 0.75     # RV %tile > 此值 → SELL PUT (vol 高位, 收 premium)
+RV_FILTER_ENABLED = True  # 默认开启 RV 极值过滤
+
+# 兼容旧引用 (已不再用)
+EXIT_TIMEFRAME = "1d"
+MACD_MIN_GAIN = 999
 
 
 def _macd_hist(c, fast=12, slow=26, sig=9):
@@ -59,8 +68,14 @@ def resample_1h(gld_1h, timeframe):
 def generate_daily_signals(close_d, high_d, low_d,
                            upper_band, lower_band,
                            regime, rv_pctile,
-                           buy_bp=BUY_BP, exit_bp=EXIT_BP):
-    """日线级别信号: v1.0 Band + H/L 触发.
+                           buy_bp=BUY_BP, exit_bp=EXIT_BP,
+                           rv_filter=RV_FILTER_ENABLED,
+                           rv_low=RV_FILTER_LOW,
+                           rv_high=RV_FILTER_HIGH):
+    """日线级别信号: v1.0 Band + H/L 触发 + RV 极值过滤.
+
+    rv_filter=True 时只在 RV %tile < rv_low 或 > rv_high 时触发方向性.
+    回测显示: 排除 25-75% 中位后大涨>3% 概率 21% → 32%, 大跌>3% 概率不变 6%.
 
     每天输出: Band 参数 + 买入/退出触发状态 + 阈值价位.
     """
@@ -88,9 +103,14 @@ def generate_daily_signals(close_d, high_d, low_d,
         rv = rv_pctile.get(d, 0.5)
 
         buy_sig = is_bull and bp_low < buy_bp
+        # RV 极值过滤: 中位区间 (温水区) 屏蔽方向性
+        rv_extreme = (rv < rv_low) or (rv > rv_high)
+        if rv_filter and buy_sig and not rv_extreme:
+            buy_sig = False
         buy_type = None
         if buy_sig:
-            buy_type = "BUY CALL" if rv <= 0.85 else "SELL PUT"
+            # 低 RV → BUY CALL (突破), 高 RV → SELL PUT (收 IV premium)
+            buy_type = "BUY CALL" if rv < rv_low else "SELL PUT"
 
         exit_sig = bp_high > exit_bp
         # Regime 退出
@@ -123,109 +143,112 @@ def generate_daily_signals(close_d, high_d, low_d,
 def run_backtest(close_d, high_d, low_d,
                  upper_band, lower_band,
                  regime, rv_pctile,
-                 gld_1h=None,
-                 exit_timeframe=EXIT_TIMEFRAME,
-                 pullback_gain=PULLBACK_GAIN,
-                 pullback_dd=PULLBACK_DD,
-                 macd_min_gain=MACD_MIN_GAIN,
+                 gld_1h=None,  # 保留参数兼容, 现在不再用 (改 daily 粒度)
                  max_hold_days=MAX_HOLD_DAYS,
                  buy_bp=BUY_BP, exit_bp=EXIT_BP,
-                 start_date=None):
-    """v2.2 回测: 日线入场 + 可配置时间尺度止盈.
+                 stop_loss_pct=STOP_LOSS_PCT,
+                 pullback_gain=PULLBACK_GAIN,
+                 pullback_dd=PULLBACK_DD,
+                 consecutive_stop=CONSECUTIVE_STOP,
+                 start_date=None,
+                 entry_log_lookup=None,
+                 exit_log_lookup=None,
+                 entry_price_mode="log",
+                 rv_filter=RV_FILTER_ENABLED,
+                 rv_low=RV_FILTER_LOW,
+                 rv_high=RV_FILTER_HIGH,
+                 # 兼容旧 kwargs
+                 exit_timeframe=None,
+                 macd_min_gain=None):
+    """真实策略回测 — 与 Dashboard 持仓管理 + 主图显示策略 1:1 一致.
 
-    Returns: list of trade dicts
+    入场:
+      条件: bp_low < buy_bp (开窗) + Bull regime
+      入场价: 按 entry_price_mode 选 (默认 log 当日代表价)
+
+    退出 (持仓中每天按以下顺序检查):
+      1. StopLoss: 日内 low 跌破入场 -stop_loss_pct%
+      2. BandExit: bp_high > exit_bp → 优先 log EXIT 代表价, 兜底 bp090
+      3. Pullback: 持仓期峰值涨幅 > pullback_gain% 且当前回撤 >= pullback_dd%
+         (与持仓管理 "止盈位" 列同公式)
+      4. Timeout: 持仓 >= max_hold_days 天 (安全帽)
+
+    风控: 连续 consecutive_stop 笔止损后暂停 (bp>0.5 恢复)
+
+    Returns: list of trade dicts (含 entry_source / exit_source 标识).
     """
     bp_dates = upper_band.dropna().index.intersection(
         lower_band.dropna().index)
     if start_date:
         bp_dates = bp_dates[bp_dates >= start_date]
 
-    # 准备止盈用的 K 线数据
-    tf_df = None
-    tf_macd = None
-    if gld_1h is not None:
-        tf_df = resample_1h(gld_1h, exit_timeframe)
-        tf_macd = _macd_hist(tf_df["Close"])
-
     trades = []
     in_trade = False
     entry_dt = entry_price = entry_type = None
+    entry_source = None
+    exit_source = None
     peak = 0
-    consecutive_stops = 0  # 连续止损计数
+    consecutive_stops = 0
+
+    def _lookup_log(lookup, d):
+        if lookup is None or len(lookup) == 0:
+            return None, 0
+        d_norm = pd.Timestamp(d).normalize()
+        if d_norm not in lookup.index:
+            return None, 0
+        row = lookup.loc[d_norm]
+        if isinstance(row, pd.DataFrame):
+            row = row.iloc[0]
+        return float(row["price"]), int(row.get("n_triggers", 1))
 
     for d in bp_dates:
         u, l = upper_band.get(d, np.nan), lower_band.get(d, np.nan)
         if np.isnan(u) or np.isnan(l) or u <= l:
             continue
         c, h, lo = close_d[d], high_d[d], low_d[d]
+        if np.isnan(c) or np.isnan(h) or np.isnan(lo):
+            continue
         bp_lo = (lo - l) / (u - l)
         bp_hi = (h - l) / (u - l)
-        bp030 = l + buy_bp * (u - l)
         bp090 = l + exit_bp * (u - l)
         is_bull = regime.get(d, "?") == "Bull"
         rv = rv_pctile.get(d, 0.5)
 
-        # ── 退出 ──
+        # ── 退出 (持仓中) ──
         exit_type = exit_price = None
-
-        if in_trade and tf_df is not None:
-            day_bars = tf_df[tf_df.index.normalize() == d]
-            for dt_bar in day_bars.index:
-                h_bar = tf_df["High"].get(dt_bar, 0)
-                c_bar = tf_df["Close"].get(dt_bar, 0)
-                peak = max(peak, h_bar)
-
-                # 0) StopLoss: 从入场价直接跌超阈值
-                if entry_price > 0:
-                    loss = (c_bar / entry_price - 1) * 100
-                    if loss < -STOP_LOSS_PCT:
-                        exit_type, exit_price = "StopLoss", c_bar
-                        break
-
-                # 1) BandExit
-                if h_bar > bp090:
-                    exit_type, exit_price = "BandExit", bp090
-                    break
-
-                # 2) Pullback
-                if entry_price > 0:
-                    gain = (peak / entry_price - 1) * 100
-                    dd = (peak - c_bar) / peak * 100
-                    if gain > pullback_gain and dd >= pullback_dd:
-                        exit_type, exit_price = "Pullback", c_bar
-                        break
-
-                # 3) MACD 弱化
-                m = tf_macd.get(dt_bar, 0)
-                mp = tf_macd.shift(1).get(dt_bar, 0)
-                if mp > 0 and m < 0 and entry_price > 0:
-                    gain = (c_bar / entry_price - 1) * 100
-                    if gain > macd_min_gain:
-                        exit_type, exit_price = "MACD", c_bar
-                        break
-
-        elif in_trade:
-            # 无 1h 数据: 用日线 H/L
+        if in_trade:
             peak = max(peak, h)
 
-            # StopLoss (日线)
-            if entry_price > 0:
-                loss = (lo / entry_price - 1) * 100
-                if loss < -STOP_LOSS_PCT:
-                    exit_type, exit_price = "StopLoss", lo
-
-            if not exit_type and bp_hi > exit_bp:
-                exit_type, exit_price = "BandExit", bp090
-            elif not exit_type and entry_price > 0:
-                gain = (peak / entry_price - 1) * 100
-                dd = (peak - c) / peak * 100
-                if gain > pullback_gain and dd >= pullback_dd:
-                    exit_type, exit_price = "Pullback", c
-
-        # Timeout
-        if in_trade and not exit_type:
-            if (d - entry_dt).days >= max_hold_days:
+            # 1) StopLoss: 日内 low 跌破入场 -stop_loss_pct%
+            if entry_price > 0 and \
+               lo / entry_price - 1 < -stop_loss_pct / 100:
+                exit_type = "StopLoss"
+                exit_price = entry_price * (1 - stop_loss_pct / 100)
+                exit_source = "止损线"
+            # 2) BandExit: bp_high > exit_bp
+            elif bp_hi > exit_bp:
+                _lp, _ln = _lookup_log(exit_log_lookup, d)
+                if _lp is not None:
+                    exit_type, exit_price = "BandExit", _lp
+                    exit_source = f"盘中×{_ln}"
+                else:
+                    exit_type, exit_price = "BandExit", bp090
+                    exit_source = "阈值"
+            # 3) Pullback: 与持仓管理 "止盈位" 列同公式
+            #    峰值涨幅 > pullback_gain% 且日内回撤 >= pullback_dd%
+            elif entry_price > 0:
+                gain_peak = (peak / entry_price - 1) * 100
+                # 日内 low 相对峰值的回撤
+                dd = (peak - lo) / peak * 100 if peak > 0 else 0
+                if gain_peak > pullback_gain and dd >= pullback_dd:
+                    exit_type = "Pullback"
+                    # 止盈位 = peak * (1 - dd%); 用日内可能触及的最差情况
+                    exit_price = peak * (1 - pullback_dd / 100)
+                    exit_source = "止盈位"
+            # 4) Timeout 安全帽
+            if not exit_type and (d - entry_dt).days >= max_hold_days:
                 exit_type, exit_price = "Timeout", c
+                exit_source = "收盘 (超期)"
 
         if in_trade and exit_type:
             gain = (exit_price / entry_price - 1) * 100
@@ -236,27 +259,43 @@ def run_backtest(close_d, high_d, low_d,
                 "gain": gain,
                 "hold_days": (d - entry_dt).days,
                 "peak": peak,
+                "entry_source": entry_source or "—",
+                "exit_source": exit_source or "—",
             })
             in_trade = False
-
-            # 连续止损计数
-            if exit_type == "StopLoss":
-                consecutive_stops += 1
-            else:
-                consecutive_stops = 0
+            exit_source = None
+            consecutive_stops = (consecutive_stops + 1
+                                 if exit_type == "StopLoss" else 0)
 
         # ── 入场 ──
-        # 连续止损后暂停买入
-        if consecutive_stops >= CONSECUTIVE_STOP:
-            # 等下一个 BandExit 或 bp > 0.50 才恢复
+        if consecutive_stops >= consecutive_stop:
             if bp_hi > exit_bp or (c - l) / (u - l) > 0.50:
-                consecutive_stops = 0  # 恢复
+                consecutive_stops = 0
             else:
-                continue  # 暂停
+                continue
+
+        # RV 极值过滤: 中位区间 (温水区) 跳过方向性
+        rv_extreme = (rv < rv_low) or (rv > rv_high)
+        if rv_filter and not rv_extreme:
+            continue
 
         if not in_trade and is_bull and bp_lo < buy_bp:
-            entry_type = "BUY CALL" if rv <= 0.85 else "SELL PUT"
-            entry_price = min(bp030, lo)
+            # 低 RV → BUY CALL (突破), 高 RV → SELL PUT (收 IV premium)
+            entry_type = "BUY CALL" if rv < rv_low else "SELL PUT"
+            if entry_price_mode == "close":
+                entry_price = c
+                entry_source = "收盘"
+            elif entry_price_mode == "high":
+                entry_price = h
+                entry_source = "最高"
+            else:  # "log" 默认
+                _lp, _ln = _lookup_log(entry_log_lookup, d)
+                if _lp is not None:
+                    entry_price = _lp
+                    entry_source = f"盘中×{_ln}"
+                else:
+                    entry_price = c
+                    entry_source = "收盘 (无 log)"
             entry_dt = d
             peak = h
             in_trade = True

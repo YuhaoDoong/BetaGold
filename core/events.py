@@ -338,3 +338,245 @@ def backtest_straddle(close, high, low, rv_series, dates_index,
         })
 
     return trades
+
+
+# ── Short Vol (做空波动率: Iron Condor 16Δ/5Δ) ──
+# 严格化思路 (目标胜率 > 80%):
+#   1) 改用 Iron Condor (1.6σ 短 / 3σ 长翼), 不再用 Short Strangle
+#   2) RV %tile 收缩到中位窄带 [35%, 65%]
+#   3) 必须连续 RV 回落 (3日均值 < 10日均值, 趋势性回落)
+#   4) Bull / Range regime 才允许 (Mixed 也不接, Bear 屏蔽)
+#   5) 全事件硬门槛: 持仓窗口 (5天) 内不能有 FOMC/NFP/OPEX/FUT_EXP
+#   6) Score 门槛提至 7
+#   7) 价格平静过滤: 近 5 日日均振幅 < 1.5%
+SHORT_VOL_RV_PCTILE_LO = 0.35    # RV %tile 下限 (从 0.40 收紧)
+SHORT_VOL_RV_PCTILE_HI = 0.65    # RV %tile 上限 (从 0.75 收紧)
+SHORT_VOL_RV_ABS_MIN = 13.0
+SHORT_VOL_RV_ABS_MAX = 28.0      # RV 绝对上限 (从 32 收到 28)
+SHORT_VOL_FOMC_BUFFER = 10       # 距 FOMC > 10 天
+SHORT_VOL_NFP_BUFFER = 7
+SHORT_VOL_OPEX_BUFFER = 5
+SHORT_VOL_RV_TREND_DAYS = 3      # 3日均值 < 10日均值 → vol 趋势回落
+SHORT_VOL_DAILY_RANGE_MAX = 1.5  # 近5日日均振幅上限 %
+SHORT_VOL_SCORE_TRIGGER = 7      # 触发分数门槛 (从 6 提至 7)
+SHORT_VOL_STRIKE_SIGMA = 1.6     # IC 短腿 ≈ 16Δ ≈ 1.6σ
+SHORT_VOL_WING_SIGMA = 3.0       # IC 长腿 (限制最大亏损)
+SHORT_VOL_PREMIUM_RATIO = 0.40   # 16Δ 短 - 5Δ 长 净 credit ≈ 1σ premium 的 40%
+
+
+def detect_short_vol_signal(rv_series, rv_pctile, dates_index,
+                             rv_pctile_lo=SHORT_VOL_RV_PCTILE_LO,
+                             rv_pctile_hi=SHORT_VOL_RV_PCTILE_HI,
+                             rv_abs_min=SHORT_VOL_RV_ABS_MIN,
+                             rv_abs_max=SHORT_VOL_RV_ABS_MAX,
+                             fomc_buffer=SHORT_VOL_FOMC_BUFFER,
+                             nfp_buffer=SHORT_VOL_NFP_BUFFER,
+                             opex_buffer=SHORT_VOL_OPEX_BUFFER,
+                             daily_range_max=SHORT_VOL_DAILY_RANGE_MAX,
+                             score_trigger=SHORT_VOL_SCORE_TRIGGER,
+                             regime=None,
+                             daily_range=None):
+    """检测做空波动率信号 (Iron Condor 16Δ/5Δ, 严格时机).
+
+    评分 (score >= score_trigger 触发):
+      - RV %tile ∈ [lo, hi] 中位窄带:           +2
+      - RV ∈ [abs_min, abs_max]:                +1
+      - RV 3日均值 < 10日均值 (趋势回落):       +2
+      - 距 FOMC > fomc_buffer+5 天:             +2
+      - 距 NFP > nfp_buffer 天:                 +1
+      - 距 OPEX > opex_buffer 天:               +1
+      - regime ∈ {Bull, Range} (非 Mixed/Bear): +1
+      - 近5日日均振幅 < daily_range_max%:       +1
+
+    硬门槛 (任意命中 → 不触发):
+      - RV %tile > 0.75 (高位, 反弹风险)
+      - RV %tile < 0.25 (premium 太薄)
+      - RV 越界
+      - 距 FOMC ≤ fomc_buffer
+      - 距 NFP ≤ nfp_buffer
+      - regime == Bear (尾部风险)
+      - 持仓窗口 (5 交易日) 内有任何主要事件
+    """
+    rv_ma3 = rv_series.rolling(3, min_periods=2).mean()
+    rv_ma10 = rv_series.rolling(10, min_periods=3).mean()
+
+    records = []
+    for d in dates_index:
+        rv = rv_series.get(d, 20)
+        rv_pct = rv_pctile.get(d, 0.5) if rv_pctile is not None else 0.5
+        rv_3d = rv_ma3.get(d, rv)
+        rv_10d_ma = rv_ma10.get(d, rv)
+        rv_falling = (rv_3d < rv_10d_ma)
+        regime_d = (regime.get(d, "Range") if regime is not None
+                    else "Range")
+
+        d_fomc, _, _ = days_to_next_event(d, "FOMC")
+        d_nfp, _, _ = days_to_next_event(d, "NFP")
+        d_opex, _, _ = days_to_next_event(d, "OPEX")
+
+        # 近5日日均振幅 (high-low)/close
+        if daily_range is not None:
+            dr_5d = daily_range.rolling(5, min_periods=3).mean().get(d, 99)
+        else:
+            dr_5d = 0  # 无数据则 +1 跳过
+
+        score = 0
+        reasons = []
+
+        if rv_pctile_lo <= rv_pct <= rv_pctile_hi:
+            score += 2
+            reasons.append(f"RV%tile={rv_pct:.0%}∈[{rv_pctile_lo:.0%},{rv_pctile_hi:.0%}]")
+
+        if rv_abs_min <= rv <= rv_abs_max:
+            score += 1
+            reasons.append(f"RV={rv:.0f}%适中")
+
+        if rv_falling:
+            score += 2
+            reasons.append("RV趋势回落(3d<10d)")
+
+        if d_fomc > fomc_buffer + 5:
+            score += 2
+            reasons.append(f"距FOMC {d_fomc}天")
+        if d_nfp > nfp_buffer:
+            score += 1
+        if d_opex > opex_buffer:
+            score += 1
+
+        if regime_d in ("Bull", "Range"):
+            score += 1
+            reasons.append(f"{regime_d}稳定")
+
+        if daily_range is not None and dr_5d < daily_range_max:
+            score += 1
+            reasons.append(f"近5日振幅{dr_5d:.2f}%<{daily_range_max}%")
+
+        # 硬门槛
+        block = None
+        if rv_pct > 0.75:
+            block = f"RV%tile={rv_pct:.0%}>75%(高位)"
+        elif rv_pct < 0.25:
+            block = f"RV%tile={rv_pct:.0%}<25%(premium太薄)"
+        elif rv < rv_abs_min:
+            block = f"RV={rv:.0f}%<{rv_abs_min}%"
+        elif rv > rv_abs_max:
+            block = f"RV={rv:.0f}%>{rv_abs_max}%"
+        elif d_fomc <= fomc_buffer:
+            block = f"距FOMC仅{d_fomc}天≤{fomc_buffer}"
+        elif d_nfp <= nfp_buffer:
+            block = f"距NFP仅{d_nfp}天≤{nfp_buffer}"
+        elif regime_d == "Bear":
+            block = "Bear regime"
+        elif min(d_fomc, d_nfp, d_opex) <= 5:
+            block = f"窗口内有事件(min={min(d_fomc,d_nfp,d_opex)}天)"
+
+        if block:
+            signal = False
+            reasons = [block]
+        else:
+            signal = score >= score_trigger
+
+        records.append({
+            "short_vol_signal": signal,
+            "short_vol_reason": " + ".join(reasons) if signal else (
+                block if block else ""),
+            "short_vol_score": score,
+            "rv": rv,
+            "rv_pctile": rv_pct,
+        })
+
+    return pd.DataFrame(records, index=dates_index)
+
+
+def backtest_short_vol(close, high, low, rv_series, rv_pctile, dates_index,
+                        hold_days=STRADDLE_HOLD_DAYS,
+                        strike_sigma=SHORT_VOL_STRIKE_SIGMA,
+                        wing_sigma=SHORT_VOL_WING_SIGMA,
+                        premium_ratio=SHORT_VOL_PREMIUM_RATIO,
+                        **kwargs):
+    """做空波动率回测 (Iron Condor 1.6σ 短 / 3σ 长翼).
+
+    结构:
+      - 卖 OTM Put (1.6σ 下方) + 买 OTM Put (3σ 下方)
+      - 卖 OTM Call (1.6σ 上方) + 买 OTM Call (3σ 上方)
+    净收 credit ≈ premium_ratio × σ_pct
+    P&L:
+      - 波动 < 1.6σ → 留全部 credit (赢)
+      - 波动 ∈ [1.6σ, 3σ] → credit - (max_move - 1.6σ)
+      - 波动 > 3σ → max loss = (3σ - 1.6σ) - credit (翼宽锁定)
+    """
+    import numpy as np
+
+    # 取 daily_range 给信号检测用
+    if 'daily_range' not in kwargs:
+        kwargs['daily_range'] = ((high - low) / close * 100)
+
+    sv = detect_short_vol_signal(rv_series, rv_pctile, dates_index, **kwargs)
+    signals = sv[sv["short_vol_signal"]]
+
+    # 去重: 同向 ≤ 3 天连续视为同一笔
+    entries = []
+    prev = None
+    for d in signals.index:
+        if prev is None or (d - prev).days > 3:
+            entries.append(d)
+        prev = d
+
+    sqrt_h252 = np.sqrt(hold_days / 252)
+    trades = []
+
+    for d in entries:
+        c = close.get(d, 0)
+        if c == 0:
+            continue
+        rv = rv_series.get(d, 20)
+        reason = sv.loc[d, "short_vol_reason"]
+
+        sigma_pct = rv * sqrt_h252                  # 1σ %
+        short_strike = sigma_pct * strike_sigma     # 1.6σ
+        wing_strike = sigma_pct * wing_sigma        # 3σ
+        wing_width = wing_strike - short_strike     # 1.4σ
+        credit = sigma_pct * premium_ratio          # 净 credit
+
+        loc = close.index.get_loc(d)
+        if loc + hold_days >= len(close):
+            end_loc = len(close) - 1
+            partial = True
+        else:
+            end_loc = loc + hold_days
+            partial = False
+
+        window_high = high.iloc[loc + 1:end_loc + 1].max()
+        window_low = low.iloc[loc + 1:end_loc + 1].min()
+        exit_date = close.index[end_loc]
+
+        move_up = (window_high / c - 1) * 100
+        move_down = (1 - window_low / c) * 100
+        max_move = max(move_up, move_down)
+
+        # IC P&L
+        if max_move <= short_strike:
+            pnl_pct = credit
+            win = True
+        elif max_move >= wing_strike:
+            pnl_pct = credit - wing_width
+            win = False
+        else:
+            pnl_pct = credit - (max_move - short_strike)
+            win = pnl_pct > 0
+
+        trades.append({
+            "entry_date": d, "exit_date": exit_date,
+            "entry_price": c, "rv": rv,
+            "sigma_pct": sigma_pct,
+            "short_strike_pct": short_strike,
+            "wing_strike_pct": wing_strike,
+            "credit_pct": credit,
+            "max_move": max_move,
+            "pnl_pct": pnl_pct,
+            "win": win,
+            "reason": reason,
+            "partial": partial,
+        })
+
+    return trades

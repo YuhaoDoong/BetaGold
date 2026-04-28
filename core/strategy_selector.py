@@ -15,34 +15,135 @@ import pandas as pd
 import numpy as np
 
 
-STRADDLE_PRIORITY_SCORE = 5  # score >= 此值时 Straddle 优先于方向性
+STRADDLE_PRIORITY_SCORE = 5      # 做多波动率 score >= 此值时优先
+SHORT_VOL_PRIORITY_SCORE = 5     # 做空波动率 score >= 此值时优先
+VOL_DIR_BOTH_STRONG = 4          # 波动率与方向性都 >= 此值时同时推荐 (MIXED)
+
+
+def dedupe_unified(unified_df, close_d, log_price_fn=None,
+                   add_drop_pct=2.0, dir_gap_days=5,
+                   straddle_gap_days=3):
+    """对 build_unified_signals 输出去重, 返回保留行的子集 + entry_p 列.
+
+    规则:
+      - EXIT: 重置 _prev_entry, 全部保留
+      - STRADDLE: 同向连续 ≤ straddle_gap_days 天, 仅 score 升级时保留;
+        否则只保留首个
+      - 方向性 (BUY/SELL): 同向 ≤ dir_gap_days 天内, 价格跌 > add_drop_pct%
+        视为加仓 (保留并标 is_add=True), 否则视为横盘 (suppress)
+
+    Args:
+        log_price_fn: callable (d, side) -> float or None.
+            用于取标注价格 (log 真实触发或 close 兜底).
+            None 时退到 close_d.
+
+    Returns: DataFrame 保留行, 原 columns + entry_p + is_add (bool).
+    """
+    if unified_df is None or len(unified_df) == 0:
+        return unified_df
+
+    def _price(d, chosen):
+        if log_price_fn is not None \
+                and "STRADDLE" not in chosen \
+                and "SHORT_VOL" not in chosen:
+            side = "EXIT" if "EXIT" in chosen else "BUY"
+            p = log_price_fn(d, side)
+            if p is not None:
+                return p
+        return close_d.get(d, 0)
+
+    prev = {}  # {chosen_type: (date, price, score)}
+    keep_rows = []
+    for d, r in unified_df.iterrows():
+        chosen = r["chosen"]
+        # 取对应 vol score (做多/做空)
+        if "SHORT_VOL" in chosen:
+            score = r.get("short_vol_score", 0)
+        else:
+            score = r.get("straddle_score", 0)
+        entry_p = _price(d, chosen)
+
+        show = True
+        is_add = False
+
+        # 纯波动率信号 (没和方向性混合) 用 vol 去重逻辑
+        is_pure_vol = (chosen in ("STRADDLE", "SHORT_VOL"))
+
+        if chosen == "EXIT":
+            prev = {}
+        elif is_pure_vol:
+            p = prev.get(chosen)
+            if p and (d - p[0]).days <= straddle_gap_days:
+                if score > p[2]:
+                    show = True   # score 升级
+                else:
+                    show = False  # 同 score 连续, 不重复
+            prev[chosen] = (d, entry_p, score)
+        else:
+            p = prev.get(chosen)
+            if p and p[1] > 0:
+                drop = (p[1] - entry_p) / p[1] * 100
+                if drop > add_drop_pct:
+                    is_add = True   # 加仓
+                elif (d - p[0]).days <= dir_gap_days:
+                    show = False    # 横盘忽略
+            if show:
+                prev[chosen] = (d, entry_p, 0)
+
+        if show:
+            new = r.copy()
+            new["entry_p"] = entry_p
+            new["is_add"] = is_add
+            keep_rows.append((d, new))
+
+    if not keep_rows:
+        return unified_df.iloc[0:0]
+    out = pd.DataFrame([r for _, r in keep_rows],
+                       index=[d for d, _ in keep_rows])
+    return out
 
 
 def build_unified_signals(dir_signals, straddle_df, close, high, low,
-                           hold_days=5, straddle_cost_pct=3.0):
-    """构建统一信号表 (方向性 + Straddle 合并).
+                           hold_days=5, straddle_cost_pct=3.0,
+                           short_vol_df=None):
+    """构建统一信号表 (方向性 + 做多波动率 + 做空波动率 合并).
 
     Args:
         dir_signals: from generate_daily_signals()
-        straddle_df: from detect_straddle_signal()
-        close/high/low: GLD price series
+        straddle_df: from detect_straddle_signal()  (做多波动率)
+        short_vol_df: from detect_short_vol_signal()  (做空波动率, 可选)
+        close/high/low: price series
         straddle_cost_pct: Straddle 成本估算 (% of price)
 
+    选择逻辑 (vol = 做多 vs 做空 取强者):
+      1. EXIT 优先
+      2. vol_score 与 dir_score 都 >= VOL_DIR_BOTH_STRONG → MIXED 同时推荐
+      3. vol_score >= 优先阈值 → 选 vol
+      4. 仅一个 → 选该信号
     Returns: DataFrame with unified signals + P&L
     """
     dates = dir_signals.index.intersection(straddle_df.index)
+    if short_vol_df is not None:
+        dates = dates.intersection(short_vol_df.index)
     records = []
 
     for d in dates:
         dr = dir_signals.loc[d] if d in dir_signals.index else None
         sr = straddle_df.loc[d] if d in straddle_df.index else None
+        svr = (short_vol_df.loc[d]
+               if short_vol_df is not None and d in short_vol_df.index
+               else None)
 
         has_dir = dr is not None and dr.get("buy_signal", False)
         has_exit = dr is not None and dr.get("exit_signal", False)
         has_straddle = sr is not None and sr.get("straddle_signal", False)
+        has_short_vol = svr is not None and svr.get("short_vol_signal", False)
         straddle_score = sr["straddle_score"] if sr is not None else 0
+        short_vol_score = (svr["short_vol_score"]
+                           if svr is not None else 0)
 
-        if not has_dir and not has_exit and not has_straddle:
+        if not has_dir and not has_exit and not has_straddle \
+                and not has_short_vol:
             continue
 
         # 5天后收益
@@ -56,36 +157,77 @@ def build_unified_signals(dir_signals, straddle_df, close, high, low,
             move_down = (1 - low.iloc[loc + 1:loc + hold_days + 1].min() / close[d]) * 100
             max_move = max(move_up, move_down)
 
+        # vol 取做多/做空两者较强者
+        if has_straddle and has_short_vol:
+            # 两者互斥 (高 RV vs 低 RV), 但若都判定为 True (异常), 取 score 高者
+            if short_vol_score >= straddle_score:
+                vol_type, vol_score = "SHORT_VOL", short_vol_score
+            else:
+                vol_type, vol_score = "STRADDLE", straddle_score
+        elif has_straddle:
+            vol_type, vol_score = "STRADDLE", straddle_score
+        elif has_short_vol:
+            vol_type, vol_score = "SHORT_VOL", short_vol_score
+        else:
+            vol_type, vol_score = None, 0
+
+        dir_type = (dr["buy_type"] if (has_dir and dr["buy_type"]) else
+                    ("BUY CALL" if has_dir else None))
+
         # 策略选择
         if has_exit:
             chosen = "EXIT"
             chosen_reason = "退出信号"
-        elif has_dir and has_straddle:
-            # 两者都有 → 按 score 选
-            if straddle_score >= STRADDLE_PRIORITY_SCORE:
-                chosen = "STRADDLE"
-                chosen_reason = f"Straddle优先(score={straddle_score}≥{STRADDLE_PRIORITY_SCORE})"
+        elif vol_type and dir_type:
+            # 都强 → MIXED
+            if vol_score >= VOL_DIR_BOTH_STRONG:
+                chosen = f"{dir_type} + {vol_type}"
+                chosen_reason = (f"方向+{vol_type}同强"
+                                 f"(vol={vol_score})")
+            elif (vol_type == "STRADDLE"
+                  and vol_score >= STRADDLE_PRIORITY_SCORE) or \
+                 (vol_type == "SHORT_VOL"
+                  and vol_score >= SHORT_VOL_PRIORITY_SCORE):
+                chosen = vol_type
+                chosen_reason = f"{vol_type}优先(score={vol_score})"
             else:
-                chosen = dr["buy_type"] if dr["buy_type"] else "BUY CALL"
-                chosen_reason = f"方向性优先(Straddle score={straddle_score})"
-        elif has_dir:
-            chosen = dr["buy_type"] if dr["buy_type"] else "BUY CALL"
+                chosen = dir_type
+                chosen_reason = f"方向性优先(vol={vol_type} score={vol_score})"
+        elif dir_type:
+            chosen = dir_type
             chosen_reason = "仅方向性"
-        elif has_straddle:
-            chosen = "STRADDLE"
-            chosen_reason = f"仅Straddle(score={straddle_score})"
+        elif vol_type:
+            chosen = vol_type
+            chosen_reason = f"仅{vol_type}(score={vol_score})"
         else:
             continue
 
-        # 盈亏判定
+        # 盈亏判定 (sigma_pct 用 RV * sqrt(hold/252) 估)
+        rv_today = (svr["rv"] if svr is not None
+                    else (sr["rv"] if sr is not None else 20))
+        sigma_pct = rv_today * (hold_days / 252) ** 0.5
+
         if ret_5d is not None:
+            chosen_root = chosen.replace(" + ", "+")
             if chosen == "EXIT":
-                # EXIT 后5天没涨 > 3% 就是对的
                 win = ret_5d < 3
-            elif chosen == "STRADDLE":
+            elif "STRADDLE" in chosen and "SHORT_VOL" not in chosen \
+                    and "+" not in chosen:
                 win = max_move > straddle_cost_pct if max_move else None
+            elif "SHORT_VOL" in chosen and "+" not in chosen:
+                # 做空波动率: 波动 < 1σ 才赚 premium
+                win = max_move < sigma_pct if max_move is not None else None
+            elif "+" in chosen:
+                # MIXED: 方向性赢 OR 波动率赢 都算 (任一对) → win=True
+                dir_win = ret_5d > -3
+                if "STRADDLE" in chosen:
+                    vol_win = (max_move > straddle_cost_pct
+                               if max_move else False)
+                else:
+                    vol_win = (max_move < sigma_pct
+                               if max_move is not None else False)
+                win = dir_win or vol_win
             else:
-                # 方向性: 5天后没跌 > 3%
                 win = ret_5d > -3
         else:
             win = None
@@ -96,10 +238,13 @@ def build_unified_signals(dir_signals, straddle_df, close, high, low,
             "dir_signal": dr["buy_type"] if has_dir else ("EXIT" if has_exit else ""),
             "straddle_signal": has_straddle,
             "straddle_score": straddle_score,
+            "short_vol_signal": has_short_vol,
+            "short_vol_score": short_vol_score,
             "chosen": chosen,
             "chosen_reason": chosen_reason,
             "ret_5d": ret_5d,
             "max_move_5d": max_move,
+            "sigma_pct": sigma_pct,
             "win": win,
         })
 

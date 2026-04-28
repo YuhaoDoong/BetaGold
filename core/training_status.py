@@ -14,15 +14,15 @@ from datetime import datetime
 from pathlib import Path
 
 
-# 模型文件路径 (相对 data_root)
-_MODEL_FILE = "models/dl_range_v2_model.pkl"
+# asset -> (模型文件名, PID/log 文件后缀)
+_ASSET_INFO = {
+    "gld": {"model": "models/dl_range_v2_model.pkl", "tag": ""},
+    "slv": {"model": "models/dl_range_slv_model.pkl", "tag": "_slv"},
+}
 
 # 训练日志 + PID 文件 (写入临时目录, 避免污染 data/)
 _LOG_DIR = Path("/tmp/golddash_training")
 _LOG_DIR.mkdir(exist_ok=True)
-_LOG_FILE = _LOG_DIR / "train.log"
-_PID_FILE = _LOG_DIR / "train.pid"
-_START_FILE = _LOG_DIR / "train.start"
 
 # Gold 项目路径 (训练脚本所在位置)
 _GOLD_ROOT = "/Users/yhdong/Gold"
@@ -33,64 +33,77 @@ _CONDA_PYTHON = "/Users/yhdong/miniconda3/envs/gold/bin/python"
 DEFAULT_MAX_AGE_DAYS = 7
 
 
-def get_model_mtime(data_root: str) -> datetime | None:
+def _files(asset: str = "gld"):
+    tag = _ASSET_INFO[asset]["tag"]
+    return (_LOG_DIR / f"train{tag}.log",
+            _LOG_DIR / f"train{tag}.pid",
+            _LOG_DIR / f"train{tag}.start")
+
+
+def _model_path(data_root: str, asset: str = "gld") -> str:
+    return os.path.join(data_root, _ASSET_INFO[asset]["model"])
+
+
+def get_model_mtime(data_root: str, asset: str = "gld") -> datetime | None:
     """返回模型文件最后修改时间; 不存在则返回 None."""
-    path = os.path.join(data_root, _MODEL_FILE)
+    path = _model_path(data_root, asset)
     if not os.path.exists(path):
         return None
     return datetime.fromtimestamp(os.path.getmtime(path))
 
 
-def get_model_age_days(data_root: str) -> float | None:
+def get_model_age_days(data_root: str, asset: str = "gld") -> float | None:
     """返回模型距今天的天数 (float); 不存在返回 None."""
-    mt = get_model_mtime(data_root)
+    mt = get_model_mtime(data_root, asset)
     if mt is None:
         return None
     return (datetime.now() - mt).total_seconds() / 86400
 
 
-def is_stale(data_root: str, max_age_days: int = DEFAULT_MAX_AGE_DAYS) -> bool:
+def is_stale(data_root: str, max_age_days: int = DEFAULT_MAX_AGE_DAYS,
+             asset: str = "gld") -> bool:
     """判断模型是否过期."""
-    age = get_model_age_days(data_root)
+    age = get_model_age_days(data_root, asset)
     return age is None or age > max_age_days
 
 
-def is_training() -> bool:
-    """判断是否有训练任务在进行中."""
-    if not _PID_FILE.exists():
+def is_training(asset: str = "gld") -> bool:
+    """判断指定 asset 是否有训练任务在进行中."""
+    _, pid_file, _ = _files(asset)
+    if not pid_file.exists():
         return False
     try:
-        pid = int(_PID_FILE.read_text().strip())
-        # 检查进程是否还活着
+        pid = int(pid_file.read_text().strip())
         os.kill(pid, 0)
         return True
     except (ValueError, ProcessLookupError, PermissionError):
-        # PID 文件过期, 清理
         try:
-            _PID_FILE.unlink()
+            pid_file.unlink()
         except OSError:
             pass
         return False
 
 
-def start_training() -> tuple[bool, str]:
+def start_training(asset: str = "gld") -> tuple[bool, str]:
     """启动后台训练任务.
 
-    返回 (success, message).
+    asset: "gld" (默认) 或 "slv".
     """
-    if is_training():
-        return False, "训练任务已在运行中"
+    if asset not in _ASSET_INFO:
+        return False, f"未知 asset: {asset}"
+    if is_training(asset):
+        return False, f"{asset.upper()} 训练任务已在运行中"
 
-    # 清空旧日志
-    _LOG_FILE.write_text("")
-    _START_FILE.write_text(datetime.now().isoformat())
+    log_file, pid_file, start_file = _files(asset)
+    log_file.write_text("")
+    start_file.write_text(datetime.now().isoformat())
 
-    cmd = [_CONDA_PYTHON, "-u", _TRAIN_SCRIPT]
+    cmd = [_CONDA_PYTHON, "-u", _TRAIN_SCRIPT, "--asset", asset]
     env = os.environ.copy()
     env["PYTHONPATH"] = _GOLD_ROOT
 
     try:
-        with open(_LOG_FILE, "w") as log_fp:
+        with open(log_file, "w") as log_fp:
             proc = subprocess.Popen(
                 cmd,
                 cwd=_GOLD_ROOT,
@@ -99,30 +112,32 @@ def start_training() -> tuple[bool, str]:
                 env=env,
                 start_new_session=True,
             )
-        _PID_FILE.write_text(str(proc.pid))
-        return True, f"训练已启动 (PID={proc.pid}), 预计 40-60 分钟"
+        pid_file.write_text(str(proc.pid))
+        return True, f"{asset.upper()} 训练已启动 (PID={proc.pid}), 预计 40-60 分钟"
     except Exception as e:
         return False, f"启动失败: {e}"
 
 
-def get_training_log(n_lines: int = 30) -> str:
-    """读取训练日志的最后 N 行."""
-    if not _LOG_FILE.exists():
+def get_training_log(n_lines: int = 30, asset: str = "gld") -> str:
+    """读取指定 asset 训练日志的最后 N 行."""
+    log_file, _, _ = _files(asset)
+    if not log_file.exists():
         return ""
     try:
-        with open(_LOG_FILE, "r") as f:
+        with open(log_file, "r") as f:
             lines = f.readlines()
         return "".join(lines[-n_lines:])
     except OSError:
         return ""
 
 
-def get_training_elapsed() -> str:
-    """训练已运行时长 (仅在训练中时有效)."""
-    if not _START_FILE.exists():
+def get_training_elapsed(asset: str = "gld") -> str:
+    """指定 asset 训练已运行时长."""
+    _, _, start_file = _files(asset)
+    if not start_file.exists():
         return ""
     try:
-        started = datetime.fromisoformat(_START_FILE.read_text().strip())
+        started = datetime.fromisoformat(start_file.read_text().strip())
         elapsed = (datetime.now() - started).total_seconds()
         m, s = divmod(int(elapsed), 60)
         h, m = divmod(m, 60)
@@ -135,16 +150,17 @@ def get_training_elapsed() -> str:
         return ""
 
 
-def stop_training() -> tuple[bool, str]:
+def stop_training(asset: str = "gld") -> tuple[bool, str]:
     """强行终止训练任务."""
-    if not is_training():
-        return False, "没有运行中的训练任务"
+    if not is_training(asset):
+        return False, f"没有运行中的 {asset.upper()} 训练任务"
+    _, pid_file, _ = _files(asset)
     try:
-        pid = int(_PID_FILE.read_text().strip())
-        os.kill(pid, 15)  # SIGTERM
+        pid = int(pid_file.read_text().strip())
+        os.kill(pid, 15)
         time.sleep(1)
-        if _PID_FILE.exists():
-            _PID_FILE.unlink()
+        if pid_file.exists():
+            pid_file.unlink()
         return True, f"已发送终止信号 (PID={pid})"
     except Exception as e:
         return False, f"终止失败: {e}"
