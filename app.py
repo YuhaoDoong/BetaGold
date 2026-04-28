@@ -3775,12 +3775,33 @@ def main():
                            f"做空: {_short_vol_reason_pred}\n\n"
                            "建议按 score 较高方向操作")
             elif _is_straddle_pred:
-                # IV crush 检查: 持仓窗口 (5d) 内若跨 FOMC, 警告 vega 损失
+                # IV crush 检查 (用真实 GVZ 数据驱动, 非经验值):
+                # IV/RV ratio 是关键, > 1.5 = 显著事件溢价, crush 风险高
+                from core.iv_crush import (iv_rv_ratio, crush_risk_label,
+                                            predict_event_crush)
+                _gvz_now = (_feat_pred["gvz"].get(last_date, np.nan)
+                            if "gvz" in _feat_pred.columns else np.nan)
                 _iv_warn = ""
+                if not np.isnan(_gvz_now) and _rv_val > 0:
+                    _ratio = _gvz_now / _rv_val
+                    _level, _desc = crush_risk_label(_ratio)
+                    _iv_warn += f"\n\n📊 **IV/RV 比率**: {_desc}"
+
+                # 跨 FOMC: 用动态 crush 预测 (基于 IV/RV 比率)
                 if _d_fomc <= 5:
-                    _iv_warn += f"\n\n⚠️ **IV Crush 风险**: 距 FOMC {_d_fomc} 天, 持仓 5 天大概率跨过事件公布。FOMC 后 IV 通常暴跌 25-40%, Long Straddle 是 long vega → 预计 vega 损失 ≈ premium × 0.30。需要价格移动 > 1.3σ 才能覆盖。\n建议:\n- 提前 1 天平仓（避开 IV crush）, 或\n- 改用 Calendar Spread（卖近月+买远月, 利用 IV 期限结构）"
+                    _crush_est = predict_event_crush(
+                        last_date, _feat_pred.get("gvz", pd.Series()),
+                        _rv_pred, "FOMC", mode="dynamic")
+                    _iv_warn += (f"\n\n⚠️ **距 FOMC {_d_fomc} 天**, 持仓 5d 大概率跨事件公布。\n"
+                                 f"GLD 实证: FOMC 后 GVZ 平均 -0.1% (远小于 SPX 的 30-60%), "
+                                 f"但当前 IV/RV={_ratio:.2f} → 动态预估 crush ≈ {_crush_est*100:.0f}% × premium\n"
+                                 "建议:\n"
+                                 "- 提前 1 天平仓 (避开尾部 crush 风险), 或\n"
+                                 "- 持有跨过事件 (GLD 历史上多次 IV 反向上涨), 或\n"
+                                 "- 用 Calendar Spread (卖近月+买远月, 吃近月 crush)")
                 if _d_nfp <= 5:
-                    _iv_warn += f"\n⚠️ 距 NFP {_d_nfp} 天, IV crush ≈ 15%"
+                    _iv_warn += f"\n⚠️ 距 NFP {_d_nfp} 天, GLD 实证 crush ≈ 3%"
+
                 st.warning(f"**做多波动率信号**: {_straddle_reason_pred}\n\n"
                            "建议: 考虑做多波动率 (ATM Call+Put / 长 Strangle)"
                            + _iv_warn)

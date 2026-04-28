@@ -272,21 +272,12 @@ def detect_straddle_signal(rv_series, dates_index,
     return pd.DataFrame(records, index=dates_index)
 
 
-# IV crush 实证值 (基于 GVZ 真实数据, 2025-2026 FOMC, 与 SPX/VIX 不同!)
-# 数据来源: FRED CBOE Gold ETF Volatility Index (GVZCLS)
-#
-# GLD/黄金期权 IV 对 FOMC 反应远小于 SPX:
-#   FOMC: mean -0.1%, median +0.1% (几乎无 crush, 40% 显著 crush 时平均 -8%)
-#   NFP:  mean -2.8%, median -2.8% (轻微 crush)
-#   OPEX: mean -5.4%, median -0.6% (变异大, 不显著)
-#
-# 原因: 黄金对实际利率/美元变化反应延迟, FOMC 后 vol 不会立即衰减.
-# 不同于 SPX/QQQ 期权 (FOMC 后 IV 暴跌 30-60%).
-#
-# 取保守上限 (考虑 IV 在高位时 crush 较大):
-IV_CRUSH_FOMC = 0.05    # 实证 -0.1%, 高位 -2.2%, 极端 -10%; 保守取 5%
-IV_CRUSH_NFP = 0.05     # 实证 -2.8%
-IV_CRUSH_OPEX = 0.05    # 实证 -5.4% (但中位 -0.6%, 取 5% 平均化)
+# IV crush 实证值 (基于 GVZ 真实数据, 2025-2026 FOMC)
+# 详见 core/iv_crush.py 模块.
+from core.iv_crush import IV_CRUSH_CONSERVATIVE
+IV_CRUSH_FOMC = IV_CRUSH_CONSERVATIVE["FOMC"]   # 0.05
+IV_CRUSH_NFP = IV_CRUSH_CONSERVATIVE["NFP"]     # 0.05
+IV_CRUSH_OPEX = IV_CRUSH_CONSERVATIVE["OPEX"]   # 0.05
 
 
 def backtest_straddle(close, high, low, rv_series, dates_index,
