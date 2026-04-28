@@ -38,9 +38,14 @@ PULLBACK_DD = 1.5
 CONSECUTIVE_STOP = 2
 MAX_HOLD_DAYS = 30
 DEFAULT_TZ_OFFSET = 8
-# RV 极值过滤 (回测验证: 排除 25-75% 中位区间, 大涨>3% 概率 21% → 32%)
-RV_FILTER_LOW = 0.25      # RV %tile < 此值 → BUY CALL (vol 压缩, 突破)
-RV_FILTER_HIGH = 0.75     # RV %tile > 此值 → SELL PUT (vol 高位, 收 premium)
+# RV 极值过滤 (v3.6.1, 5y 全配置扫描后选定):
+#   BUY CALL 在 RV < 0.50 (vol 偏低/中性, 期权便宜)
+#   SELL PUT 在 RV > 0.85 (vol 极端高位, 收 IV premium)
+#   0.50-0.85 屏蔽 (温水中位, alpha 弱)
+# 回测 (近 5y): BUY 17 笔 88% 胜率 +31% / SELL 20 笔 75% 胜率 +15%
+#               Sharpe 0.61 vs baseline 0.53
+RV_FILTER_LOW = 0.50      # RV %tile < 此值 → BUY CALL
+RV_FILTER_HIGH = 0.85     # RV %tile > 此值 → SELL PUT
 RV_FILTER_ENABLED = True  # 默认开启 RV 极值过滤
 
 # 兼容旧引用 (已不再用)
@@ -109,8 +114,12 @@ def generate_daily_signals(close_d, high_d, low_d,
             buy_sig = False
         buy_type = None
         if buy_sig:
-            # 低 RV → BUY CALL (突破), 高 RV → SELL PUT (收 IV premium)
-            buy_type = "BUY CALL" if rv < rv_low else "SELL PUT"
+            if rv_filter:
+                # 低 RV → BUY CALL (期权便宜), 高 RV → SELL PUT (收 IV)
+                buy_type = "BUY CALL" if rv < rv_low else "SELL PUT"
+            else:
+                # 兼容旧 v1.0 逻辑: 0.85 为分界
+                buy_type = "BUY CALL" if rv <= 0.85 else "SELL PUT"
 
         exit_sig = bp_high > exit_bp
         # Regime 退出
@@ -280,8 +289,10 @@ def run_backtest(close_d, high_d, low_d,
             continue
 
         if not in_trade and is_bull and bp_lo < buy_bp:
-            # 低 RV → BUY CALL (突破), 高 RV → SELL PUT (收 IV premium)
-            entry_type = "BUY CALL" if rv < rv_low else "SELL PUT"
+            if rv_filter:
+                entry_type = "BUY CALL" if rv < rv_low else "SELL PUT"
+            else:
+                entry_type = "BUY CALL" if rv <= 0.85 else "SELL PUT"
             if entry_price_mode == "close":
                 entry_price = c
                 entry_source = "收盘"

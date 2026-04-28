@@ -133,23 +133,21 @@ python scripts/backfill_intraday_signals.py --asset GLD --timeframe 60 \
 
 | RV %tile | 方向性 | 波动率 | 推荐期权策略 |
 |----------|--------|--------|--------------|
-| < 25% (压缩) | ✅ **BUY CALL** | 做多 | 买 ATM Call/Put 或 Long Straddle |
-| 25-35% (中低) | ❌ 屏蔽 | 做空 (中位偏低) | Iron Condor (温水区) |
-| 35-65% (中位) | ❌ 屏蔽 | ✅ **做空 IC** | **Iron Condor (16Δ/5Δ)** |
-| 65-75% (中高) | ❌ 屏蔽 | 做空 (临界) | Iron Condor (谨慎) |
-| > 75% (恐慌) | ✅ **SELL PUT** | 做多 (临界) | 卖 OTM Put / Long Straddle |
+| < 50% (低/中性) | ✅ **BUY CALL** | 做多 (RV<20%) | 买 ATM Call/Put 或 Long Straddle |
+| 50-85% (温水) | ❌ 屏蔽 | ✅ **做空 IC** | **Iron Condor (16Δ/5Δ)** |
+| > 85% (恐慌) | ✅ **SELL PUT** | 做多 (临界) | 卖 OTM Put / Long Straddle |
 
 **关键洞察 (近 5 年回测验证)：**
-- RV 中位 (25-75%) 是"温水区" — 方向性信号"对而无利", 大涨>3% 概率仅 21% (vs 极值 30-38%)
-- 排除中位后: 大涨概率 21% → 32%, **alpha 翻倍** (+0.53% → +1.32%/笔)
-- RV 极低 < 25% + BUY CALL: **100% 胜率, 0 止损, Sharpe 1.55** (vs baseline 0.41, 提升 3.8×)
+- RV 温水区 (50-85%) 是方向性信号最差区间 — 趋势不明且 IV 衰减不够极端
+- 排除温水区后: BUY CALL 胜率 81% → **88%**, Sharpe 0.53 → **0.61**
+- BUY CALL 数量保留合理 (5y 27 → 17 笔)，质量大幅提升
 
 ### 方向性 (盘中 H/L 触发 + RV 极值过滤)
 
 | 信号 | 条件 | 退出优先级 |
 |------|------|------|
-| BUY CALL | Bull + bp(Low)<0.30 + **RV %tile < 0.25** | StopLoss(3%) > BandExit > Pullback > Timeout |
-| SELL PUT | Bull + bp(Low)<0.30 + **RV %tile > 0.75** | 同上 |
+| BUY CALL | Bull + bp(Low)<0.30 + **RV %tile < 0.50** | StopLoss(3%) > BandExit > Pullback > Timeout |
+| SELL PUT | Bull + bp(Low)<0.30 + **RV %tile > 0.85** | 同上 |
 | EXIT | bp(High)>0.90 ∪ Regime 退出 Bull | — |
 
 ### 做多波动率 — Long Straddle / Strangle (评分 ≥3)
@@ -288,10 +286,10 @@ PULLBACK_DD      = 1.5       # Pullback: 回撤 > N%
 CONSECUTIVE_STOP = 2         # 连续止损熔断
 MAX_HOLD_DAYS    = 30        # 安全帽
 
-# RV 极值过滤 (v3.6+, 默认开启)
-RV_FILTER_LOW    = 0.25      # < 此值 → BUY CALL
-RV_FILTER_HIGH   = 0.75      # > 此值 → SELL PUT
-RV_FILTER_ENABLED = True     # 关闭则恢复旧版无过滤行为
+# RV 极值过滤 (v3.6.1, 默认开启)
+RV_FILTER_LOW    = 0.50      # < 此值 → BUY CALL (vol 偏低/中性)
+RV_FILTER_HIGH   = 0.85      # > 此值 → SELL PUT (vol 极端高位)
+RV_FILTER_ENABLED = True     # 关闭恢复 v1.0 行为 (无中位屏蔽)
 ```
 
 ## 做空波动率参数 (`core/events.py`)
@@ -367,4 +365,5 @@ python scripts/backfill_intraday_signals.py --asset SLV --timeframe 60
 | v3.3 | 多周期 Stoch RSI (日线 / 1h / 15m, 全部 x 轴对齐, 同一公式) |
 | v3.4 | SLV 价位 / 比例 / 实时期货独立修正 + 主图改伦敦金/银 + 5 日区间双视图 |
 | v3.5 | 盘中触发模块: 参数化规则 (Stoch RSI / MACD / KDJ) + 持久 log + 历史回填 + 主图/持仓/近期信号/回测全部读 log 真实触发价 + Straddle ★ 标记 + ETF/期货双视图汇总 |
-| **v3.6** | **完整策略矩阵: 做空波动率 Iron Condor 16Δ/5Δ (89% 胜率) + 方向性 RV 极值过滤 (Sharpe 0.41 → 0.56, 极低 RV 100% 胜率) + 状态栏 5 列 (新增波动率信号) + 今日预测 RV 走势图 + 三方策略竞争 (方向 vs 做多 vs 做空波动率)** |
+| v3.6 | 完整策略矩阵: 做空波动率 Iron Condor 16Δ/5Δ (89% 胜率) + 方向性 RV 极值过滤 + 状态栏 5 列 (新增波动率信号) + 今日预测 RV 走势图 + 三方策略竞争 |
+| **v3.6.1** | **RV 阈值调优 (0.25/0.75 → 0.50/0.85): BUY CALL 胜率 81% → 88%, Sharpe 0.53 → 0.61, 屏蔽真正的温水区 50-85% 而非误伤低 RV 的 BUY CALL 机会; 修复 rv_filter=False 时 SELL PUT 误判 bug** |
