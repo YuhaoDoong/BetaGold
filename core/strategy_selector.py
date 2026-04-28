@@ -179,20 +179,33 @@ def build_unified_signals(dir_signals, straddle_df, close, high, low,
             chosen = "EXIT"
             chosen_reason = "退出信号"
         elif vol_type and dir_type:
-            # 都强 → MIXED
-            if vol_score >= VOL_DIR_BOTH_STRONG:
-                chosen = f"{dir_type} + {vol_type}"
-                chosen_reason = (f"方向+{vol_type}同强"
-                                 f"(vol={vol_score})")
-            elif (vol_type == "STRADDLE"
-                  and vol_score >= STRADDLE_PRIORITY_SCORE) or \
-                 (vol_type == "SHORT_VOL"
-                  and vol_score >= SHORT_VOL_PRIORITY_SCORE):
-                chosen = vol_type
-                chosen_reason = f"{vol_type}优先(score={vol_score})"
+            if vol_type == "SHORT_VOL":
+                # 方向性 (long gamma) 与 SHORT_VOL (short gamma) 逻辑矛盾,
+                # 不允许 MIXED. 方向性主动信号 > SHORT_VOL 被动收 theta.
+                if vol_score >= SHORT_VOL_PRIORITY_SCORE + 2:
+                    # SHORT_VOL 极强 (score ≥ 7) 且方向性弱 → 走 SHORT_VOL
+                    chosen = vol_type
+                    chosen_reason = (f"SHORT_VOL极强(score={vol_score})"
+                                     f"覆盖方向性")
+                else:
+                    chosen = dir_type
+                    chosen_reason = (f"方向性优先(SHORT_VOL矛盾, "
+                                     f"score={vol_score})")
+            elif vol_type == "STRADDLE":
+                # 方向性与 STRADDLE 都是 long gamma, 可叠加为 MIXED
+                if vol_score >= VOL_DIR_BOTH_STRONG:
+                    chosen = f"{dir_type} + {vol_type}"
+                    chosen_reason = (f"方向+STRADDLE同强"
+                                     f"(vol={vol_score})")
+                elif vol_score >= STRADDLE_PRIORITY_SCORE:
+                    chosen = vol_type
+                    chosen_reason = f"STRADDLE优先(score={vol_score})"
+                else:
+                    chosen = dir_type
+                    chosen_reason = f"方向性优先(STRADDLE score={vol_score})"
             else:
                 chosen = dir_type
-                chosen_reason = f"方向性优先(vol={vol_type} score={vol_score})"
+                chosen_reason = "方向性"
         elif dir_type:
             chosen = dir_type
             chosen_reason = "仅方向性"
