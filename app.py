@@ -2088,13 +2088,17 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             current_gain_str = f"{current_gain:+.1f}%"
             pb_stop = pk * (1 - PULLBACK_DD / 100) \
                 if gain > PULLBACK_GAIN else 0
+            exit_d_str = "—"
+            exit_reason = "持仓中"
         else:
             # 已平仓
             ex_d, ex_type, ex_gain = t["exit_date"], t["exit_type"], t["gain"]
-            status = (f"已平仓 {ex_type} {ex_gain:+.1f}% "
-                      f"({(ex_d - buy_d).days}d)")
+            status = f"✓ 已平仓 ({(ex_d - buy_d).days}d)" if ex_gain > 0 \
+                    else f"✗ 已平仓 ({(ex_d - buy_d).days}d)"
             current_gain_str = f"{ex_gain:+.1f}% (终)"
             pb_stop = 0
+            exit_d_str = ex_d.strftime("%m/%d")
+            exit_reason = ex_type
 
         tp_recs.append({
             "_sort_dt": buy_d,
@@ -2106,8 +2110,9 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             "入场源": t.get("entry_source", "—"),
             "当前盈亏": current_gain_str,
             "止盈位": f"${pb_stop:.1f}" if pb_stop > 0 else "—",
-            "BandExit": f"${eff_bp090:.1f} ({_viz_spot_label} "
-                        f"${eff_bp090 * _viz_ratio:.1f})",
+            "BandExit": f"${eff_bp090:.1f}",
+            "退出日": exit_d_str,
+            "退出原因": exit_reason,
         })
 
     # 波动率交易: STRADDLE (做多波动率) + SHORT_VOL (Iron Condor)
@@ -2195,15 +2200,26 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                 "SHORT_VOL", c, 0, 0, move_since, sigma)
             current_str = f"{est_pnl:+.2f}% (持中)"
             wing = sigma * SHORT_VOL_WING_SIGMA
-            exit_cond = f"5d 到期/>{wing:.1f}%翼锁/50%credit早平"
+            band_str = f"5d 到期/>{wing:.1f}%翼锁"
+            exit_d_str = "—"
+            exit_reason = "持仓中"
         else:
             # 已平仓: 用 backtest 终值
-            status = (f"已平仓 {t['exit_date'].strftime('%m/%d')}"
-                       f" {('赢' if t['win'] else '亏')}")
+            status = "✓ 已平仓" if t["win"] else "✗ 已平仓"
             est_pnl = t["pnl_pct"]
             current_str = f"{est_pnl:+.2f}% (终)"
             target = t["credit_pct"] * 0.5
-            exit_cond = f"已结束 max_move={t['max_move']:.2f}%"
+            band_str = "—"
+            exit_d_str = t["exit_date"].strftime("%m/%d")
+            # IC 退出原因: 看 max_move 落在哪个区间
+            short_strike = sigma * SHORT_VOL_STRIKE_SIGMA
+            wing = sigma * SHORT_VOL_WING_SIGMA
+            if t["max_move"] >= wing:
+                exit_reason = f"翼锁定 (move {t['max_move']:.1f}% > 3σ {wing:.1f}%)"
+            elif t["max_move"] >= short_strike:
+                exit_reason = f"突破短腿 (move {t['max_move']:.1f}% > 1.6σ)"
+            else:
+                exit_reason = f"5d 到期 留 credit (move {t['max_move']:.1f}% < 1.6σ)"
         tp_recs.append({
             "_sort_dt": d,
             "日期": d.strftime("%m/%d"),
@@ -2214,7 +2230,9 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             "入场源": "收盘",
             "当前盈亏": current_str,
             "止盈位": f"{target:.2f}%",
-            "BandExit": exit_cond,
+            "BandExit": band_str,
+            "退出日": exit_d_str,
+            "退出原因": exit_reason,
         })
 
     # STRADDLE: 用 backtest_straddle 的真实交易记录
@@ -2235,14 +2253,21 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                 "STRADDLE", c, 0, 0, move_since, sigma)
             current_str = f"{est_pnl:+.2f}% (持中)"
             target = cost
-            exit_cond = f"5d 到期 / 移动>{target:.2f}%"
+            band_str = f"5d 到期 / 移动>{target:.2f}%"
+            exit_d_str = "—"
+            exit_reason = "持仓中"
         else:
-            status = (f"已平仓 {t['exit_date'].strftime('%m/%d')}"
-                       f" {('赢' if t['pnl_pct']>0 else '亏')}")
+            status = "✓ 已平仓" if t["pnl_pct"] > 0 else "✗ 已平仓"
             est_pnl = t["pnl_pct"]
             current_str = f"{est_pnl:+.2f}% (终)"
             target = sigma
-            exit_cond = f"已结束 max_move={t['max_move']:.2f}%"
+            band_str = "—"
+            exit_d_str = t["exit_date"].strftime("%m/%d")
+            # Straddle 退出原因: 移动是否覆盖 cost
+            if t["max_move"] > sigma:
+                exit_reason = f"波动获利 (move {t['max_move']:.1f}% > 1σ {sigma:.1f}%)"
+            else:
+                exit_reason = f"5d 到期 (move {t['max_move']:.1f}% < cost {sigma:.1f}%)"
         tp_recs.append({
             "_sort_dt": d,
             "日期": d.strftime("%m/%d"),
@@ -2253,7 +2278,9 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             "入场源": "收盘",
             "当前盈亏": current_str,
             "止盈位": f"波动>{target:.2f}%",
-            "BandExit": exit_cond,
+            "BandExit": band_str,
+            "退出日": exit_d_str,
+            "退出原因": exit_reason,
         })
 
     if tp_recs:
