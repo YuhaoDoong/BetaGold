@@ -2241,55 +2241,6 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     else:
         st.caption("无未平仓持仓")
 
-    # ── 近期信号 ──
-    st.divider()
-    st.subheader("近期信号")
-
-    # 按时间倒序, 显示最近 10 个信号 (不去重, 全部展示)
-    # 入场价优先用盘中触发 log 的代表价 (买:最高 / 卖:最低), 没记录则用收盘
-    _sig_recs = []
-    for d in reversed(_unified_viz.index):
-        r = _unified_viz.loc[d]
-        chosen = r["chosen"]
-        c = r["close"]
-
-        w = r["win"]
-        win_str = "✓" if w is True or w == True else (
-            "✗" if w is False or w == False else "—")
-        ret = f"{r['ret_5d']:+.1f}%" if r["ret_5d"] is not None and \
-            not pd.isna(r["ret_5d"]) else "—"
-
-        if chosen == "STRADDLE":
-            entry_p = c
-            entry_src = "收盘"
-        elif "EXIT" in chosen:
-            _lp = _log_price(d, "EXIT")
-            entry_p = _lp if _lp is not None else c
-            entry_src = (f"盘中×{_log_n_triggers(d, 'EXIT')}"
-                         if _lp is not None else "收盘")
-        else:
-            _lp = _log_price(d, "BUY")
-            entry_p = _lp if _lp is not None else c
-            entry_src = (f"盘中×{_log_n_triggers(d, 'BUY')}"
-                         if _lp is not None else "收盘")
-
-        _sig_recs.append({
-            "日期": d.strftime("%m/%d"),
-            f"入场 {asset_key}": f"${entry_p:.2f}",
-            f"入场 {_viz_spot_label}": f"${entry_p * _viz_ratio:.1f}",
-            "入场源": entry_src,
-            "策略": chosen,
-            "原因": r["chosen_reason"],
-            "5天涨跌": ret,
-            "结果": win_str,
-        })
-        if len(_sig_recs) >= 10:
-            break
-
-    if _sig_recs:
-        st.dataframe(pd.DataFrame(_sig_recs),
-                     use_container_width=True, hide_index=True)
-
     # ── 统一策略回测 ──
     st.divider()
     st.subheader("统一策略回测 (方向性 + 做多波动率 + 做空波动率 + 退出)")
@@ -2376,127 +2327,139 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                      use_container_width=True, hide_index=True)
         st.caption("⚡=方向性+Straddle重叠 | 策略选择: EXIT优先 > Straddle(高分) > 方向性 | 倒序展示")
 
-    # ── 波动率交易历史 (STRADDLE + SHORT_VOL 回测记录) ──
+    # ── 完整交易历史 (合并: 方向性 + Straddle + Iron Condor) ──
     from core.events import (backtest_straddle, backtest_short_vol,
                               SHORT_VOL_STRIKE_SIGMA, SHORT_VOL_WING_SIGMA)
-    _vol_dates = features.index[features.index >= (pd.Timestamp(today_sgt) - timedelta(days=180))]
+    _hist_window_start = pd.Timestamp(today_sgt) - timedelta(days=180)
+    _vol_dates = features.index[features.index >= _hist_window_start]
     _st_trades = backtest_straddle(close_d, high_d, low_d, rv_s, _vol_dates)
     _sv_trades = backtest_short_vol(close_d, high_d, low_d, rv_s, rv_pctile,
                                       _vol_dates, regime=regime,
                                       daily_range=(high_d - low_d) / close_d * 100)
-    if _st_trades or _sv_trades:
+
+    # 期货换算比例 (用于伦敦金/银双视图)
+    _spot_label_bt = "伦敦金" if asset_key == "GLD" else "伦敦银"
+    _bt_rt_ticker = "GC=F" if asset_key == "GLD" else "SI=F"
+    _bt_rt = _get_realtime_prices(_bt_rt_ticker)
+    if _bt_rt and _bt_rt.get("gc_price", 0) > 0 and last_close > 0:
+        _bt_ratio = _bt_rt["gc_price"] / last_close
+    elif gc_gld_ratio:
+        _bt_ratio = gc_gld_ratio
+    else:
+        _bt_ratio = _viz_ratio  # 兜底
+
+    _all_recs = []
+
+    # 方向性交易 (含完整退出信息)
+    for t in (trades or []):
+        ep, xp, g = t["entry_price"], t["exit_price"], t["gain"]
+        _all_recs.append({
+            "入场日": t["entry_date"],
+            "出场日": t["exit_date"],
+            "策略": t["type"],
+            f"入场 {asset_key}": f"${ep:.2f}",
+            f"入场 {_spot_label_bt}": f"${ep * _bt_ratio:.1f}",
+            "入场源": t.get("entry_source", "—"),
+            f"出场 {asset_key}": f"${xp:.2f}",
+            f"出场 {_spot_label_bt}": f"${xp * _bt_ratio:.1f}",
+            "出场源": t.get("exit_source", "—"),
+            "持仓": f"{t['hold_days']}d",
+            "P&L": f"{g:+.2f}%",
+            "退出": t["exit_type"],
+            "结果": "✓" if g > 0 else "✗",
+        })
+
+    # 做空波动率 Iron Condor
+    for t in _sv_trades:
+        ep = t["entry_price"]
+        _all_recs.append({
+            "入场日": t["entry_date"],
+            "出场日": t["exit_date"],
+            "策略": "Iron Condor",
+            f"入场 {asset_key}": f"${ep:.2f}",
+            f"入场 {_spot_label_bt}": f"${ep * _bt_ratio:.1f}",
+            "入场源": "收盘",
+            f"出场 {asset_key}": "—",
+            f"出场 {_spot_label_bt}": "—",
+            "出场源": "—",
+            "持仓": f"{(t['exit_date'] - t['entry_date']).days}d",
+            "P&L": f"{t['pnl_pct']:+.2f}%",
+            "退出": (f"max_move={t['max_move']:.2f}% "
+                     f"vs 短腿{t['short_strike_pct']:.2f}%"),
+            "结果": "✓" if t["win"] else "✗",
+        })
+
+    # 做多波动率 Straddle
+    for t in _st_trades:
+        ep = t["entry_price"]
+        _all_recs.append({
+            "入场日": t["entry_date"],
+            "出场日": t["exit_date"],
+            "策略": "Straddle",
+            f"入场 {asset_key}": f"${ep:.2f}",
+            f"入场 {_spot_label_bt}": f"${ep * _bt_ratio:.1f}",
+            "入场源": "收盘",
+            f"出场 {asset_key}": "—",
+            f"出场 {_spot_label_bt}": "—",
+            "出场源": "—",
+            "持仓": f"{(t['exit_date'] - t['entry_date']).days}d",
+            "P&L": f"{t['pnl_pct']:+.2f}%",
+            "退出": (f"max_move={t['max_move']:.2f}% "
+                     f"vs cost{t['cost_pct']:.2f}%"),
+            "结果": "✓" if t["pnl_pct"] > 0 else "✗",
+        })
+
+    if _all_recs:
         st.divider()
-        st.subheader(f"波动率交易历史 (近 180 天: STRADDLE {len(_st_trades)} 笔, "
-                     f"Iron Condor {len(_sv_trades)} 笔)")
-        _vol_recs = []
-        for t in _sv_trades:
-            _vol_recs.append({
-                "入场": t["entry_date"].strftime("%m/%d"),
-                "策略": "Iron Condor (做空波动率)",
-                f"入场 {asset_key}": f"${t['entry_price']:.2f}",
-                f"入场 {_viz_spot_label}": f"${t['entry_price'] * _viz_ratio:.1f}",
-                "RV": f"{t['rv']:.1f}%",
-                "出场": t["exit_date"].strftime("%m/%d"),
-                "max_move": f"{t['max_move']:.2f}%",
-                "短腿(1.6σ)": f"{t['short_strike_pct']:.2f}%",
-                "Credit": f"{t['credit_pct']:.2f}%",
-                "P&L": f"{t['pnl_pct']:+.2f}%",
-                "结果": "✓" if t["win"] else "✗",
-            })
-        for t in _st_trades:
-            _vol_recs.append({
-                "入场": t["entry_date"].strftime("%m/%d"),
-                "策略": "Straddle (做多波动率)",
-                f"入场 {asset_key}": f"${t['entry_price']:.2f}",
-                f"入场 {_viz_spot_label}": f"${t['entry_price'] * _viz_ratio:.1f}",
-                "RV": f"{t['rv']:.1f}%",
-                "出场": t["exit_date"].strftime("%m/%d"),
-                "max_move": f"{t['max_move']:.2f}%",
-                "短腿(1.6σ)": "—",
-                "Credit": f"cost {t['cost_pct']:.2f}%",
-                "P&L": f"{t['pnl_pct']:+.2f}%",
-                "结果": "✓" if t["pnl_pct"] > 0 else "✗",
-            })
+        st.subheader(f"完整交易历史 (近 180 天 · 方向性 + 波动率, "
+                     f"共 {len(_all_recs)} 笔)")
+
         # 按入场日倒序
-        _vol_recs.sort(key=lambda r: r["入场"], reverse=True)
-        st.dataframe(pd.DataFrame(_vol_recs),
-                      use_container_width=True, hide_index=True)
-        # 汇总
-        sv_wins = sum(1 for t in _sv_trades if t["win"])
-        st_wins = sum(1 for t in _st_trades if t["pnl_pct"] > 0)
+        _all_recs.sort(key=lambda r: r["入场日"], reverse=True)
+        # 格式化日期
+        _df_disp = pd.DataFrame(_all_recs)
+        _df_disp["入场日"] = _df_disp["入场日"].dt.strftime("%m/%d")
+        _df_disp["出场日"] = _df_disp["出场日"].dt.strftime("%m/%d")
+        st.dataframe(_df_disp, use_container_width=True, hide_index=True)
+
+        # 按策略分组汇总
+        cols_sum = st.columns(4)
+        n_dir = len(trades or [])
+        n_dir_win = sum(1 for t in (trades or []) if t["gain"] > 0)
+        dir_pnl = sum(t["gain"] for t in (trades or []))
+        n_sv = len(_sv_trades)
+        n_sv_win = sum(1 for t in _sv_trades if t["win"])
         sv_pnl = sum(t["pnl_pct"] for t in _sv_trades)
+        n_st = len(_st_trades)
+        n_st_win = sum(1 for t in _st_trades if t["pnl_pct"] > 0)
         st_pnl = sum(t["pnl_pct"] for t in _st_trades)
-        cols_vol_sum = st.columns(2)
-        with cols_vol_sum[0]:
-            if _sv_trades:
-                st.metric("Iron Condor 汇总",
-                           f"{sv_wins}/{len(_sv_trades)} ({sv_wins/len(_sv_trades):.0%})",
-                           delta=f"总 {sv_pnl:+.1f}%")
-        with cols_vol_sum[1]:
-            if _st_trades:
-                st.metric("Straddle 汇总",
-                           f"{st_wins}/{len(_st_trades)} ({st_wins/len(_st_trades):.0%})",
-                           delta=f"总 {st_pnl:+.1f}%")
-
-    # ── 回测交易记录 (ETF + 期货价位双视图) ──
-    if trades:
-        st.divider()
-        _spot_label_bt = "伦敦金" if asset_key == "GLD" else "伦敦银"
-        st.subheader(f"回测交易记录 ({len(trades)} 笔, ETF + {_spot_label_bt} 双视图)")
-
-        # 期货换算比例: 优先实时, 兜底 gc_gld_ratio
-        _bt_rt_ticker = "GC=F" if asset_key == "GLD" else "SI=F"
-        _bt_rt = _get_realtime_prices(_bt_rt_ticker)
-        if _bt_rt and _bt_rt.get("gc_price", 0) > 0 and last_close > 0:
-            _bt_ratio = _bt_rt["gc_price"] / last_close
-        elif gc_gld_ratio:
-            _bt_ratio = gc_gld_ratio
-        else:
-            _bt_ratio = None
-
-        _trecs = []
-        n_win = 0
-        sum_gain = 0.0
-        for t in trades:
-            ep = t["entry_price"]
-            xp = t["exit_price"]
-            g = t["gain"]
-            sum_gain += g
-            if g > 0:
-                n_win += 1
-            row = {
-                "入场": t["entry_date"].strftime("%m/%d"),
-                "类型": t["type"],
-                f"入场 {asset_key}": f"${ep:.2f}",
-                "入场源": t.get("entry_source", "—"),
-                "出场": t["exit_date"].strftime("%m/%d"),
-                "退出": t["exit_type"],
-                f"出场 {asset_key}": f"${xp:.2f}",
-                "出场源": t.get("exit_source", "—"),
-                "持仓": f"{t['hold_days']}d",
-                "ETF 收益": f"{g:+.1f}%",
-            }
-            if _bt_ratio is not None:
-                row[f"入场 {_spot_label_bt}"] = f"${ep * _bt_ratio:.1f}"
-                row[f"出场 {_spot_label_bt}"] = f"${xp * _bt_ratio:.1f}"
-                # 期货 % 与 ETF % 同 (价差比例一致), 标在期权部分
-                row["期货 收益"] = f"{g:+.1f}%"
-            _trecs.append(row)
-        # 倒序: 最新交易在最前
-        st.dataframe(pd.DataFrame(_trecs[::-1]),
-                     use_container_width=True, hide_index=True)
-
-        # 汇总
-        n_total = len(trades)
-        wr = n_win / n_total if n_total > 0 else 0
-        avg = sum_gain / n_total if n_total > 0 else 0
-        st.markdown(
-            f"**汇总**: 胜率 {n_win}/{n_total} ({wr:.0%}) | "
-            f"累计 ETF/期货 收益 {sum_gain:+.1f}% | 平均/笔 {avg:+.1f}%"
-        )
-        if _bt_ratio is not None:
-            _bt_src_lbl = f"实时 {_bt_rt['timestamp']}" if _bt_rt else "近60日均值"
-            st.caption(f"换算比例 {_bt_ratio:.4f} (期货/ETF, {_bt_src_lbl})")
+        n_total = n_dir + n_sv + n_st
+        n_total_win = n_dir_win + n_sv_win + n_st_win
+        total_pnl = dir_pnl + sv_pnl + st_pnl
+        with cols_sum[0]:
+            st.metric("总计",
+                      f"{n_total_win}/{n_total} ({n_total_win/max(1,n_total):.0%})",
+                      delta=f"{total_pnl:+.1f}%")
+        with cols_sum[1]:
+            if n_dir > 0:
+                st.metric("方向性",
+                          f"{n_dir_win}/{n_dir} ({n_dir_win/n_dir:.0%})",
+                          delta=f"{dir_pnl:+.1f}%")
+        with cols_sum[2]:
+            if n_sv > 0:
+                st.metric("Iron Condor",
+                          f"{n_sv_win}/{n_sv} ({n_sv_win/n_sv:.0%})",
+                          delta=f"{sv_pnl:+.1f}%")
+        with cols_sum[3]:
+            if n_st > 0:
+                st.metric("Straddle",
+                          f"{n_st_win}/{n_st} ({n_st_win/n_st:.0%})",
+                          delta=f"{st_pnl:+.1f}%")
+        if _bt_rt:
+            st.caption(f"换算比例 {_bt_ratio:.4f} (期货/ETF, "
+                       f"实时 {_bt_rt['timestamp']}) | 倒序展示")
+        st.caption("⚠️ 期权 P&L 受 IV 影响, Iron Condor/Straddle 用 RV 模型估算; "
+                   "方向性按价差 % 即为期货 P&L (期权需 IV 修正)")
         st.caption(
             "⚠️ 期权实际盈亏受隐含波动率 (IV) 影响, 与期货价差不等同; "
             "Moomoo API 接通后将统计真实期权 P&L."
