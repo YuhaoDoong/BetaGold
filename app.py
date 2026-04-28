@@ -2215,11 +2215,14 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             short_strike = sigma * SHORT_VOL_STRIKE_SIGMA
             wing = sigma * SHORT_VOL_WING_SIGMA
             if t["max_move"] >= wing:
-                exit_reason = f"翼锁定 (move {t['max_move']:.1f}% > 3σ {wing:.1f}%)"
+                exit_reason = (f"❌ 翼锁定亏损 — 价格暴动 {t['max_move']:.1f}% "
+                               f"突破长翼 {wing:.1f}% (3σ), 最大亏损封顶")
             elif t["max_move"] >= short_strike:
-                exit_reason = f"突破短腿 (move {t['max_move']:.1f}% > 1.6σ)"
+                exit_reason = (f"⚠️ 突破短腿 — 价格动 {t['max_move']:.1f}% "
+                               f"超过 {short_strike:.1f}% (1.6σ), 部分 credit 被抠回")
             else:
-                exit_reason = f"5d 到期 留 credit (move {t['max_move']:.1f}% < 1.6σ)"
+                exit_reason = (f"✅ 价格静止收 credit — max_move 仅 {t['max_move']:.1f}% "
+                               f"< {short_strike:.1f}% (1.6σ短腿), 4 腿期权全废, 留全部入场净保证金")
         tp_recs.append({
             "_sort_dt": d,
             "日期": d.strftime("%m/%d"),
