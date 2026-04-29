@@ -166,11 +166,14 @@ def auto_refresh_market_data(cfg: dict):
             except Exception as e:
                 results.append((_label, f"更新失败: {e}"))
 
-    # 1h 数据也刷新 (GLD 含盘前盘后, GC=F)
+    # 1h 数据也刷新 (GLD/SLV 含盘前盘后, 期货不含)
+    # v3.7.27: 补回 SLV 1h 和 SI=F 1h (之前漏掉, 导致 slv_1h.csv 长期不更新)
     market_dir = os.path.dirname(cfg["resolved"].get("gld_csv", ""))
     for fname, label, ticker, prepost in [
         ("gld_1h.csv", "GLD 1h", "GLD", True),
         ("gc_1h.csv", "GC=F 1h", "GC=F", False),
+        ("slv_1h.csv", "SLV 1h", "SLV", True),
+        ("si_1h.csv", "SI=F 1h", "SI=F", False),
     ]:
         path_1h = os.path.join(market_dir, fname)
         if os.path.exists(path_1h):
@@ -178,13 +181,20 @@ def auto_refresh_market_data(cfg: dict):
                 import yfinance as yf
                 existing_1h = pd.read_csv(path_1h, index_col=0, parse_dates=True)
                 last_1h = existing_1h.index[-1]
-                # 只在距上次超过 6 小时才刷新
                 now_utc = datetime.utcnow()
                 hours_since = (now_utc - last_1h.to_pydatetime()).total_seconds() / 3600
                 if hours_since > 6:
                     t = yf.Ticker(ticker)
-                    new_1h = t.history(period="5d", interval="1h",
-                                       prepost=prepost)
+                    # v3.7.27: 大 gap 用 start 参数全量补齐, 否则 period=5d 快速增量
+                    days_gap = hours_since / 24
+                    if days_gap > 5:
+                        # gap > 5 天: 用 start 全量补齐 (yfinance 1h 上限 730 天)
+                        start_str = (last_1h + timedelta(hours=1)).strftime("%Y-%m-%d")
+                        new_1h = t.history(start=start_str, interval="1h",
+                                            prepost=prepost)
+                    else:
+                        new_1h = t.history(period="5d", interval="1h",
+                                            prepost=prepost)
                     if new_1h is not None and len(new_1h) > 0:
                         new_1h.index = pd.to_datetime(new_1h.index).tz_localize(None)
                         new_1h.index.name = "Datetime"
