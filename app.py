@@ -1308,47 +1308,6 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         )
         st.info(_signal_label)
 
-        # ── 关键事件倒计时 (next 7 days) ──
-        from core.events import get_all_events
-        _ev_list = get_all_events(
-            (_now_naive.normalize()).strftime("%Y-%m-%d"),
-            (_now_naive + _td(days=7)).strftime("%Y-%m-%d"),
-            asset=("gold" if asset_key == "GLD" else "silver"))
-        if _ev_list:
-            _ev_cards = []
-            for ev_d, ev_t, ev_l in _ev_list[:4]:
-                # FOMC 公告 = 第 2 天 14:00 ET = SGT +12-13h, 用 02:00 SGT 次日
-                # 简化: 事件日 = 当日 SGT 02:00 (FOMC 公告时刻)
-                ev_announce = pd.Timestamp(ev_d).tz_localize(None) + _td(hours=2)
-                if ev_t == "OPEX":
-                    # OPEX = 周五美股收盘 = SGT 04:00 周六
-                    ev_announce = pd.Timestamp(ev_d).tz_localize(None) + _td(hours=4)
-                if ev_t == "NFP":
-                    # NFP = 美股 8:30 ET = SGT 20:30 当日 (冬令时) / 21:30 (夏令时)
-                    ev_announce = pd.Timestamp(ev_d).tz_localize(None) + _td(hours=20, minutes=30)
-                _delta = ev_announce - _now_naive
-                _delta_h = _delta.total_seconds() / 3600
-                if _delta_h < 0:
-                    continue
-                _d_days = int(_delta_h // 24)
-                _d_hours = int(_delta_h % 24)
-                _d_mins = int((_delta_h * 60) % 60)
-                if _d_days > 0:
-                    _td_str = f"{_d_days}d {_d_hours}h{_d_mins}m"
-                else:
-                    _td_str = f"{_d_hours}h{_d_mins}m"
-                _ev_cards.append({
-                    "事件": ev_l,
-                    "日期 (SGT)": ev_announce.strftime("%m/%d %H:%M"),
-                    "倒计时": _td_str,
-                })
-            if _ev_cards:
-                cols_ev = st.columns(min(4, len(_ev_cards)))
-                for i, ev in enumerate(_ev_cards):
-                    with cols_ev[i]:
-                        st.metric(ev["事件"], ev["倒计时"],
-                                   delta=f"@ SGT {ev['日期 (SGT)']}")
-
         sb1, sb2, sb3, sb4, sb5 = st.columns(5)
         with sb1:
             st.metric("今日窗口",
@@ -1470,11 +1429,41 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     with st.expander("市场环境分析", expanded=True):
         col_ev, col_macro = st.columns(2)
         with col_ev:
-            st.markdown("**近期事件**")
-            fomc_str = f"**{fomc_d.strftime('%m/%d')}** ({d_fomc}天)" if fomc_d else "—"
-            opex_str = f"**{opex_d.strftime('%m/%d')}** ({d_opex}天)" if opex_d else "—"
-            nfp_str = f"**{nfp_d.strftime('%m/%d')}** ({d_nfp}天)" if nfp_d else "—"
-            st.markdown(f"- FOMC: {fomc_str}\n- OPEX: {opex_str}\n- 非农: {nfp_str}")
+            st.markdown("**近期事件 (倒计时按公告时间)**")
+            # 倒计时按 SGT 公告时间, 不只是事件日
+            from datetime import timedelta as _td
+            from core.events import get_all_events
+            _now_naive_lite = pd.Timestamp.now(
+                tz="Asia/Singapore").tz_localize(None)
+            _ev_list = get_all_events(
+                _now_naive_lite.normalize().strftime("%Y-%m-%d"),
+                (_now_naive_lite + _td(days=14)).strftime("%Y-%m-%d"),
+                asset=("gold" if asset_key == "GLD" else "silver"))
+            if _ev_list:
+                _ev_cards = []
+                for ev_d, ev_t, ev_l in _ev_list[:5]:
+                    # SGT 公告时刻
+                    if ev_t == "FOMC":
+                        ann = pd.Timestamp(ev_d).tz_localize(None) + _td(hours=2)
+                    elif ev_t == "NFP":
+                        ann = pd.Timestamp(ev_d).tz_localize(None) + _td(hours=20, minutes=30)
+                    elif ev_t == "OPEX":
+                        ann = pd.Timestamp(ev_d).tz_localize(None) + _td(hours=4)
+                    else:
+                        ann = pd.Timestamp(ev_d).tz_localize(None) + _td(hours=4)
+                    delta = (ann - _now_naive_lite).total_seconds() / 3600
+                    if delta < 0:
+                        continue
+                    days = int(delta // 24)
+                    hrs = int(delta % 24)
+                    mins = int((delta * 60) % 60)
+                    cd_str = (f"{days}d {hrs}h{mins}m" if days > 0
+                              else f"{hrs}h{mins}m")
+                    _ev_cards.append((ev_l, cd_str, ann.strftime("%m/%d %H:%M")))
+                for label, cd, ann_str in _ev_cards:
+                    st.markdown(f"- **{label}** — 倒计时 {cd} (SGT {ann_str})")
+            else:
+                st.markdown("- 未来 14 天无重大事件")
 
             if is_straddle:
                 st.warning(f"Straddle 信号: {straddle_reason}")
