@@ -81,7 +81,10 @@ python scripts/backfill_intraday_signals.py --asset SLV --timeframe 60
 | v3.7.9 | 持仓管理加退出日 + 退出原因列 |
 | v3.7.10 | 修复 MIXED 优先级 bug (score≥6 单走 vol, 4-5 才 MIXED) |
 | v3.7.11-13 | IV crush 模块化 (core/iv_crush.py) + 用真实 GVZ 数据校准 |
-| **v3.7.14** | **IV crush 调整默认关闭 (GLD 实证不显著), 保留模块 + Dashboard 实时显示 IV/RV 比率作风险参考** |
+| v3.7.14 | IV crush 调整默认关闭 (GLD 实证不显著), 保留模块 + Dashboard 显示 IV/RV |
+| v3.7.15-25 | UI / 主图 1h 化 / 5 子图 sharex / 期权策略实时面板 / 持仓管理实时退出判定 / FOMC 日期修正 |
+| v3.7.26-28 | SLV 1h 数据兜底 / auto_refresh 补 SLV 1h / 主图横坐标 / 1-60 天 / 今日预测 sharex 合并 |
+| **v3.7.29** | **RV 阈值精细网格 (步长 0.025): 方向性 0.50/0.85→0.50/0.80, IC 0.35/0.65→0.45/0.80; SLV 3月27 边缘信号现可触发; Sharpe +3.6% / +9%** |
 
 ## 用户偏好
 
