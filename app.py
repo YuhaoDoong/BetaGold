@@ -1499,7 +1499,11 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         viz_dates = close_d.index[(close_d.index >= lookback) & (close_d.index <= last_date)]
     sig_viz = sig_df.reindex(viz_dates).dropna(subset=["close"])
 
-    fig, ax = plt.subplots(figsize=(18, 9))
+    # v3.7.25: 5 子图 sharex 合并 — 主图 / 1h Stoch / 15m Stoch / 1h K线 / Squeeze
+    # 整数 x (0..N-1 = plot_ts 1h 时间戳), 全部时间对齐统一
+    fig, (ax, ax_stoch_1h, ax_stoch_15m, ax_kline, ax_sq_main) = plt.subplots(
+        5, 1, figsize=(18, 18), sharex=True,
+        gridspec_kw={"height_ratios": [3, 1, 1, 2, 1], "hspace": 0.08})
 
     # ── 价位换算: 主图用伦敦金/伦敦银 (现货/期货), 不再用 ETF 价位 ──
     _viz_ticker = "GC=F" if asset_key == "GLD" else "SI=F"
@@ -1725,17 +1729,7 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     ax.xaxis.set_major_formatter(FuncFormatter(_fmt_tick))
     ax.xaxis.set_major_locator(MaxNLocator(integer=True, nbins=15))
 
-    plt.tight_layout()
-    st.pyplot(fig, use_container_width=True)
-
-    import io
-    buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=150, bbox_inches="tight",
-                facecolor="white", edgecolor="none")
-    buf.seek(0)
-    st.download_button("下载图表", buf.getvalue(),
-                       file_name="gld_v21_dashboard.png", mime="image/png")
-    plt.close(fig)
+    # v3.7.25: st.pyplot(fig) 推迟到 5 子图全部绘制完毕之后
 
     # ── Stoch RSI 助手 (3 处面板共用) ──
     def _stoch_rsi(close: pd.Series, period: int = 14):
@@ -1797,79 +1791,70 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     _kline_15m_top = _fetch_kline_for_stoch(_futures_t_top, "15m",
                                               f"{_stoch_window+3}d")
 
-    fig_sr, (ax_sr_1h, ax_sr_15m) = plt.subplots(
-        2, 1, figsize=(18, 4.5), sharex=True,  # 共享 datetime x 轴 → 一一对应
-        gridspec_kw={"height_ratios": [1, 1], "hspace": 0.3})
+    # 把 1h/15m Stoch RSI 投影到主图整数 x (plot_ts 索引)
+    # 这样跟主图、K 线、Squeeze 全部 sharex 对齐
+    if _is_1h_view and len(plot_dates) > 0:
+        # plot_dates 是 1h 时间戳列表 (整数 x = 索引)
+        _ref_nums_top = np.array([mdates.date2num(t) for t in plot_dates])
+        _n_ref_top = len(plot_dates)
 
-    def _plot_stoch_panel(ax, kline, label, t_start, t_end):
-        """用 datetime x 轴绘制, 时间范围 [t_start, t_end] 与 sharex 对齐."""
-        if kline is None or len(kline) < 30:
-            ax.text(0.5, 0.5, f"{label} 数据暂时不可用",
-                    transform=ax.transAxes, ha="center", va="center",
-                    color="gray")
-            ax.set_yticks([])
-            return
-        k_full, d_full = _stoch_rsi(kline["Close"])
-        mask = (kline.index >= t_start) & (kline.index <= t_end)
-        idx = kline.index[mask]
-        k = k_full[mask]
-        d = d_full[mask]
-        if len(idx) == 0:
-            ax.text(0.5, 0.5, f"{label} 范围内无数据",
-                    transform=ax.transAxes, ha="center", va="center",
-                    color="gray")
-            return
-        # datetime 直接做 x 轴 (matplotlib 自动支持)
-        ax.plot(idx, k.values, color="#1E88E5", lw=1.2, label="K")
-        ax.plot(idx, d.values, color="#FB8C00", lw=1.0, label="D")
-        ax.axhline(80, color="#E53935", ls="--", lw=0.5, alpha=0.5)
-        ax.axhline(20, color="#43A047", ls="--", lw=0.5, alpha=0.5)
-        ax.axhspan(0, 20, alpha=0.05, color="green")
-        ax.axhspan(80, 100, alpha=0.05, color="red")
-        ax.set_ylim(-2, 102)
-        ax.set_ylabel(label, fontsize=9)
-        ax.legend(loc="upper left", fontsize=7)
-        ax.grid(alpha=0.3)
-        ax.set_xlim(t_start, t_end)
-        # X 轴 datetime 格式 (sharex 时只 bottom 子图显示)
-        ax.xaxis.set_major_formatter(mdates.DateFormatter("%m/%d %H:%M"))
-        ax.xaxis.set_major_locator(mdates.AutoDateLocator(maxticks=10))
-        # 当前值显示在 title
-        if len(k.dropna()) > 0:
-            last_k = float(k.dropna().iloc[-1])
-            last_d = float(d.dropna().iloc[-1])
-            zone, color = _zone_label(last_k, last_d)
-            ax.set_title(f"{label} | 当前 K={last_k:.0f} D={last_d:.0f} ({zone})",
-                          fontsize=10, color=color)
+        def _proj_to_main_idx(ts_index):
+            """把 datetime 索引投影到主图整数 x."""
+            ts_nums = np.array([mdates.date2num(t) for t in ts_index])
+            return np.interp(ts_nums, _ref_nums_top, np.arange(_n_ref_top))
 
-    # 统一时间窗口: 取 1h 和 15m 数据的公共 latest range
-    _t_end_unified = pd.Timestamp.now().tz_localize(None)
-    _candidates = []
-    for _kl in [_kline_1h_top, _kline_15m_top]:
-        if _kl is not None and len(_kl) > 0:
-            _candidates.append(_kl.index[-1])
-    if _candidates:
-        _t_end_unified = min(_candidates)
-    _t_start_unified = _t_end_unified - timedelta(days=_stoch_window)
+        def _draw_stoch_on_main(target_ax, kline, label):
+            """在 target_ax (sharex 子图) 上绘制 Stoch RSI, 用主图整数 x."""
+            if kline is None or len(kline) < 30:
+                target_ax.text(0.5, 0.5, f"{label} 数据暂时不可用",
+                                 transform=target_ax.transAxes,
+                                 ha="center", va="center", color="gray")
+                return
+            k_full, d_full = _stoch_rsi(kline["Close"])
+            t_start = plot_dates[0]
+            t_end = plot_dates[-1]
+            mask = (kline.index >= t_start) & (kline.index <= t_end)
+            idx = kline.index[mask]
+            if len(idx) == 0:
+                return
+            x_vals = _proj_to_main_idx(idx)
+            target_ax.plot(x_vals, k_full[mask].values,
+                            color="#1E88E5", lw=1.2, label="K")
+            target_ax.plot(x_vals, d_full[mask].values,
+                            color="#FB8C00", lw=1.0, label="D")
+            target_ax.axhline(80, color="#E53935", ls="--", lw=0.5, alpha=0.5)
+            target_ax.axhline(20, color="#43A047", ls="--", lw=0.5, alpha=0.5)
+            target_ax.axhspan(0, 20, alpha=0.05, color="green")
+            target_ax.axhspan(80, 100, alpha=0.05, color="red")
+            target_ax.set_ylim(-2, 102)
+            # 当前值放在右上角 (避免用 title 把图分开)
+            k_clean = k_full[mask].dropna()
+            d_clean = d_full[mask].dropna()
+            if len(k_clean) > 0 and len(d_clean) > 0:
+                last_k = float(k_clean.iloc[-1])
+                last_d = float(d_clean.iloc[-1])
+                zone, color = _zone_label(last_k, last_d)
+                target_ax.text(0.99, 0.92,
+                               f"{label}: K={last_k:.0f} D={last_d:.0f} ({zone})",
+                               transform=target_ax.transAxes,
+                               ha="right", va="top", fontsize=9,
+                               color=color, fontweight="bold",
+                               bbox=dict(boxstyle="round,pad=0.3",
+                                         facecolor="white", alpha=0.85,
+                                         edgecolor=color))
+            target_ax.set_ylabel(label, fontsize=9)
+            target_ax.legend(loc="upper left", fontsize=7)
+            target_ax.grid(alpha=0.3)
 
-    _plot_stoch_panel(ax_sr_1h, _kline_1h_top,
-                       f"1h Stoch RSI (近 {_stoch_window}d)",
-                       _t_start_unified, _t_end_unified)
-    _plot_stoch_panel(ax_sr_15m, _kline_15m_top,
-                       f"15m Stoch RSI (近 {_stoch_window}d)",
-                       _t_start_unified, _t_end_unified)
-    plt.setp(ax_sr_1h.get_xticklabels(), visible=False)  # 上面隐藏 x 标签 (sharex)
-    plt.setp(ax_sr_15m.get_xticklabels(), rotation=0, fontsize=8)
-    plt.tight_layout()
-    st.pyplot(fig_sr, use_container_width=True)
-    plt.close(fig_sr)
+        _draw_stoch_on_main(ax_stoch_1h, _kline_1h_top, "1h Stoch")
+        _draw_stoch_on_main(ax_stoch_15m, _kline_15m_top, "15m Stoch")
+    else:
+        # 日线模式: 隐藏 Stoch / K线 / Squeeze 子图
+        for _ax_hide in [ax_stoch_1h, ax_stoch_15m, ax_kline, ax_sq_main]:
+            _ax_hide.set_visible(False)
 
-    # ── 盘中 K线 + Squeeze ──
-    st.divider()
-    _kline_interval = st.sidebar.selectbox("K线周期", ["1h", "30m", "15m", "5m"], index=0)
-    _default_bars = 50  # 默认 50 根
-
-    # 实时下载期货 K线 (缓存5分钟)
+    # ── 盘中 K线 + Squeeze (v3.7.25 合并到主图 sharex 子图) ──
+    # 不再独立 fig2, 用 ax_kline + ax_sq_main 子图共用主图整数 x
     @st.cache_data(ttl=300)
     def _fetch_futures_kline(ticker, interval, period="5d"):
         try:
@@ -1885,26 +1870,25 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
 
     _futures_ticker = "GC=F" if asset_key == "GLD" else "SI=F"
     _futures_name = "COMEX Gold" if asset_key == "GLD" else "COMEX Silver"
-    _kline_data = _fetch_futures_kline(_futures_ticker, _kline_interval)
-    _kline_label = f"{_futures_name} {_kline_interval}"
+    # 强制用 1h 与主图对齐, 数据源 = gld_1h.csv (与主图 _1h 同步)
+    _kline_interval = "1h"
+    _kline_data = gld_1h if gld_1h is not None else _fetch_futures_kline(_futures_ticker, "1h")
+    _kline_label = f"{_futures_name} 1h"
 
-    if _kline_data is not None and len(_kline_data) > 0:
-        st.subheader(f"{_kline_label} K线 (Squeeze)")
-
-        n_bars = st.sidebar.slider("K线数", 20, min(len(_kline_data), 300),
-                                    min(_default_bars, len(_kline_data)),
-                                    help="默认 50 根")
-
-        _warmup = 60
-        _avail = len(_kline_data)
-        _start = max(0, _avail - n_bars - _warmup)
-        _1h_full = _kline_data.iloc[_start:].copy()
+    if _kline_data is not None and len(_kline_data) > 0 and _is_1h_view:
+        # v3.7.25: 强制与主图同窗口 (plot_dates), 共享整数 x
+        # _1h 用主图 _1h (已加载, 是 gld_1h windowed)
+        # full 数据用更多 warmup 算指标
+        _warmup_extra = timedelta(days=10)  # 算 BB/Keltner 需要 60 bars warmup
+        _kl_full_mask = _kline_data.index >= (plot_dates[0] - _warmup_extra)
+        _1h_full = _kline_data[_kl_full_mask].copy()
         _c1h_full = _1h_full["Close"]
         _h1h_full = _1h_full["High"]
         _l1h_full = _1h_full["Low"]
         _o1h_full = _1h_full["Open"]
 
-        _1h = _kline_data.iloc[-n_bars:]
+        # 显示范围 = 主图相同 plot_dates
+        _1h = _kline_data.reindex(plot_dates)
         _c1h, _h1h, _l1h, _o1h = _1h["Close"], _1h["High"], _1h["Low"], _1h["Open"]
 
         # ── 用 full 数据计算指标, 然后截取显示范围 ──
@@ -1959,10 +1943,9 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                 return dt.strftime("%H:%M")
             return ""
 
-        # 2 子图: K线 → Squeeze (v3.7.23 移除多周期 Stoch RSI, Stoch 已上移到主图下方)
-        fig2, (ax_price, ax_sq) = plt.subplots(
-            2, 1, figsize=(18, 8), sharex=True,
-            gridspec_kw={"height_ratios": [3, 1], "hspace": 0.15})
+        # v3.7.25: 复用合并 fig 的 ax_kline / ax_sq_main, 不再独立 fig2
+        ax_price = ax_kline
+        ax_sq = ax_sq_main
 
         # 真实 K线 (红绿蜡烛图)
         _body_w = 0.6
@@ -2137,12 +2120,14 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         ax_sq.axhline(0, color="black", lw=0.5)
         ax_sq.set_ylabel("Squeeze Mom")
         ax_sq.grid(True, alpha=0.3)
+        # X 轴 datetime 格式 - 仅 bottom 子图 (sharex 标准做法)
         ax_sq.xaxis.set_major_formatter(FuncFormatter(_fmt1h))
         ax_sq.xaxis.set_major_locator(MaxNLocator(integer=True, nbins=15))
 
+        # 全部 5 子图绘制完毕, 一次性渲染合并 fig
         plt.tight_layout()
-        st.pyplot(fig2, use_container_width=True)
-        plt.close(fig2)
+        st.pyplot(fig, use_container_width=True)
+        plt.close(fig)
 
         # 当前状态文字
         _last_1h = _1h.index[-1]
@@ -2179,7 +2164,12 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         elif _sq_on:
             st.info("Squeeze挤压中 → 波动率压缩, 等待突破")
     else:
-        st.caption("GC=F K线数据暂时不可用")
+        # 数据缺失或日线模式: 仍渲染 fig (主图) 但跳过 K 线 panel
+        plt.tight_layout()
+        st.pyplot(fig, use_container_width=True)
+        plt.close(fig)
+        if _kline_data is None or len(_kline_data) == 0:
+            st.caption("GC=F K线数据暂时不可用")
 
     # ── 期权策略实时面板 (4 策略并列, 当日活跃信号高亮) ──
     st.divider()
