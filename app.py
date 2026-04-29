@@ -1493,15 +1493,26 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
 
     # ── 信号历史图 ──
     st.divider()
-    lookback_days = st.sidebar.slider("回看天数", 30, 180, 65)
-    lookback = last_date - timedelta(days=lookback_days)
-    viz_dates = close_d.index[(close_d.index >= lookback) & (close_d.index <= last_date)]
+    # v3.7.20: 加粒度选项 (1h 主导当日交易, 日线看趋势)
+    _gran = st.sidebar.radio("主图粒度", ["1h (近 3 天)", "日线 (历史)"],
+                              index=0)
+    _is_1h_view = _gran.startswith("1h")
+    if _is_1h_view:
+        _intraday_days = st.sidebar.slider("1h 回看天数", 1, 7, 3)
+    else:
+        lookback_days = st.sidebar.slider("回看天数", 30, 180, 65)
+        lookback = last_date - timedelta(days=lookback_days)
+    if _is_1h_view:
+        viz_dates = close_d.index[
+            (close_d.index >= last_date - timedelta(days=_intraday_days+5))
+            & (close_d.index <= last_date)]
+    else:
+        viz_dates = close_d.index[(close_d.index >= lookback) & (close_d.index <= last_date)]
     sig_viz = sig_df.reindex(viz_dates).dropna(subset=["close"])
 
     fig, ax = plt.subplots(figsize=(18, 9))
 
     # ── 价位换算: 主图用伦敦金/伦敦银 (现货/期货), 不再用 ETF 价位 ──
-    # 比例优先用实时 GC=F/SI=F, 兜底 gc_gld_ratio
     _viz_ticker = "GC=F" if asset_key == "GLD" else "SI=F"
     _viz_rt = _get_realtime_prices(_viz_ticker)
     if _viz_rt and _viz_rt.get("gc_price", 0) > 0 and last_close > 0:
@@ -1514,47 +1525,106 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     _viz_unit = "USD/oz"
     _r = _viz_ratio  # 简写
 
-    # index-based x-axis
-    plot_dates = list(viz_dates)
-    d2i = {d: i for i, d in enumerate(plot_dates)}
-    def xi(d): return d2i.get(d)
-    def xi_arr(dates): return [d2i[d] for d in dates if d in d2i]
-    def _fmt_tick(x, pos):
-        idx = int(round(x))
-        if 0 <= idx < len(plot_dates):
-            return plot_dates[idx].strftime("%m/%d")
-        return ""
+    if _is_1h_view and gld_1h is not None and len(gld_1h) > 0:
+        # ─── 1h 主图: 近 N 天 (默认 3) ───
+        _cutoff = last_date - timedelta(days=_intraday_days)
+        _1h = gld_1h[gld_1h.index >= _cutoff].copy()
+        if len(_1h) == 0:
+            _1h = gld_1h.iloc[-_intraday_days*24:].copy()
+        plot_ts = list(_1h.index)
+        ts2i = {ts: i for i, ts in enumerate(plot_ts)}
+        # xi() 接受 daily 日期, 找到当日第一个 1h timestamp
+        def xi(d):
+            d_norm = pd.Timestamp(d).normalize()
+            for i, ts in enumerate(plot_ts):
+                if ts.normalize() == d_norm:
+                    return i
+            return None
+        def xi_arr(dates): return [xi(d) for d in dates if xi(d) is not None]
+        def _fmt_tick(x, pos):
+            idx = int(round(x))
+            if 0 <= idx < len(plot_ts):
+                ts = plot_ts[idx]
+                return ts.strftime("%m/%d %H:%M")
+            return ""
+        # 兼容旧 plot_dates 引用 (后续部分用 plot_dates 算 xlim 等)
+        plot_dates = plot_ts
+        d2i = ts2i
 
-    # 价格 + H/L 范围 (×_r 转换到现货/期货价位)
-    cl_plot = close_d.reindex(viz_dates).dropna()
-    ax.plot(xi_arr(cl_plot.index), cl_plot.values * _r, "k-", lw=1.8, zorder=3)
-    hi_plot = high_d.reindex(viz_dates).dropna()
-    lo_plot = low_d.reindex(viz_dates).dropna()
-    hl_common = hi_plot.index.intersection(lo_plot.index)
-    if len(hl_common) > 0:
-        ax.fill_between(xi_arr(hl_common),
-                         lo_plot[hl_common].values * _r,
-                         hi_plot[hl_common].values * _r,
-                         alpha=0.08, color="gray")
+        # 1h 收盘线 (×_r)
+        ax.plot(range(len(_1h)), _1h["Close"].values * _r,
+                color="black", lw=1.5, zorder=3, label="1h 收盘")
+        # 1h 高低区 (浅灰)
+        ax.fill_between(range(len(_1h)),
+                          _1h["Low"].values * _r,
+                          _1h["High"].values * _r,
+                          alpha=0.10, color="gray", zorder=1)
 
-    # Band (×_r)
-    ub_plot = upper_band.reindex(viz_dates).dropna()
-    lb_plot = lower_band.reindex(viz_dates).dropna()
-    cidx = ub_plot.index.intersection(lb_plot.index)
-    if len(cidx) > 0:
-        ax.fill_between(xi_arr(cidx), lb_plot[cidx].values * _r,
-                         ub_plot[cidx].values * _r,
-                         alpha=0.06, color="green")
-        ax.plot(xi_arr(cidx), ub_plot[cidx].values * _r,
-                color="green", lw=1, alpha=0.5)
-        ax.plot(xi_arr(cidx), lb_plot[cidx].values * _r,
-                color="magenta", lw=1, alpha=0.5)
-        bp030_line = lb_plot[cidx] + 0.30 * (ub_plot[cidx] - lb_plot[cidx])
-        bp090_line = lb_plot[cidx] + 0.90 * (ub_plot[cidx] - lb_plot[cidx])
-        ax.plot(xi_arr(cidx), bp030_line.values * _r,
-                color="#2196F3", lw=0.8, ls="--", alpha=0.5)
-        ax.plot(xi_arr(cidx), bp090_line.values * _r,
-                color="#F44336", lw=0.8, ls="--", alpha=0.5)
+        # 日 Band 投影到 1h: 每天画水平段
+        ub_plot = upper_band.reindex(viz_dates).dropna()
+        lb_plot = lower_band.reindex(viz_dates).dropna()
+        cidx = ub_plot.index.intersection(lb_plot.index)
+        for d in cidx:
+            d_norm = pd.Timestamp(d).normalize()
+            in_day = [i for i, ts in enumerate(plot_ts)
+                      if ts.normalize() == d_norm]
+            if not in_day:
+                continue
+            x_seg = [in_day[0], in_day[-1]]
+            u_v, l_v = ub_plot[d] * _r, lb_plot[d] * _r
+            bp030_v = (lb_plot[d] + 0.30 * (ub_plot[d] - lb_plot[d])) * _r
+            bp090_v = (lb_plot[d] + 0.90 * (ub_plot[d] - lb_plot[d])) * _r
+            # Band 上下界
+            ax.plot(x_seg, [u_v, u_v], color="green", lw=1.2, alpha=0.6, zorder=2)
+            ax.plot(x_seg, [l_v, l_v], color="magenta", lw=1.2, alpha=0.6, zorder=2)
+            ax.fill_between(x_seg, [l_v, l_v], [u_v, u_v],
+                              alpha=0.05, color="green", zorder=1)
+            # bp030 / bp090 阈值线
+            ax.plot(x_seg, [bp030_v, bp030_v],
+                     color="#2196F3", lw=1.0, ls="--", alpha=0.7, zorder=2)
+            ax.plot(x_seg, [bp090_v, bp090_v],
+                     color="#F44336", lw=1.0, ls="--", alpha=0.7, zorder=2)
+    else:
+        # ─── 日线主图 (旧版逻辑) ───
+        plot_dates = list(viz_dates)
+        d2i = {d: i for i, d in enumerate(plot_dates)}
+        def xi(d): return d2i.get(d)
+        def xi_arr(dates): return [d2i[d] for d in dates if d in d2i]
+        def _fmt_tick(x, pos):
+            idx = int(round(x))
+            if 0 <= idx < len(plot_dates):
+                return plot_dates[idx].strftime("%m/%d")
+            return ""
+
+        # 价格 + H/L 范围
+        cl_plot = close_d.reindex(viz_dates).dropna()
+        ax.plot(xi_arr(cl_plot.index), cl_plot.values * _r, "k-", lw=1.8, zorder=3)
+        hi_plot = high_d.reindex(viz_dates).dropna()
+        lo_plot = low_d.reindex(viz_dates).dropna()
+        hl_common = hi_plot.index.intersection(lo_plot.index)
+        if len(hl_common) > 0:
+            ax.fill_between(xi_arr(hl_common),
+                             lo_plot[hl_common].values * _r,
+                             hi_plot[hl_common].values * _r,
+                             alpha=0.08, color="gray")
+        # Band
+        ub_plot = upper_band.reindex(viz_dates).dropna()
+        lb_plot = lower_band.reindex(viz_dates).dropna()
+        cidx = ub_plot.index.intersection(lb_plot.index)
+        if len(cidx) > 0:
+            ax.fill_between(xi_arr(cidx), lb_plot[cidx].values * _r,
+                             ub_plot[cidx].values * _r,
+                             alpha=0.06, color="green")
+            ax.plot(xi_arr(cidx), ub_plot[cidx].values * _r,
+                    color="green", lw=1, alpha=0.5)
+            ax.plot(xi_arr(cidx), lb_plot[cidx].values * _r,
+                    color="magenta", lw=1, alpha=0.5)
+            bp030_line = lb_plot[cidx] + 0.30 * (ub_plot[cidx] - lb_plot[cidx])
+            bp090_line = lb_plot[cidx] + 0.90 * (ub_plot[cidx] - lb_plot[cidx])
+            ax.plot(xi_arr(cidx), bp030_line.values * _r,
+                    color="#2196F3", lw=0.8, ls="--", alpha=0.5)
+            ax.plot(xi_arr(cidx), bp090_line.values * _r,
+                    color="#F44336", lw=0.8, ls="--", alpha=0.5)
 
     # 统一信号标注 (每天只标一个最优推荐) — 用共享 dedupe
     from core.events import (get_all_events,
