@@ -1788,52 +1788,53 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         return None
 
     _futures_t_top = "GC=F" if asset_key == "GLD" else "SI=F"
-    _kline_1h_top = _fetch_kline_for_stoch(_futures_t_top, "1h", "30d")
-    _kline_15m_top = _fetch_kline_for_stoch(_futures_t_top, "15m", "5d")
+    # 共享时间窗口: 1h 和 15m 都用 _intraday_days
+    # yfinance 15m 数据上限 60 天, 30 天足够覆盖默认 14 天 + 边距
+    _stoch_window = _intraday_days if _is_1h_view else 14
+    _stoch_window = min(_stoch_window, 30)  # 不超过 yfinance 15m 上限
+    _kline_1h_top = _fetch_kline_for_stoch(_futures_t_top, "1h",
+                                             f"{max(_stoch_window+5, 30)}d")
+    _kline_15m_top = _fetch_kline_for_stoch(_futures_t_top, "15m",
+                                              f"{_stoch_window+3}d")
 
     fig_sr, (ax_sr_1h, ax_sr_15m) = plt.subplots(
-        2, 1, figsize=(18, 4.5), sharex=False,
-        gridspec_kw={"height_ratios": [1, 1], "hspace": 0.4})
+        2, 1, figsize=(18, 4.5), sharex=True,  # 共享 datetime x 轴 → 一一对应
+        gridspec_kw={"height_ratios": [1, 1], "hspace": 0.3})
 
-    def _plot_stoch_panel(ax, kline, label, days_window):
+    def _plot_stoch_panel(ax, kline, label, t_start, t_end):
+        """用 datetime x 轴绘制, 时间范围 [t_start, t_end] 与 sharex 对齐."""
         if kline is None or len(kline) < 30:
             ax.text(0.5, 0.5, f"{label} 数据暂时不可用",
                     transform=ax.transAxes, ha="center", va="center",
                     color="gray")
-            ax.set_xticks([])
             ax.set_yticks([])
             return
-        # 计算 Stoch RSI 用全部数据, 显示截取最近 days_window
         k_full, d_full = _stoch_rsi(kline["Close"])
-        cutoff = kline.index[-1] - timedelta(days=days_window)
-        mask = kline.index >= cutoff
+        mask = (kline.index >= t_start) & (kline.index <= t_end)
         idx = kline.index[mask]
         k = k_full[mask]
         d = d_full[mask]
-        ax.plot(range(len(idx)), k.values, color="#1E88E5", lw=1.2, label="K")
-        ax.plot(range(len(idx)), d.values, color="#FB8C00", lw=1.0, label="D")
+        if len(idx) == 0:
+            ax.text(0.5, 0.5, f"{label} 范围内无数据",
+                    transform=ax.transAxes, ha="center", va="center",
+                    color="gray")
+            return
+        # datetime 直接做 x 轴 (matplotlib 自动支持)
+        ax.plot(idx, k.values, color="#1E88E5", lw=1.2, label="K")
+        ax.plot(idx, d.values, color="#FB8C00", lw=1.0, label="D")
         ax.axhline(80, color="#E53935", ls="--", lw=0.5, alpha=0.5)
         ax.axhline(20, color="#43A047", ls="--", lw=0.5, alpha=0.5)
-        ax.fill_between(range(len(idx)), 0, 20, alpha=0.05, color="green")
-        ax.fill_between(range(len(idx)), 80, 100, alpha=0.05, color="red")
+        ax.axhspan(0, 20, alpha=0.05, color="green")
+        ax.axhspan(80, 100, alpha=0.05, color="red")
         ax.set_ylim(-2, 102)
         ax.set_ylabel(label, fontsize=9)
         ax.legend(loc="upper left", fontsize=7)
         ax.grid(alpha=0.3)
-        # X 轴格式: datetime
-        n = len(idx)
-        ticks = list(range(0, n, max(1, n // 8)))
-        labels = []
-        for i in ticks:
-            if i < n:
-                ts = idx[i]
-                if i == 0 or ts.date() != idx[i-1].date():
-                    labels.append(ts.strftime("%m/%d %H:%M"))
-                else:
-                    labels.append(ts.strftime("%H:%M"))
-        ax.set_xticks(ticks)
-        ax.set_xticklabels(labels, fontsize=7, rotation=0)
-        # 当前值显示
+        ax.set_xlim(t_start, t_end)
+        # X 轴 datetime 格式 (sharex 时只 bottom 子图显示)
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%m/%d %H:%M"))
+        ax.xaxis.set_major_locator(mdates.AutoDateLocator(maxticks=10))
+        # 当前值显示在 title
         if len(k.dropna()) > 0:
             last_k = float(k.dropna().iloc[-1])
             last_d = float(d.dropna().iloc[-1])
@@ -1841,10 +1842,24 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             ax.set_title(f"{label} | 当前 K={last_k:.0f} D={last_d:.0f} ({zone})",
                           fontsize=10, color=color)
 
-    _plot_stoch_panel(ax_sr_1h, _kline_1h_top, "1h Stoch RSI",
-                      _intraday_days if _is_1h_view else 14)
-    _plot_stoch_panel(ax_sr_15m, _kline_15m_top, "15m Stoch RSI",
-                      min(3, _intraday_days if _is_1h_view else 3))
+    # 统一时间窗口: 取 1h 和 15m 数据的公共 latest range
+    _t_end_unified = pd.Timestamp.now().tz_localize(None)
+    _candidates = []
+    for _kl in [_kline_1h_top, _kline_15m_top]:
+        if _kl is not None and len(_kl) > 0:
+            _candidates.append(_kl.index[-1])
+    if _candidates:
+        _t_end_unified = min(_candidates)
+    _t_start_unified = _t_end_unified - timedelta(days=_stoch_window)
+
+    _plot_stoch_panel(ax_sr_1h, _kline_1h_top,
+                       f"1h Stoch RSI (近 {_stoch_window}d)",
+                       _t_start_unified, _t_end_unified)
+    _plot_stoch_panel(ax_sr_15m, _kline_15m_top,
+                       f"15m Stoch RSI (近 {_stoch_window}d)",
+                       _t_start_unified, _t_end_unified)
+    plt.setp(ax_sr_1h.get_xticklabels(), visible=False)  # 上面隐藏 x 标签 (sharex)
+    plt.setp(ax_sr_15m.get_xticklabels(), rotation=0, fontsize=8)
     plt.tight_layout()
     st.pyplot(fig_sr, use_container_width=True)
     plt.close(fig_sr)
