@@ -396,8 +396,8 @@ def backtest_straddle(close, high, low, rv_series, dates_index,
 #   5) 全事件硬门槛: 持仓窗口 (5天) 内不能有 FOMC/NFP/OPEX/FUT_EXP
 #   6) Score 门槛提至 7
 #   7) 价格平静过滤: 近 5 日日均振幅 < 1.5%
-SHORT_VOL_RV_PCTILE_LO = 0.35    # RV %tile 下限 (从 0.40 收紧)
-SHORT_VOL_RV_PCTILE_HI = 0.65    # RV %tile 上限 (从 0.75 收紧)
+SHORT_VOL_RV_PCTILE_LO = 0.45    # v3.7.29 网格搜索最优 (Sharpe +9%, 总 +14%)
+SHORT_VOL_RV_PCTILE_HI = 0.80    # v3.7.29 (从 0.65 拓宽到 0.80)
 SHORT_VOL_RV_ABS_MIN = 13.0
 SHORT_VOL_RV_ABS_MAX = 28.0      # RV 绝对上限 (从 32 收到 28)
 SHORT_VOL_FOMC_BUFFER = 10       # 距 FOMC > 10 天
