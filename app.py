@@ -1487,7 +1487,7 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                               index=0)
     _is_1h_view = _gran.startswith("1h")
     if _is_1h_view:
-        _intraday_days = st.sidebar.slider("1h 回看天数", 1, 7, 3)
+        _intraday_days = st.sidebar.slider("1h 回看天数", 1, 14, 7)
     else:
         lookback_days = st.sidebar.slider("回看天数", 30, 180, 65)
         lookback = last_date - timedelta(days=lookback_days)
@@ -1548,6 +1548,12 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                           _1h["Low"].values * _r,
                           _1h["High"].values * _r,
                           alpha=0.10, color="gray", zorder=1)
+
+        # ── Y 轴自动 zoom 到实际 1h 价格范围 (避免 Band 撑开导致 1h 波动看起来扁) ──
+        _y_low = (_1h["Low"].min()) * _r
+        _y_high = (_1h["High"].max()) * _r
+        _y_pad = (_y_high - _y_low) * 0.15  # 15% 边距
+        ax.set_ylim(_y_low - _y_pad, _y_high + _y_pad)
 
         # 日 Band 投影到 1h: 每天画水平段
         ub_plot = upper_band.reindex(viz_dates).dropna()
