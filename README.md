@@ -84,7 +84,8 @@ python scripts/backfill_intraday_signals.py --asset SLV --timeframe 60
 | v3.7.14 | IV crush 调整默认关闭 (GLD 实证不显著), 保留模块 + Dashboard 显示 IV/RV |
 | v3.7.15-25 | UI / 主图 1h 化 / 5 子图 sharex / 期权策略实时面板 / 持仓管理实时退出判定 / FOMC 日期修正 |
 | v3.7.26-28 | SLV 1h 数据兜底 / auto_refresh 补 SLV 1h / 主图横坐标 / 1-60 天 / 今日预测 sharex 合并 |
-| **v3.7.29** | **RV 阈值精细网格 (步长 0.025): 方向性 0.50/0.85→0.50/0.80, IC 0.35/0.65→0.45/0.80; SLV 3月27 边缘信号现可触发; Sharpe +3.6% / +9%** |
+| v3.7.29 | RV 阈值精细网格 (步长 0.025) GLD 优化 |
+| **v3.7.30** | **Per-Asset 校准: SLV 单独 grid search, 与 GLD 显著不同 (SLV 笔数翻倍, vol 大). 集中参数管理 core/strategy_config.py + scripts/tune_thresholds.py 定期重测脚本** |
 
 ## 用户偏好
 

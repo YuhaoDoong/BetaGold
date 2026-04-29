@@ -422,7 +422,22 @@ def detect_short_vol_signal(rv_series, rv_pctile, dates_index,
                              daily_range_max=SHORT_VOL_DAILY_RANGE_MAX,
                              score_trigger=SHORT_VOL_SCORE_TRIGGER,
                              regime=None,
-                             daily_range=None):
+                             daily_range=None,
+                             asset=None):
+    if asset is not None:
+        try:
+            from core.strategy_config import get_config
+            _ac = get_config(asset)
+            rv_pctile_lo = _ac.short_vol_rv_pctile_lo
+            rv_pctile_hi = _ac.short_vol_rv_pctile_hi
+            rv_abs_min = _ac.short_vol_rv_abs_min
+            rv_abs_max = _ac.short_vol_rv_abs_max
+            fomc_buffer = _ac.short_vol_fomc_buffer
+            nfp_buffer = _ac.short_vol_nfp_buffer
+            opex_buffer = _ac.short_vol_opex_buffer
+            score_trigger = _ac.short_vol_score_trigger
+        except Exception:
+            pass
     """检测做空波动率信号 (Iron Condor 16Δ/5Δ, 严格时机).
 
     评分 (score >= score_trigger 触发):

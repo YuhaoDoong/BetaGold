@@ -90,7 +90,19 @@ def generate_daily_signals(close_d, high_d, low_d,
                            buy_bp=BUY_BP, exit_bp=EXIT_BP,
                            rv_filter=RV_FILTER_ENABLED,
                            rv_low=RV_FILTER_LOW,
-                           rv_high=RV_FILTER_HIGH):
+                           rv_high=RV_FILTER_HIGH,
+                           asset=None):
+    """asset 参数会查 strategy_config 覆盖默认阈值 (per-asset 校准)."""
+    if asset is not None:
+        try:
+            from core.strategy_config import get_config
+            _ac = get_config(asset)
+            rv_low = _ac.rv_filter_low
+            rv_high = _ac.rv_filter_high
+            buy_bp = _ac.buy_bp
+            exit_bp = _ac.exit_bp
+        except Exception:
+            pass
     """日线级别信号: v1.0 Band + H/L 触发 + RV 极值过滤.
 
     rv_filter=True 时只在 RV %tile < rv_low 或 > rv_high 时触发方向性.
@@ -180,9 +192,25 @@ def run_backtest(close_d, high_d, low_d,
                  rv_filter=RV_FILTER_ENABLED,
                  rv_low=RV_FILTER_LOW,
                  rv_high=RV_FILTER_HIGH,
+                 asset=None,
                  # 兼容旧 kwargs
                  exit_timeframe=None,
                  macd_min_gain=None):
+    if asset is not None:
+        try:
+            from core.strategy_config import get_config
+            _ac = get_config(asset)
+            rv_low = _ac.rv_filter_low
+            rv_high = _ac.rv_filter_high
+            buy_bp = _ac.buy_bp
+            exit_bp = _ac.exit_bp
+            stop_loss_pct = _ac.stop_loss_pct
+            pullback_gain = _ac.pullback_gain
+            pullback_dd = _ac.pullback_dd
+            consecutive_stop = _ac.consecutive_stop
+            max_hold_days = _ac.max_hold_days
+        except Exception:
+            pass
     """真实策略回测 — 与 Dashboard 持仓管理 + 主图显示策略 1:1 一致.
 
     入场:

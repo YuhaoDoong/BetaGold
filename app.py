@@ -1084,7 +1084,7 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
 
     sig_df = generate_daily_signals(
         _close_for_sig, _high_for_sig, _low_for_sig,
-        upper_band, lower_band, regime, rv_pctile)
+        upper_band, lower_band, regime, rv_pctile, asset=asset_key)
 
     # ── 加载盘中触发 log (在回测之前!), 构造每日代表价 ──
     from core.data import load_config, load_oos_predictions
@@ -1107,7 +1107,8 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         regime, rv_pctile, gld_1h=gld_1h,
         start_date=pd.Timestamp(today_sgt) - timedelta(days=180),
         entry_log_lookup=_worst_buy_lookup,
-        exit_log_lookup=_worst_exit_lookup)
+        exit_log_lookup=_worst_exit_lookup,
+        asset=asset_key)
 
     def _log_price(d, side):
         """从 log 取该日代表价; 无记录返回 None."""
