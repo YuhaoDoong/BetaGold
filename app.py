@@ -1519,7 +1519,7 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                               index=0)
     _is_1h_view = _gran.startswith("1h")
     if _is_1h_view:
-        _intraday_days = st.sidebar.slider("1h 回看天数", 1, 30, 14)
+        _intraday_days = st.sidebar.slider("1h 回看天数", 1, 60, 14)
     else:
         lookback_days = st.sidebar.slider("回看天数", 30, 180, 65)
         lookback = last_date - timedelta(days=lookback_days)
@@ -1758,8 +1758,11 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                  fontsize=12, fontweight="bold")
     ax.set_ylabel(f"{_viz_spot_label} ({_viz_unit})")
     ax.grid(True, alpha=0.3)
+    # v3.7.28: 主图也显示 datetime 时间刻度 (顶部 + 底部都标)
     ax.xaxis.set_major_formatter(FuncFormatter(_fmt_tick))
     ax.xaxis.set_major_locator(MaxNLocator(integer=True, nbins=15))
+    ax.tick_params(axis="x", labelbottom=True, labeltop=False, rotation=0)
+    plt.setp(ax.get_xticklabels(), fontsize=8)
 
     # v3.7.25: st.pyplot(fig) 推迟到 5 子图全部绘制完毕之后
 
@@ -3593,8 +3596,98 @@ def main():
 
     # ── 预测模式额外内容 ──
     if mode == "今日预测":
-        st.subheader(f"📈 {asset_key} 日线 Stoch RSI")
-        render_daily_stoch_rsi(close, asset_key, viz_dates=viz_dates)
+        # v3.7.28: Stoch RSI + 波动率走势 合并为一个 sharex 图,
+        # 与主图 viz_dates 同范围, 时间刻度对齐
+        st.subheader(f"📈 {asset_key} Stoch RSI + 波动率走势 (与主图同范围)")
+        from core.events import (detect_short_vol_signal as _dsv_pred_top,
+                                  detect_straddle_signal as _dlv_pred_top)
+        _feat_pred_top = load_features(load_config())
+        _feat_pred_top = _feat_pred_top.reindex(close.index).ffill()
+        _rv_chart_top = (_feat_pred_top["rv_10d"]
+                          if "rv_10d" in _feat_pred_top.columns
+                          else pd.Series(20, index=close.index))
+
+        # Stoch RSI K/D
+        _k_top, _d_top = compute_daily_stoch_rsi(close)
+        _viz_idx = pd.DatetimeIndex(viz_dates)
+        _k_win = _k_top.reindex(_viz_idx)
+        _d_win = _d_top.reindex(_viz_idx)
+        _rv_win = _rv_chart_top.reindex(_viz_idx)
+        _rvp_win = rv_pctile.reindex(_viz_idx)
+
+        # 信号窗口 (做多/做空波动率)
+        _long_w = _dlv_pred_top(_rv_chart_top, _viz_idx)
+        _short_w = _dsv_pred_top(_rv_chart_top, rv_pctile, _viz_idx, regime=regime)
+
+        fig_combo, (ax_st, ax_rv1, ax_rv2) = plt.subplots(
+            3, 1, figsize=(18, 7), sharex=True,
+            gridspec_kw={"height_ratios": [1.5, 2, 1], "hspace": 0.1})
+
+        # Stoch RSI
+        ax_st.axhspan(80, 100, color="#E53935", alpha=0.10)
+        ax_st.axhspan(0, 20, color="#43A047", alpha=0.10)
+        ax_st.axhline(80, color="#E53935", lw=0.6, ls="--", alpha=0.5)
+        ax_st.axhline(20, color="#43A047", lw=0.6, ls="--", alpha=0.5)
+        ax_st.plot(_viz_idx, _k_win.values, color="#1E88E5", lw=1.2, label="K")
+        ax_st.plot(_viz_idx, _d_win.values, color="#FB8C00", lw=1.0, label="D")
+        ax_st.set_ylim(-2, 102)
+        ax_st.set_ylabel("Stoch RSI")
+        ax_st.legend(loc="upper left", fontsize=8)
+        ax_st.grid(alpha=0.3)
+        # 当前 K/D 状态文字
+        _last_k_top = _k_win.dropna().iloc[-1] if _k_win.dropna().size else None
+        _last_d_top = _d_win.dropna().iloc[-1] if _d_win.dropna().size else None
+        if _last_k_top is not None:
+            zone_top = ("超买" if _last_k_top >= 80 else
+                        "超卖" if _last_k_top <= 20 else "中性")
+            ax_st.text(0.99, 0.92,
+                        f"当前 K={_last_k_top:.0f} D={_last_d_top:.0f} ({zone_top})",
+                        transform=ax_st.transAxes, ha="right", va="top",
+                        fontsize=9, fontweight="bold",
+                        bbox=dict(boxstyle="round,pad=0.3",
+                                  facecolor="white", alpha=0.85))
+
+        # RV
+        ax_rv1.plot(_viz_idx, _rv_win.values, color="#5B6BFF", lw=1.2, label="RV 10d")
+        ax_rv1.axhline(20, color="#1976D2", lw=0.5, ls=":", alpha=0.6)
+        ax_rv1.axhline(25, color="#FF6F00", lw=0.5, ls=":", alpha=0.6)
+        ax_rv1.axhline(40, color="#B71C1C", lw=0.5, ls=":", alpha=0.5)
+        # 信号窗口着色 (黄=做多, 橙=做空)
+        for d, r in _long_w.iterrows():
+            if r["straddle_signal"]:
+                ax_rv1.axvspan(d, d + timedelta(days=1),
+                               alpha=0.15, color="#FFD700", lw=0)
+        for d, r in _short_w.iterrows():
+            if r["short_vol_signal"]:
+                ax_rv1.axvspan(d, d + timedelta(days=1),
+                               alpha=0.15, color="#FF6F00", lw=0)
+        ax_rv1.set_ylabel("RV (%)")
+        ax_rv1.legend(loc="upper left", fontsize=8)
+        ax_rv1.grid(alpha=0.3)
+
+        # RV %tile
+        ax_rv2.fill_between(_viz_idx, 0, _rvp_win.values * 100,
+                              color="purple", alpha=0.3)
+        ax_rv2.plot(_viz_idx, _rvp_win.values * 100, color="purple", lw=0.8)
+        ax_rv2.axhline(70, color="#FF6F00", lw=0.5, ls="--", alpha=0.6)
+        ax_rv2.axhline(30, color="#1976D2", lw=0.5, ls="--", alpha=0.6)
+        ax_rv2.set_ylabel("RV %tile")
+        ax_rv2.set_ylim(0, 100)
+        ax_rv2.grid(alpha=0.3)
+        ax_rv2.xaxis.set_major_formatter(mdates.DateFormatter("%m/%d"))
+        ax_rv2.xaxis.set_major_locator(mdates.AutoDateLocator(maxticks=12))
+        # 顶部 ax_st 也显示 x 标签
+        ax_st.tick_params(axis="x", labelbottom=True)
+        plt.setp(ax_st.get_xticklabels(), fontsize=7, rotation=0)
+        plt.setp(ax_rv2.get_xticklabels(), fontsize=8, rotation=0)
+
+        plt.tight_layout()
+        st.pyplot(fig_combo, use_container_width=True)
+        plt.close(fig_combo)
+
+        st.caption(f"做多波动率窗口: {int(_long_w['straddle_signal'].sum())} 天 | "
+                    f"做空波动率窗口: {int(_short_w['short_vol_signal'].sum())} 天 "
+                    f"(在主图同范围内)")
 
         st.divider()
         c_a, c_b = st.columns(2)
@@ -4039,79 +4132,7 @@ def main():
 
             st.markdown("\n".join(lines))
 
-        # ── 波动率走势图 (RV + 阈值 + 信号区间) ──
-        st.divider()
-        st.subheader("波动率走势 (近6个月)")
-
-        from core.events import (detect_short_vol_signal as _dsv_pred,
-                                  detect_straddle_signal as _dlv_pred)
-        _feat_rv = load_features(load_config())
-        _feat_rv = _feat_rv.reindex(close.index).ffill()
-        _rv_chart = (_feat_rv["rv_10d"]
-                     if "rv_10d" in _feat_rv.columns
-                     else pd.Series(20, index=close.index))
-        _rv_window_start = last_date - timedelta(days=180)
-        _rv_window = _rv_chart[_rv_chart.index >= _rv_window_start].dropna()
-        _rv_pct_window = rv_pctile.reindex(_rv_window.index).ffill()
-
-        _long_window = _dlv_pred(_rv_chart, _rv_window.index)
-        _short_window = _dsv_pred(_rv_chart, rv_pctile, _rv_window.index,
-                                   regime=regime)
-
-        import matplotlib.pyplot as plt_rv
-        fig_rv, (ax_rv1, ax_rv2) = plt_rv.subplots(
-            2, 1, figsize=(11, 4.5), sharex=True,
-            gridspec_kw={"height_ratios": [3, 1]})
-
-        ax_rv1.plot(_rv_window.index, _rv_window.values,
-                    color="#5B6BFF", lw=1.2, label="RV (10d 年化 %)")
-        ax_rv1.axhline(20, color="#1976D2", lw=0.6, ls=":", alpha=0.6,
-                       label="低位线 20%")
-        ax_rv1.axhline(25, color="#FF6F00", lw=0.6, ls=":", alpha=0.6,
-                       label="高位线 25%")
-        ax_rv1.axhline(40, color="#B71C1C", lw=0.6, ls=":", alpha=0.5,
-                       label="危机线 40%")
-
-        # 做多波动率信号 (绿色背景)
-        for d, r in _long_window.iterrows():
-            if r["straddle_signal"]:
-                ax_rv1.axvspan(d, d + timedelta(days=1),
-                               alpha=0.15, color="#FFD700", lw=0)
-        # 做空波动率信号 (橙色背景)
-        for d, r in _short_window.iterrows():
-            if r["short_vol_signal"]:
-                ax_rv1.axvspan(d, d + timedelta(days=1),
-                               alpha=0.15, color="#FF6F00", lw=0)
-
-        # 当前点
-        ax_rv1.scatter([last_date],
-                       [_rv_window.iloc[-1] if len(_rv_window) > 0 else 0],
-                       color="red", s=60, zorder=5,
-                       label=f"今日 RV={_rv_window.iloc[-1]:.1f}%"
-                       if len(_rv_window) > 0 else "")
-        ax_rv1.set_ylabel("RV (%)")
-        ax_rv1.legend(loc="upper left", fontsize=8, ncol=2)
-        ax_rv1.grid(alpha=0.3)
-        ax_rv1.set_title("RV 时间序列 — 黄色块=做多波动率窗口, 橙色块=做空波动率窗口")
-
-        # 副图: RV %tile
-        ax_rv2.fill_between(_rv_pct_window.index,
-                            0, _rv_pct_window.values * 100,
-                            color="purple", alpha=0.3)
-        ax_rv2.plot(_rv_pct_window.index, _rv_pct_window.values * 100,
-                    color="purple", lw=0.8)
-        ax_rv2.axhline(70, color="#FF6F00", lw=0.5, ls="--", alpha=0.6)
-        ax_rv2.axhline(30, color="#1976D2", lw=0.5, ls="--", alpha=0.6)
-        ax_rv2.set_ylabel("RV %tile")
-        ax_rv2.set_ylim(0, 100)
-        ax_rv2.grid(alpha=0.3)
-
-        plt_rv.tight_layout()
-        st.pyplot(fig_rv)
-        plt_rv.close(fig_rv)
-
-        st.caption(f"做多波动率窗口数: {int(_long_window['straddle_signal'].sum())} | "
-                   f"做空波动率窗口数: {int(_short_window['short_vol_signal'].sum())} (近180天)")
+        # v3.7.28: 波动率走势已合并到主图下方 sharex 图 (Stoch RSI + RV + RV%tile)
 
         # ── 前瞻分析: 关键日程 + 信号判断 ──
         st.divider()
