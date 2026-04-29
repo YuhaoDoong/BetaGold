@@ -473,6 +473,57 @@ Risk: 容易 overfit, 信号变得不稳定.
 
 未实施前保持 v3.7.29 全局值 (0.50/0.80) 作为最佳静态选择.
 
+### v3.7.30 已实施方案 A: SLV 单独 grid search
+
+**SLV vs GLD 对比 (5y, 步长 0.025)**:
+
+| 维度 | GLD 最优 | SLV 最优 | 差异 |
+|------|----------|----------|------|
+| 方向性 LO/HI | 0.50/0.80 | **0.50/0.75** | SLV 宽 0.05 |
+| 方向性笔数 | 38 | **73** | SLV 翻倍 |
+| 方向性总收益 | +48.9% | **+99.9%** | SLV 双倍 (vol 大) |
+| 方向性 Sharpe | 0.638 | 0.490 | SLV 低 (单笔波动大) |
+| SHORT_VOL LO/HI | 0.45/0.80 | **0.25/0.775** | SLV LO 低 0.20 |
+| SHORT_VOL Sharpe | 1.024 | 0.848 | SLV 略低 |
+| SHORT_VOL 总 | +39.2% | +73.7% | SLV 高 |
+
+**关键洞察**: SLV 与 GLD 结构差异显著, 不应共用阈值.
+
+### 集中参数管理 + 定期重测 (v3.7.30 - v3.7.31)
+
+**架构**:
+```
+core/strategy_config.py
+  ├── @dataclass AssetConfig (~30 个可调参数)
+  ├── ASSET_CONFIGS = {"GLD": ..., "SLV": ..., "QQQ": (留位)}
+  ├── get_config(asset) helper
+  └── 元数据: last_tuned, tune_period_days, notes
+```
+
+**Wire-up**: signals_v2 / events 函数加 `asset` 参数, 自动从 strategy_config
+覆盖默认阈值. 用户在 dashboard 切换 GLD/SLV 时自动加载对应配置.
+
+**月度自动重测**:
+```
+scripts/monthly_retune.py     — 跑全部资产 + 自动建议 ≥ 5% 改进配置
+scripts/tune_thresholds.py    — 单资产/单参数手动跑
+scripts/com.golddash.retune.plist.example  — macOS launchd 示例
+```
+
+**调度建议**:
+- macOS: launchd `~/Library/LaunchAgents/com.golddash.retune.plist`
+- Linux: cron `0 20 28-31 * *`
+- 手动: dashboard 侧边栏看到🔴红色提示后跑 CLI
+
+**Dashboard 状态显示** (侧边栏 "⚙️ 参数重测状态"):
+- 🟢 < 30 天 (新鲜)
+- 🟡 30-60 天 (建议重测)
+- 🔴 > 60 天 (强烈建议)
+
+**输出格式** (data/tune_history/):
+- `<asset>_<date>.json`: 单次完整 grid search 结果
+- `latest.json`: 最新汇总 (dashboard 读取)
+
 ## 总结: 关键 alpha 来源
 
 按 Sharpe 排序:

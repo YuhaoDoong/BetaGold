@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+        "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+macOS launchd 月度重测调度示例 (示例文件, 不会自动加载).
+
+安装:
+    cp scripts/com.golddash.retune.plist.example \
+       ~/Library/LaunchAgents/com.golddash.retune.plist
+    # 修改下方 USERNAME / 路径 / Python 路径
+    launchctl load ~/Library/LaunchAgents/com.golddash.retune.plist
+
+卸载:
+    launchctl unload ~/Library/LaunchAgents/com.golddash.retune.plist
+
+查看是否在运行:
+    launchctl list | grep golddash
+
+调度: 每月 1 号 04:00 SGT (UTC+8) = UTC 20:00 月末
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.golddash.retune</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/USERNAME/miniconda3/envs/gold/bin/python</string>
+        <string>/Users/USERNAME/GoldDash/scripts/monthly_retune.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/USERNAME/GoldDash</string>
+
+    <!-- 每月 1 号 04:00 -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Day</key>
+        <integer>1</integer>
+        <key>Hour</key>
+        <integer>4</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <!-- 系统启动时如果错过任务也执行 (catch-up) -->
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/golddash_retune.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/golddash_retune.err</string>
+</dict>
+</plist>

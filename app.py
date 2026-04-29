@@ -3143,6 +3143,25 @@ def main():
 
     mode = st.sidebar.radio("模式", ["盘中信号", "今日预测", "历史回看", "回测分析"])
 
+    # ── 阈值重测状态 (v3.7.31) ──
+    with st.sidebar.expander("⚙️ 参数重测状态", expanded=False):
+        from core.strategy_config import ASSET_CONFIGS, get_config
+        from datetime import date as _date
+        _today_d = pd.Timestamp.now().date()
+        for _ast, _ac in ASSET_CONFIGS.items():
+            if _ac.last_tuned:
+                try:
+                    _last = _date.fromisoformat(_ac.last_tuned)
+                    _days = (_today_d - _last).days
+                    _icon = "🟢" if _days < 30 else "🟡" if _days < 60 else "🔴"
+                    st.caption(f"{_icon} **{_ast}**: {_ac.last_tuned} ({_days}d 前)")
+                    if _days >= 30:
+                        st.caption(f"   ⚠️ 建议月度重测")
+                except Exception:
+                    st.caption(f"⚪ {_ast}: 未校准")
+        st.caption("命令行重测:")
+        st.code("python scripts/monthly_retune.py", language="bash")
+
     # 预测过期警告 (价格比预测新 > 2 天)
     if _pred_stale_days > 2:
         st.sidebar.warning(

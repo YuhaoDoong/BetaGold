@@ -24,7 +24,22 @@ streamlit run app.py
 # 历史回填盘中触发 (首次或规则变更后)
 python scripts/backfill_intraday_signals.py --asset GLD --timeframe 60
 python scripts/backfill_intraday_signals.py --asset SLV --timeframe 60
+
+# 月度阈值重测 (建议 cron / launchd 自动化)
+python scripts/monthly_retune.py              # 全部资产
+python scripts/tune_thresholds.py --asset GLD # 单个资产手动
 ```
+
+### 月度自动调度 (macOS launchd)
+```bash
+cp scripts/com.golddash.retune.plist.example \
+   ~/Library/LaunchAgents/com.golddash.retune.plist
+# 修改文件中的 USERNAME 和 Python 路径
+launchctl load ~/Library/LaunchAgents/com.golddash.retune.plist
+```
+
+每月 1 号 04:00 SGT 自动跑全部资产 grid search, 输出到
+`data/tune_history/`, dashboard 侧边栏自动显示状态 (🟢🟡🔴).
 
 ## 核心特点
 
@@ -85,7 +100,8 @@ python scripts/backfill_intraday_signals.py --asset SLV --timeframe 60
 | v3.7.15-25 | UI / 主图 1h 化 / 5 子图 sharex / 期权策略实时面板 / 持仓管理实时退出判定 / FOMC 日期修正 |
 | v3.7.26-28 | SLV 1h 数据兜底 / auto_refresh 补 SLV 1h / 主图横坐标 / 1-60 天 / 今日预测 sharex 合并 |
 | v3.7.29 | RV 阈值精细网格 (步长 0.025) GLD 优化 |
-| **v3.7.30** | **Per-Asset 校准: SLV 单独 grid search, 与 GLD 显著不同 (SLV 笔数翻倍, vol 大). 集中参数管理 core/strategy_config.py + scripts/tune_thresholds.py 定期重测脚本** |
+| v3.7.30 | Per-Asset 校准: SLV 单独 grid search + 集中参数管理 core/strategy_config.py |
+| **v3.7.31** | **月度自动重测系统: scripts/monthly_retune.py + 状态跟踪 + Dashboard 状态显示 + macOS launchd 调度示例** |
 
 ## 用户偏好
 
