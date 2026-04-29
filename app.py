@@ -1252,6 +1252,46 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             _vol_label, _vol_emo = "中性", "⚪"
             _vol_delta = f"L{_vlong_score} / S{_vshort_score}"
 
+        # ── 信号时效面板 (v3.7.18) ──
+        # US 期权时段 SGT: 21:30 ~ 04:00 (次日)
+        # 信号源 = 上一 US close 后计算; 适用于"下一个 US 盘中"
+        from datetime import datetime, timezone
+        _now_sgt = datetime.now(timezone.utc).astimezone(
+            timezone.utc).timestamp()
+        _now_sgt_ts = pd.Timestamp.now(tz="Asia/Singapore")
+        _now_h = _now_sgt_ts.hour + _now_sgt_ts.minute / 60.0
+
+        # US 期权交易时段 (SGT 21:30 ~ 04:00 +1d)
+        # 北美夏令时 (DST): NY ET = UTC-4 → SGT = ET+12
+        # 北美标准时:        NY ET = UTC-5 → SGT = ET+13
+        _us_open = 21.5     # 21:30 SGT
+        _us_close = 28.0    # 04:00 SGT (即 +24+4)
+        _is_us_session = (_now_h >= _us_open) or (_now_h < 4.0)
+        if _is_us_session:
+            _session_state = "🟢 US 期权时段中 (可交易)"
+            _hours_to_next = 0
+        elif _now_h < _us_open:
+            _hours_to_next = _us_open - _now_h
+            _session_state = f"⏳ 距 US 开盘 {_hours_to_next:.1f}h (SGT 21:30)"
+        else:
+            _hours_to_next = (24 + _us_open) - _now_h
+            _session_state = f"⏳ 距 US 开盘 {_hours_to_next:.1f}h"
+
+        # 信号生成时间 (上一 US close + ~5min, SGT 04:05 大约)
+        _signal_age_h = (_now_sgt_ts.normalize() - last_date).total_seconds() / 3600
+        if _now_h < 4:
+            _signal_age_h += _now_h
+        else:
+            _signal_age_h += _now_h - 4
+        _signal_label = (
+            f"⏰ **信号时效**: 基于 **{last_date.date()} US close** 数据生成 "
+            f"(约 {_signal_age_h:.0f}h 前). "
+            f"{_session_state}. "
+            f"**当前波动率信号适用于今晚 US 盘中** (SGT 21:30 ~ 4月30 04:00). "
+            f"入场前请用 dashboard 实时刷新核对 RV/bp_low/IV 是否仍满足条件."
+        )
+        st.info(_signal_label)
+
         sb1, sb2, sb3, sb4, sb5 = st.columns(5)
         with sb1:
             st.metric("今日窗口",
