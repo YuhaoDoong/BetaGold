@@ -1487,7 +1487,7 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                               index=0)
     _is_1h_view = _gran.startswith("1h")
     if _is_1h_view:
-        _intraday_days = st.sidebar.slider("1h 回看天数", 1, 14, 7)
+        _intraday_days = st.sidebar.slider("1h 回看天数", 1, 30, 14)
     else:
         lookback_days = st.sidebar.slider("回看天数", 30, 180, 65)
         lookback = last_date - timedelta(days=lookback_days)
@@ -1773,8 +1773,81 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             return None, None
         return float(kk.iloc[-1]), float(dd.iloc[-1])
 
-    # ── 主图下方: 日线 Stoch RSI (与主图同范围, 无价格子图) ──
-    render_daily_stoch_rsi(close_d, asset_key, viz_dates=viz_dates)
+    # ── 主图下方: 1h Stoch RSI + 15m Stoch RSI (盘中实时, v3.7.23) ──
+    @st.cache_data(ttl=300)
+    def _fetch_kline_for_stoch(ticker, interval, period):
+        try:
+            import yfinance as yf
+            t = yf.Ticker(ticker)
+            df = t.history(period=period, interval=interval)
+            if df is not None and len(df) > 0:
+                df.index = pd.to_datetime(df.index).tz_localize(None)
+                return df[["Open", "High", "Low", "Close", "Volume"]]
+        except Exception:
+            pass
+        return None
+
+    _futures_t_top = "GC=F" if asset_key == "GLD" else "SI=F"
+    _kline_1h_top = _fetch_kline_for_stoch(_futures_t_top, "1h", "30d")
+    _kline_15m_top = _fetch_kline_for_stoch(_futures_t_top, "15m", "5d")
+
+    fig_sr, (ax_sr_1h, ax_sr_15m) = plt.subplots(
+        2, 1, figsize=(18, 4.5), sharex=False,
+        gridspec_kw={"height_ratios": [1, 1], "hspace": 0.4})
+
+    def _plot_stoch_panel(ax, kline, label, days_window):
+        if kline is None or len(kline) < 30:
+            ax.text(0.5, 0.5, f"{label} 数据暂时不可用",
+                    transform=ax.transAxes, ha="center", va="center",
+                    color="gray")
+            ax.set_xticks([])
+            ax.set_yticks([])
+            return
+        # 计算 Stoch RSI 用全部数据, 显示截取最近 days_window
+        k_full, d_full = _stoch_rsi(kline["Close"])
+        cutoff = kline.index[-1] - timedelta(days=days_window)
+        mask = kline.index >= cutoff
+        idx = kline.index[mask]
+        k = k_full[mask]
+        d = d_full[mask]
+        ax.plot(range(len(idx)), k.values, color="#1E88E5", lw=1.2, label="K")
+        ax.plot(range(len(idx)), d.values, color="#FB8C00", lw=1.0, label="D")
+        ax.axhline(80, color="#E53935", ls="--", lw=0.5, alpha=0.5)
+        ax.axhline(20, color="#43A047", ls="--", lw=0.5, alpha=0.5)
+        ax.fill_between(range(len(idx)), 0, 20, alpha=0.05, color="green")
+        ax.fill_between(range(len(idx)), 80, 100, alpha=0.05, color="red")
+        ax.set_ylim(-2, 102)
+        ax.set_ylabel(label, fontsize=9)
+        ax.legend(loc="upper left", fontsize=7)
+        ax.grid(alpha=0.3)
+        # X 轴格式: datetime
+        n = len(idx)
+        ticks = list(range(0, n, max(1, n // 8)))
+        labels = []
+        for i in ticks:
+            if i < n:
+                ts = idx[i]
+                if i == 0 or ts.date() != idx[i-1].date():
+                    labels.append(ts.strftime("%m/%d %H:%M"))
+                else:
+                    labels.append(ts.strftime("%H:%M"))
+        ax.set_xticks(ticks)
+        ax.set_xticklabels(labels, fontsize=7, rotation=0)
+        # 当前值显示
+        if len(k.dropna()) > 0:
+            last_k = float(k.dropna().iloc[-1])
+            last_d = float(d.dropna().iloc[-1])
+            zone, color = _zone_label(last_k, last_d)
+            ax.set_title(f"{label} | 当前 K={last_k:.0f} D={last_d:.0f} ({zone})",
+                          fontsize=10, color=color)
+
+    _plot_stoch_panel(ax_sr_1h, _kline_1h_top, "1h Stoch RSI",
+                      _intraday_days if _is_1h_view else 14)
+    _plot_stoch_panel(ax_sr_15m, _kline_15m_top, "15m Stoch RSI",
+                      min(3, _intraday_days if _is_1h_view else 3))
+    plt.tight_layout()
+    st.pyplot(fig_sr, use_container_width=True)
+    plt.close(fig_sr)
 
     # ── 盘中 K线 + Squeeze ──
     st.divider()
@@ -1871,21 +1944,10 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                 return dt.strftime("%H:%M")
             return ""
 
-        # 4 子图: K线 → 1h Stoch → 15m Stoch → Squeeze
-        # 全部使用 K线索引 x (0..n_bars-1), sharex=True 保证刻度对齐
-        fig2, (ax_price, ax_1h_sr, ax_15m_sr, ax_sq) = plt.subplots(
-            4, 1, figsize=(18, 11), sharex=True,
-            gridspec_kw={"height_ratios": [3, 1, 1, 1], "hspace": 0.15})
-
-        # 预取 1h / 15m K线 (用于嵌入子图)
-        _kline_1h_full = _fetch_futures_kline(_futures_ticker, "1h", period="60d")
-        _kline_15m_full = _fetch_futures_kline(_futures_ticker, "15m", period="5d")
-        _k_1h_p = _d_1h_p = None
-        if _kline_1h_full is not None and len(_kline_1h_full) > 30:
-            _k_1h_p, _d_1h_p = _stoch_rsi(_kline_1h_full["Close"])
-        _k_15m_p = _d_15m_p = None
-        if _kline_15m_full is not None and len(_kline_15m_full) > 30:
-            _k_15m_p, _d_15m_p = _stoch_rsi(_kline_15m_full["Close"])
+        # 2 子图: K线 → Squeeze (v3.7.23 移除多周期 Stoch RSI, Stoch 已上移到主图下方)
+        fig2, (ax_price, ax_sq) = plt.subplots(
+            2, 1, figsize=(18, 8), sharex=True,
+            gridspec_kw={"height_ratios": [3, 1], "hspace": 0.15})
 
         # 真实 K线 (红绿蜡烛图)
         _body_w = 0.6
@@ -2030,46 +2092,7 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                              s=70, color=_color, edgecolors="black",
                              lw=0.7, zorder=8)
 
-        for _ax_sr, _name_sr, _k_sr, _d_sr, _close_full_sr in [
-            (ax_1h_sr, "1h", _k_1h_p, _d_1h_p,
-             _kline_1h_full if _kline_1h_full is not None else None),
-            (ax_15m_sr, "15m", _k_15m_p, _d_15m_p,
-             _kline_15m_full if _kline_15m_full is not None else None),
-        ]:
-            if _k_sr is None or _close_full_sr is None:
-                _ax_sr.text(0.5, 0.5, f"{_name_sr} 数据不可用",
-                            ha="center", va="center",
-                            transform=_ax_sr.transAxes,
-                            fontsize=10, color="#999")
-                _ax_sr.set_yticks([])
-                continue
-            # 截到与 K线相同的时间窗口
-            _start_dt, _end_dt = _idx_1h[0], _idx_1h[-1]
-            _mask = ((_close_full_sr.index >= _start_dt) &
-                     (_close_full_sr.index <= _end_dt))
-            _idx_sr = _close_full_sr.index[_mask]
-            if len(_idx_sr) < 2:
-                _ax_sr.text(0.5, 0.5, f"{_name_sr} 数据不足",
-                            ha="center", va="center",
-                            transform=_ax_sr.transAxes,
-                            fontsize=10, color="#999")
-                _ax_sr.set_yticks([])
-                continue
-            _x_sr = _proj_to_idx(_idx_sr)
-            _kk_sr = _k_sr.reindex(_idx_sr)
-            _dd_sr = _d_sr.reindex(_idx_sr)
-            _ax_sr.axhspan(80, 100, color="#E53935", alpha=0.10)
-            _ax_sr.axhspan(0, 20, color="#43A047", alpha=0.10)
-            _ax_sr.axhline(80, color="#E53935", lw=0.6, ls="--", alpha=0.5)
-            _ax_sr.axhline(20, color="#43A047", lw=0.6, ls="--", alpha=0.5)
-            _ax_sr.plot(_x_sr, _kk_sr.values, color="#1E88E5",
-                        lw=1.1, label="K")
-            _ax_sr.plot(_x_sr, _dd_sr.values, color="#FB8C00",
-                        lw=0.9, ls="--", label="D")
-            _ax_sr.set_ylim(-2, 102)
-            _ax_sr.set_ylabel(f"{_name_sr} Stoch")
-            _ax_sr.legend(fontsize=7, loc="upper left")
-            _ax_sr.grid(True, alpha=0.3)
+        # (v3.7.23: Stoch RSI 子图已移到主图下方, 此 K线 panel 仅保留 K线 + Squeeze)
 
         # Squeeze Momentum
         _mom_clean = _mom.dropna()
