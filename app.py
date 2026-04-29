@@ -1017,13 +1017,45 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             st_autorefresh(interval=refresh_min * 60 * 1000,
                            key="intraday_refresh")
 
-    # 1h 数据
+    # 1h 数据 (v3.7.26: csv 过期 > 7 天自动用 yfinance 补齐)
     _1h_fname = "gld_1h.csv" if asset_key == "GLD" else "slv_1h.csv"
     gld_1h_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                "..", "Gold", "data", "raw", "market", _1h_fname)
     gld_1h_path = os.path.normpath(gld_1h_path)
     gld_1h = pd.read_csv(gld_1h_path, index_col=0, parse_dates=True) \
         if os.path.exists(gld_1h_path) else None
+
+    # 数据陈旧检查 + yfinance 兜底
+    @st.cache_data(ttl=600)
+    def _refresh_1h_yfinance(ticker, period="60d"):
+        try:
+            import yfinance as yf
+            df = yf.Ticker(ticker).history(period=period, interval="1h")
+            if df is not None and len(df) > 0:
+                df.index = pd.to_datetime(df.index).tz_localize(None)
+                return df[["Open", "High", "Low", "Close", "Volume"]]
+        except Exception:
+            pass
+        return None
+
+    _today_check = pd.Timestamp.now().normalize()
+    _stale_threshold = timedelta(days=7)
+    _is_stale = (gld_1h is None or len(gld_1h) == 0
+                  or (_today_check - gld_1h.index[-1]) > _stale_threshold)
+    if _is_stale:
+        _yf_ticker_for_intraday = "GLD" if asset_key == "GLD" else "SLV"
+        _yf_1h = _refresh_1h_yfinance(_yf_ticker_for_intraday, period="60d")
+        if _yf_1h is not None and len(_yf_1h) > 0:
+            if gld_1h is None or len(gld_1h) == 0:
+                gld_1h = _yf_1h
+            else:
+                # Append 不重复
+                _last_csv = gld_1h.index[-1]
+                _yf_new = _yf_1h[_yf_1h.index > _last_csv]
+                if len(_yf_new) > 0:
+                    gld_1h = pd.concat([gld_1h, _yf_new])
+            st.sidebar.caption(f"⚠️ {_1h_fname} 过期 → yfinance 补齐 "
+                               f"({_yf_1h.index[-1].strftime('%m/%d %H:%M')})")
 
     # 信号 (v3.7.19 实时化: 用 1h 数据 + 实时金价 更新今日 H/L 后再算信号)
     # 让 sig_df 反映 latest 1h close + intraday range, 而非陈旧 daily close
