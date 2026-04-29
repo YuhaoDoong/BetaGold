@@ -1025,10 +1025,34 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     gld_1h = pd.read_csv(gld_1h_path, index_col=0, parse_dates=True) \
         if os.path.exists(gld_1h_path) else None
 
-    # 信号 (同 v1.0 的 Band, H/L 触发)
+    # 信号 (v3.7.19 实时化: 用 1h 数据 + 实时金价 更新今日 H/L 后再算信号)
+    # 让 sig_df 反映 latest 1h close + intraday range, 而非陈旧 daily close
+    _close_for_sig = close_d.copy()
+    _high_for_sig = high_d.copy()
+    _low_for_sig = low_d.copy()
+
+    if gld_1h is not None and len(gld_1h) > 0:
+        # 取今日 (last_date 之后) 的 1h 数据, 合成"动态今日 H/L"
+        _bp_dates_check = upper_band.dropna().index.intersection(
+            lower_band.dropna().index)
+        _last_d_bd = _bp_dates_check[-1] if len(_bp_dates_check) else close_d.index[-1]
+        _intraday_1h = gld_1h[gld_1h.index > _last_d_bd]
+        if len(_intraday_1h) > 0:
+            _new_d = _intraday_1h.index[-1].normalize()
+            _new_h = _intraday_1h["High"].max()
+            _new_l = _intraday_1h["Low"].min()
+            _new_c = _intraday_1h["Close"].iloc[-1]
+            # append 一个新的"今日"条目 (实时数据)
+            _close_for_sig.loc[_new_d] = _new_c
+            _high_for_sig.loc[_new_d] = _new_h
+            _low_for_sig.loc[_new_d] = _new_l
+            _close_for_sig = _close_for_sig.sort_index()
+            _high_for_sig = _high_for_sig.sort_index()
+            _low_for_sig = _low_for_sig.sort_index()
+
     sig_df = generate_daily_signals(
-        close_d, high_d, low_d, upper_band, lower_band,
-        regime, rv_pctile)
+        _close_for_sig, _high_for_sig, _low_for_sig,
+        upper_band, lower_band, regime, rv_pctile)
 
     # ── 加载盘中触发 log (在回测之前!), 构造每日代表价 ──
     from core.data import load_config, load_oos_predictions
@@ -1252,45 +1276,78 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             _vol_label, _vol_emo = "中性", "⚪"
             _vol_delta = f"L{_vlong_score} / S{_vshort_score}"
 
-        # ── 信号时效面板 (v3.7.18) ──
+        # ── 信号时效面板 + 关键事件倒计时 (v3.7.19) ──
         # US 期权时段 SGT: 21:30 ~ 04:00 (次日)
-        # 信号源 = 上一 US close 后计算; 适用于"下一个 US 盘中"
-        from datetime import datetime, timezone
-        _now_sgt = datetime.now(timezone.utc).astimezone(
-            timezone.utc).timestamp()
+        from datetime import datetime, timezone, timedelta as _td
         _now_sgt_ts = pd.Timestamp.now(tz="Asia/Singapore")
         _now_h = _now_sgt_ts.hour + _now_sgt_ts.minute / 60.0
+        _now_naive = _now_sgt_ts.tz_localize(None)
 
-        # US 期权交易时段 (SGT 21:30 ~ 04:00 +1d)
-        # 北美夏令时 (DST): NY ET = UTC-4 → SGT = ET+12
-        # 北美标准时:        NY ET = UTC-5 → SGT = ET+13
-        _us_open = 21.5     # 21:30 SGT
-        _us_close = 28.0    # 04:00 SGT (即 +24+4)
+        _us_open = 21.5
         _is_us_session = (_now_h >= _us_open) or (_now_h < 4.0)
         if _is_us_session:
             _session_state = "🟢 US 期权时段中 (可交易)"
-            _hours_to_next = 0
         elif _now_h < _us_open:
             _hours_to_next = _us_open - _now_h
-            _session_state = f"⏳ 距 US 开盘 {_hours_to_next:.1f}h (SGT 21:30)"
+            _h, _m = int(_hours_to_next), int((_hours_to_next % 1) * 60)
+            _session_state = f"⏳ 距 US 开盘 {_h}h{_m}m (SGT 21:30)"
         else:
             _hours_to_next = (24 + _us_open) - _now_h
-            _session_state = f"⏳ 距 US 开盘 {_hours_to_next:.1f}h"
+            _h, _m = int(_hours_to_next), int((_hours_to_next % 1) * 60)
+            _session_state = f"⏳ 距 US 开盘 {_h}h{_m}m"
 
-        # 信号生成时间 (上一 US close + ~5min, SGT 04:05 大约)
-        _signal_age_h = (_now_sgt_ts.normalize() - last_date).total_seconds() / 3600
-        if _now_h < 4:
-            _signal_age_h += _now_h
-        else:
-            _signal_age_h += _now_h - 4
+        # 信号生成时间: last_date (tz-naive) 当日 04:00 SGT 后约 5min
+        _signal_gen_time = pd.Timestamp(last_date).tz_localize(None) + _td(hours=4, minutes=5)
+        _signal_age_h = (_now_naive - _signal_gen_time).total_seconds() / 3600
         _signal_label = (
             f"⏰ **信号时效**: 基于 **{last_date.date()} US close** 数据生成 "
-            f"(约 {_signal_age_h:.0f}h 前). "
-            f"{_session_state}. "
-            f"**当前波动率信号适用于今晚 US 盘中** (SGT 21:30 ~ 4月30 04:00). "
-            f"入场前请用 dashboard 实时刷新核对 RV/bp_low/IV 是否仍满足条件."
+            f"(约 {_signal_age_h:.0f}h 前) | "
+            f"{_session_state} | "
+            f"**适用于下一个 US 盘中** | "
+            f"入场前请刷新核对 RV/bp_low/IV"
         )
         st.info(_signal_label)
+
+        # ── 关键事件倒计时 (next 7 days) ──
+        from core.events import get_all_events
+        _ev_list = get_all_events(
+            (_now_naive.normalize()).strftime("%Y-%m-%d"),
+            (_now_naive + _td(days=7)).strftime("%Y-%m-%d"),
+            asset=("gold" if asset_key == "GLD" else "silver"))
+        if _ev_list:
+            _ev_cards = []
+            for ev_d, ev_t, ev_l in _ev_list[:4]:
+                # FOMC 公告 = 第 2 天 14:00 ET = SGT +12-13h, 用 02:00 SGT 次日
+                # 简化: 事件日 = 当日 SGT 02:00 (FOMC 公告时刻)
+                ev_announce = pd.Timestamp(ev_d).tz_localize(None) + _td(hours=2)
+                if ev_t == "OPEX":
+                    # OPEX = 周五美股收盘 = SGT 04:00 周六
+                    ev_announce = pd.Timestamp(ev_d).tz_localize(None) + _td(hours=4)
+                if ev_t == "NFP":
+                    # NFP = 美股 8:30 ET = SGT 20:30 当日 (冬令时) / 21:30 (夏令时)
+                    ev_announce = pd.Timestamp(ev_d).tz_localize(None) + _td(hours=20, minutes=30)
+                _delta = ev_announce - _now_naive
+                _delta_h = _delta.total_seconds() / 3600
+                if _delta_h < 0:
+                    continue
+                _d_days = int(_delta_h // 24)
+                _d_hours = int(_delta_h % 24)
+                _d_mins = int((_delta_h * 60) % 60)
+                if _d_days > 0:
+                    _td_str = f"{_d_days}d {_d_hours}h{_d_mins}m"
+                else:
+                    _td_str = f"{_d_hours}h{_d_mins}m"
+                _ev_cards.append({
+                    "事件": ev_l,
+                    "日期 (SGT)": ev_announce.strftime("%m/%d %H:%M"),
+                    "倒计时": _td_str,
+                })
+            if _ev_cards:
+                cols_ev = st.columns(min(4, len(_ev_cards)))
+                for i, ev in enumerate(_ev_cards):
+                    with cols_ev[i]:
+                        st.metric(ev["事件"], ev["倒计时"],
+                                   delta=f"@ SGT {ev['日期 (SGT)']}")
 
         sb1, sb2, sb3, sb4, sb5 = st.columns(5)
         with sb1:
