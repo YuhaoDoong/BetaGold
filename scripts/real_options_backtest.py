@@ -152,8 +152,9 @@ def find_valid_strike(asset, spot, expiry_str, period="2y"):
     return base
 
 
-def real_long_call_pnl(call_hist, entry_d, hold_days=5):
-    """单腿 Long Call P&L (BUY CALL 信号用)."""
+def real_long_call_pnl(call_hist, entry_d, hold_days=5,
+                          stop_loss_pct=-50.0, take_profit_pct=None):
+    """单腿 Long Call P&L. v3.7.42 加止损 (默认 -50%)."""
     entry_d = pd.Timestamp(entry_d).normalize()
     exit_target = entry_d + pd.Timedelta(days=hold_days)
     if entry_d not in call_hist.index:
@@ -162,29 +163,46 @@ def real_long_call_pnl(call_hist, entry_d, hold_days=5):
             return None
         entry_d = avail[0]
     entry_p = float(call_hist.loc[entry_d, "Open"])
+    if entry_p <= 0:
+        return None
     win = call_hist[(call_hist.index >= entry_d) & (call_hist.index <= exit_target)]
     if len(win) < 2:
         return None
-    exit_d = win.index[-1]
-    exit_p = float(win.iloc[-1]["Close"])
+
+    # 逐日检查止损/止盈 (用 Low 触发以模拟盘中)
+    exit_d = win.index[-1]; exit_p = float(win.iloc[-1]["Close"]); stopped = False
+    for d, row in win.iterrows():
+        if d == entry_d:
+            continue
+        low_pct = (float(row["Low"]) / entry_p - 1) * 100
+        high_pct = (float(row["High"]) / entry_p - 1) * 100
+        if low_pct <= stop_loss_pct:
+            exit_d = d; exit_p = entry_p * (1 + stop_loss_pct / 100); stopped = True
+            break
+        if take_profit_pct is not None and high_pct >= take_profit_pct:
+            exit_d = d; exit_p = entry_p * (1 + take_profit_pct / 100); stopped = True
+            break
+
     max_close = float(win["Close"].max())
     max_high = float(win["High"].max())
     return {
         "entry_date": entry_d.strftime("%Y-%m-%d"),
         "exit_date": exit_d.strftime("%Y-%m-%d"),
         "entry": entry_p, "exit_close": exit_p,
+        "stopped": stopped,
         "pnl_close": exit_p - entry_p,
-        "pnl_close_pct": (exit_p / entry_p - 1) * 100 if entry_p > 0 else 0,
+        "pnl_close_pct": (exit_p / entry_p - 1) * 100,
         "max_close": max_close,
-        "max_pnl_close_pct": (max_close / entry_p - 1) * 100 if entry_p > 0 else 0,
+        "max_pnl_close_pct": (max_close / entry_p - 1) * 100,
         "max_high": max_high,
     }
 
 
-def real_short_put_pnl(put_hist, entry_d, hold_days=5):
-    """单腿 Short Put P&L (SELL PUT 信号: 卖 ATM Put 收 premium).
+def real_short_put_pnl(put_hist, entry_d, hold_days=5,
+                          stop_loss_pct=-25.0):
+    """单腿 Short Put P&L. v3.7.42 加止损 (premium 翻倍 ≈ -100% pnl_pct, 但实盘 -25% 即应平).
 
-    P&L = entry premium - exit premium (期权下跌赚)
+    SELL PUT P&L_pct = (entry-exit)/entry. 即 exit ≥ 1.25 × entry 时, pnl_pct = -25%, 止损.
     """
     entry_d = pd.Timestamp(entry_d).normalize()
     exit_target = entry_d + pd.Timedelta(days=hold_days)
@@ -194,18 +212,30 @@ def real_short_put_pnl(put_hist, entry_d, hold_days=5):
             return None
         entry_d = avail[0]
     entry_p = float(put_hist.loc[entry_d, "Open"])
+    if entry_p <= 0:
+        return None
     win = put_hist[(put_hist.index >= entry_d) & (put_hist.index <= exit_target)]
     if len(win) < 2:
         return None
-    exit_d = win.index[-1]
-    exit_p = float(win.iloc[-1]["Close"])
+
+    # 止损阈值: premium 涨过 (1 - stop_loss_pct/100) 倍 → 止损平仓
+    stop_mult = 1 - stop_loss_pct / 100  # -25% 止损 → 1.25
+    exit_d = win.index[-1]; exit_p = float(win.iloc[-1]["Close"]); stopped = False
+    for d, row in win.iterrows():
+        if d == entry_d:
+            continue
+        if float(row["High"]) >= entry_p * stop_mult:
+            exit_d = d; exit_p = entry_p * stop_mult; stopped = True
+            break
+
     return {
         "entry_date": entry_d.strftime("%Y-%m-%d"),
         "exit_date": exit_d.strftime("%Y-%m-%d"),
         "entry_premium": entry_p,
         "exit_premium": exit_p,
-        "pnl_close": entry_p - exit_p,  # 卖期权: 收 - 付
-        "pnl_close_pct": (entry_p - exit_p) / entry_p * 100 if entry_p > 0 else 0,
+        "stopped": stopped,
+        "pnl_close": entry_p - exit_p,
+        "pnl_close_pct": (entry_p - exit_p) / entry_p * 100,
     }
 
 
@@ -264,7 +294,6 @@ def real_iron_condor_full(asset, signal_date, spot, expiry, hold_days=5,
     if len(avail) < 2:
         return None
     e_d = avail[0]
-    x_d = avail[-1]
 
     # 入场 (Open): 卖 sc + sp, 买 lc + lp
     sc_e = hists["sc"].loc[e_d, "Open"]
@@ -273,13 +302,22 @@ def real_iron_condor_full(asset, signal_date, spot, expiry, hold_days=5,
     lp_e = hists["lp"].loc[e_d, "Open"]
     credit = (sc_e + sp_e) - (lc_e + lp_e)
 
-    # 平仓 (Close): 反向操作
-    sc_x = hists["sc"].loc[x_d, "Close"]
-    sp_x = hists["sp"].loc[x_d, "Close"]
-    lc_x = hists["lc"].loc[x_d, "Close"]
-    lp_x = hists["lp"].loc[x_d, "Close"]
-    debit = (sc_x + sp_x) - (lc_x + lp_x)
-    pnl = credit - debit  # short vol: credit 缩小赚
+    # v3.7.42: IC 止损 — net debit 涨过 2× credit 即平
+    # IC 平仓成本 = sc_close + sp_close - lc_close - lp_close
+    # 若 平仓成本 > 2 × credit, pnl = credit - 2c = -credit, 即 -100% of credit
+    stop_debit = 2 * abs(credit) if credit > 0 else float("inf")
+    stopped = False
+    x_d = avail[-1]
+    debit = (hists["sc"].loc[x_d,"Close"] + hists["sp"].loc[x_d,"Close"]
+              - hists["lc"].loc[x_d,"Close"] - hists["lp"].loc[x_d,"Close"])
+    for d in avail[1:]:
+        d_debit = (hists["sc"].loc[d,"Close"] + hists["sp"].loc[d,"Close"]
+                    - hists["lc"].loc[d,"Close"] - hists["lp"].loc[d,"Close"])
+        if d_debit >= stop_debit:
+            x_d = d; debit = d_debit; stopped = True
+            break
+
+    pnl = credit - debit
 
     return {
         "entry_date": e_d.strftime("%Y-%m-%d"),
@@ -287,9 +325,10 @@ def real_iron_condor_full(asset, signal_date, spot, expiry, hold_days=5,
         "ic_short_call_k": short_call_k, "ic_long_call_k": long_call_k,
         "ic_short_put_k": short_put_k, "ic_long_put_k": long_put_k,
         "ic_credit": credit, "ic_debit_at_exit": debit,
+        "ic_stopped": stopped,
         "ic_pnl": pnl,
         "ic_pnl_pct_of_credit": pnl / credit * 100 if abs(credit) > 0.01 else 0,
-        "ic_max_loss": (wing_offset - short_offset) - credit,  # 最大亏 (理论)
+        "ic_max_loss": (wing_offset - short_offset) - credit,
     }
 
 
@@ -339,22 +378,115 @@ def real_iron_condor_pnl(short_call, long_call, short_put, long_put,
     }
 
 
+_EXPIRY_LIST_CACHE: dict = {}
+
+
+def get_active_expiries(asset: str) -> list:
+    """获取 yfinance 当前 SLV/GLD 全部活跃 expiry 列表 (含 LEAPS).
+
+    所有 expiry > 今天, 一次性拉到内存, 缓存重用.
+    """
+    if asset in _EXPIRY_LIST_CACHE:
+        return _EXPIRY_LIST_CACHE[asset]
+    try:
+        import yfinance as yf
+        exps = yf.Ticker(asset).options
+        out = sorted(pd.Timestamp(e) for e in exps)
+    except Exception:
+        out = [pd.Timestamp("2026-09-18"), pd.Timestamp("2027-01-15")]  # fallback
+    _EXPIRY_LIST_CACHE[asset] = out
+    return out
+
+
+def _is_monthly_third_friday(d: pd.Timestamp) -> bool:
+    """是否月度第三周五 (标准月度期权 expiry, 上市最早, 历史最深)."""
+    if d.weekday() != 4:  # not Friday
+        return False
+    return 15 <= d.day <= 21
+
+
+def pick_best_expiry(asset: str, sig_d: pd.Timestamp,
+                       target_dte: int = 45,
+                       hold_days: int = 5) -> list:
+    """对信号日返回 expiry 候选列表 (v3.7.43).
+
+    每个候选 expiry 满足:
+      - expiry > sig_d + hold_days
+      - expiry > 今天 (现在 yf 仍能拉到数据)
+
+    优先级:
+      1. 月度第三周五 (上市早, 历史深) — 按 DTE 适配排
+      2. weekly 仅作为补充 (上市晚, 历史可能不覆盖信号日)
+    返回 top ~10.
+    """
+    today = pd.Timestamp.now().normalize()
+    all_exp = get_active_expiries(asset)
+    valid = [
+        e for e in all_exp
+        if e > today and (e - sig_d).days >= hold_days + 1
+    ]
+    if not valid:
+        return []
+    monthly = [e for e in valid if _is_monthly_third_friday(e)]
+    weekly = [e for e in valid if not _is_monthly_third_friday(e)]
+    # 按 DTE 适配 (越接近 target 越优), 月度优先
+    monthly.sort(key=lambda e: abs((e - sig_d).days - target_dte))
+    weekly.sort(key=lambda e: abs((e - sig_d).days - target_dte))
+    out = monthly[:8] + weekly[:3]
+    # 去重保序
+    seen = set(); dedup = []
+    for e in out:
+        if e not in seen:
+            seen.add(e); dedup.append(e)
+    return dedup
+
+
 def backtest_signal(asset, signal_date, signal_type, spot,
                       hold_days=5, target_dte=45, rv=None):
-    """对单个信号跑真实期权 P&L (4 类策略并行)."""
+    """对单个信号跑真实期权 P&L (4 类策略并行).
+
+    v3.7.43: 选 expiry 改为遍历 yfinance 当前所有活跃 expiry,
+            按 |DTE_at_signal - target_dte| 排序, 取首个有完整数据的.
+    """
     sig_d = pd.Timestamp(signal_date)
     age_days = (pd.Timestamp.now() - sig_d).days
-    # v3.7.39: 智能选 expiry — 老信号用 LEAPS, 新信号用月度
-    # v3.7.41: LEAPS strike 由 yfinance 探测 ATM 真实可用 strike (修正错配)
-    if age_days >= 90:
-        expiry = smart_pick_expiry(sig_d)
-        expiry_str = expiry.strftime("%Y-%m-%d")
-        strike = leaps_strike(asset, spot, expiry_str)
-    else:
-        expiry = nearest_monthly_third_friday(sig_d, target_dte)
-        expiry_str = expiry.strftime("%Y-%m-%d")
-        strike = find_valid_strike(asset, spot, expiry_str)
-    actual_dte = (expiry - sig_d).days
+
+    expiry_candidates = pick_best_expiry(asset, sig_d, target_dte, hold_days)
+    if not expiry_candidates:
+        return {
+            "signal_date": signal_date, "signal_type": signal_type,
+            "spot": spot, "error": "无可用 expiry (信号距今 > 最远 LEAPS 上市期)",
+        }
+
+    call_hist = None; put_hist = None
+    expiry = None; strike = None
+    sig_norm = sig_d.normalize()
+
+    sig_window_end = sig_norm + pd.Timedelta(days=hold_days + 2)
+    for exp in expiry_candidates:
+        exp_str = exp.strftime("%Y-%m-%d")
+        dte_at_sig = (exp - sig_d).days
+        # 月度 (DTE ≤ 90) 用 find_valid_strike, 远月 (DTE > 90) 用 leaps_strike
+        if dte_at_sig <= 90:
+            k = find_valid_strike(asset, spot, exp_str)
+        else:
+            k = leaps_strike(asset, spot, exp_str)
+        c_sym = occ_symbol(asset, exp_str, k, "C")
+        p_sym = occ_symbol(asset, exp_str, k, "P")
+        c_hist = fetch_option_history(c_sym, period="2y")
+        p_hist = fetch_option_history(p_sym, period="2y")
+        if c_hist is None or p_hist is None or len(c_hist) < 5 or len(p_hist) < 5:
+            continue
+        common = c_hist.index.intersection(p_hist.index)
+        # v3.7.43: 必须在 [信号日, 信号日+持仓+2d] 窗口内有 ≥2 个数据点
+        in_window = common[(common >= sig_norm) & (common <= sig_window_end)]
+        if len(in_window) >= 2:
+            call_hist = c_hist; put_hist = p_hist
+            expiry = exp; strike = k
+            break
+
+    expiry_str = expiry.strftime("%Y-%m-%d") if expiry is not None else None
+    actual_dte = (expiry - sig_d).days if expiry is not None else None
 
     result = {
         "signal_date": signal_date,
@@ -366,14 +498,8 @@ def backtest_signal(asset, signal_date, signal_type, spot,
         "rv": rv,
     }
 
-    # 拉两腿历史 (Call + Put ATM)
-    call_sym = occ_symbol(asset, expiry_str, strike, "C")
-    put_sym = occ_symbol(asset, expiry_str, strike, "P")
-    call_hist = fetch_option_history(call_sym, period="2y")
-    put_hist = fetch_option_history(put_sym, period="2y")
-
     if call_hist is None or put_hist is None:
-        result["error"] = "无历史 K 线 (期权可能未出, 或 yf 限制)"
+        result["error"] = "无历史 K 线 (所有候选 expiry 在信号日均无数据)"
         return result
 
     # Long Call (BUY CALL)
@@ -445,10 +571,14 @@ def run_full_backtest(asset, hold_days=5, target_dte=45,
     # 信号: 不带任何过滤
     sig_df = generate_daily_signals(close, high, low, upper, lower,
                                        regime, rv_pct, rv_filter=False)
-    straddle_df = detect_straddle_signal(rv_10d, close.index, rv_pctile=None)
+    straddle_df = detect_straddle_signal(rv_10d, close.index, rv_pctile=rv_pct,
+                                              close=close, high=high, low=low,
+                                              asset=asset)
     short_vol_df = detect_short_vol_signal(rv_10d, rv_pct, close.index,
                                               regime=regime,
-                                              daily_range=(high-low)/close*100)
+                                              daily_range=(high-low)/close*100,
+                                              close=close, high=high, low=low,
+                                              asset=asset)
 
     # 限定范围 (LEAPS 拉到 ~18mo, 月度 ~6mo)
     if date_min is None:
@@ -473,6 +603,15 @@ def run_full_backtest(asset, hold_days=5, target_dte=45,
         d_fomc, _, _ = days_to_next_event(d, "FOMC")
         d_nfp, _, _ = days_to_next_event(d, "NFP")
 
+        # v3.7.48: 把 straddle_score 也存进去, 供后续阈值扫描
+        st_score = (float(straddle_df.loc[d, "straddle_score"])
+                      if d in straddle_df.index
+                      and "straddle_score" in straddle_df.columns
+                      else 0)
+        sv_score = (float(short_vol_df.loc[d, "short_vol_score"])
+                      if d in short_vol_df.index
+                      and "short_vol_score" in short_vol_df.columns
+                      else 0)
         meta = {
             "signal_date": d.strftime("%Y-%m-%d"),
             "spot": spot,
@@ -481,6 +620,8 @@ def run_full_backtest(asset, hold_days=5, target_dte=45,
             "regime": reg,
             "days_to_fomc": d_fomc,
             "days_to_nfp": d_nfp,
+            "straddle_score": st_score,
+            "short_vol_score": sv_score,
         }
         # 哪些信号触发?
         types = []
@@ -541,7 +682,16 @@ def main():
     fpath = os.path.join(out_dir,
                             f"{args.asset}_real_pnl_hold{args.hold}d.csv")
     df.to_csv(fpath, index=False)
-    print(f"\n保存 → {fpath}, 共 {len(df)} 条记录\n")
+    print(f"\n保存 → {fpath}, 共 {len(df)} 条记录")
+
+    # v3.7.46: 自动归档历史快照 (每次跑后保留时间戳版本)
+    history_dir = os.path.join(out_dir, "history")
+    os.makedirs(history_dir, exist_ok=True)
+    today = date.today().isoformat()
+    archive = os.path.join(history_dir,
+                              f"{args.asset}_hold{args.hold}d_{today}.csv")
+    df.to_csv(archive, index=False)
+    print(f"快照 → {archive}\n")
 
     # 聚合: 各信号类型胜率/平均 P&L
     print(f"\n=== 聚合统计 ({args.asset}) ===")

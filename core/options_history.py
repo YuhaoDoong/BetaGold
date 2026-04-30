@@ -113,20 +113,36 @@ def fetch_option_history_moomoo(symbol: str,
 
 def fetch_option_history(symbol: str, period: str = "6mo",
                            use_moomoo_fallback: bool = True,
+                           max_retries: int = 3,
                            ) -> Optional[pd.DataFrame]:
-    """拉单期权历史日 K 线 (yfinance 主, Moomoo 兜底).
+    """拉单期权历史日 K 线 (yfinance 主 + 重试, Moomoo 兜底).
 
-    v3.7.41: yfinance 失败 → Moomoo OpenD 兜底 (需在 11111 运行).
+    v3.7.41: + Moomoo OpenD 兜底.
+    v3.7.42: + yfinance 限流自动重试 (指数退避 1/2/4 秒).
     """
-    try:
-        import yfinance as yf
-        t = yf.Ticker(symbol)
-        df = t.history(period=period)
-        if df is not None and len(df) > 0:
-            df.index = pd.to_datetime(df.index).tz_localize(None).normalize()
-            return df[["Open", "High", "Low", "Close", "Volume"]]
-    except Exception as e:
-        print(f"[fetch_option_history.yf] {symbol}: {e}")
+    import time
+    last_err = None
+    for attempt in range(max_retries):
+        try:
+            import yfinance as yf
+            t = yf.Ticker(symbol)
+            df = t.history(period=period)
+            if df is not None and len(df) > 0:
+                df.index = pd.to_datetime(df.index).tz_localize(None).normalize()
+                return df[["Open", "High", "Low", "Close", "Volume"]]
+            # 空 DataFrame: 可能是不存在的 strike, 不重试 yfinance 直接转 Moomoo
+            break
+        except Exception as e:
+            last_err = e
+            msg = str(e).lower()
+            if "rate" in msg or "too many" in msg or "throttle" in msg:
+                # 限流: 指数退避重试
+                time.sleep(2 ** attempt)
+                continue
+            # 其他错误不重试
+            break
+    if last_err is not None:
+        print(f"[fetch_option_history.yf] {symbol}: {last_err}")
 
     if use_moomoo_fallback:
         df = fetch_option_history_moomoo(symbol)
@@ -140,14 +156,21 @@ def compute_real_straddle_pnl(call_hist: pd.DataFrame,
                                  put_hist: pd.DataFrame,
                                  entry_date: str,
                                  hold_days: int = 5,
-                                 entry_price_mode: str = "open") -> Optional[Dict]:
+                                 entry_price_mode: str = "open",
+                                 stop_loss_pct: float = -40.0,
+                                 take_profit_pct: float = 50.0,
+                                 ) -> Optional[Dict]:
     """从 call/put 真实历史 K 线算 Long Straddle P&L.
+
+    v3.7.42: 加止损 (默认 -40%) + 止盈 (默认 +50%, 触发即平).
 
     Args:
         call_hist, put_hist: fetch_option_history 输出
         entry_date: 'YYYY-MM-DD' 信号日
         hold_days: 持仓天数
         entry_price_mode: 'open' (开盘买入, 实际入场价) / 'close' (收盘价)
+        stop_loss_pct: 单笔止损 (%, 负数). None 关闭.
+        take_profit_pct: 单笔止盈 (%, 正数). None 关闭.
     """
     entry_d = pd.Timestamp(entry_date).normalize()
     exit_d_target = entry_d + pd.Timedelta(days=hold_days)
@@ -178,12 +201,31 @@ def compute_real_straddle_pnl(call_hist: pd.DataFrame,
                        + win_put.loc[common, "Close"])
     daily_straddle_high = (win_call.loc[common, "High"]
                             + win_put.loc[common, "High"])
+    daily_straddle_low = (win_call.loc[common, "Low"]
+                           + win_put.loc[common, "Low"])
 
-    # 平仓: 持仓期最后一天收盘
+    # 默认: 持仓期末平
     exit_actual = common[-1]
     exit_call = float(call_hist.loc[exit_actual, "Close"])
     exit_put = float(put_hist.loc[exit_actual, "Close"])
     exit_total = exit_call + exit_put
+    stopped = False
+    # v3.7.42: 逐日检查止损/止盈
+    for d in common:
+        if d == entry_d:
+            continue
+        low_v = daily_straddle_low.loc[d]
+        high_v = daily_straddle_high.loc[d]
+        low_pct = (low_v / entry_total - 1) * 100 if entry_total > 0 else 0
+        high_pct = (high_v / entry_total - 1) * 100 if entry_total > 0 else 0
+        if stop_loss_pct is not None and low_pct <= stop_loss_pct:
+            exit_actual = d; exit_total = entry_total * (1 + stop_loss_pct/100)
+            stopped = True
+            break
+        if take_profit_pct is not None and high_pct >= take_profit_pct:
+            exit_actual = d; exit_total = entry_total * (1 + take_profit_pct/100)
+            stopped = True
+            break
 
     # 最大可能价值 (理论早平最优)
     max_close = float(daily_straddle.max())

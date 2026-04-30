@@ -1199,6 +1199,12 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         _raw_sig = sig_df.loc[last_date]["signal_text"] \
             if last_date in sig_df.index else ""
         _has_open_buy = "BUY" in _raw_sig or "SELL PUT" in _raw_sig
+        # v3.7.47: 推荐仓位倍数 (sizing 来自 dir_indicators)
+        _sizing = 1.0
+        _sizing_reasons = ""
+        if last_date in sig_df.index and "sizing" in sig_df.columns:
+            _sizing = sig_df.loc[last_date].get("sizing", 1.0)
+            _sizing_reasons = sig_df.loc[last_date].get("sizing_reasons", "")
 
         if bp_est < 0.30:
             zone = "看多"
@@ -1386,8 +1392,13 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                 "SELL PUT + EXIT": "Sell Put (有退出)",
             }
             sig_text = _sig_map.get(_raw_sig, _raw_sig if _raw_sig else "—")
+            # v3.7.47: 加 sizing 倍数显示
+            _sizing_tag = ""
+            if _sizing > 1.0 and _has_open_buy:
+                _sizing_tag = f" | 仓位 {_sizing:.0f}× ({_sizing_reasons})"
             st.metric("最新信号", sig_text,
-                      delta=f"Regime: {last_regime} | bp={last_bp:.3f} | RV={rv_pctile.get(last_date,0):.0%}")
+                      delta=f"Regime: {last_regime} | bp={last_bp:.3f} | "
+                            f"RV={rv_pctile.get(last_date,0):.0%}{_sizing_tag}")
         st.markdown('</div>', unsafe_allow_html=True)
 
         # 实时价格行 (紫色背景)
@@ -1455,7 +1466,11 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
 
     # Straddle 检测
     rv_s = features["rv_10d"] if "rv_10d" in features.columns else pd.Series(20, index=features.index)
-    straddle_today = detect_straddle_signal(rv_s, pd.DatetimeIndex([last_date]), rv_pctile=rv_pctile, asset=asset_key)
+    # v3.7.47: 传 close/high/low 启用技术指标 score 模式
+    straddle_today = detect_straddle_signal(
+        rv_s, pd.DatetimeIndex([last_date]), rv_pctile=rv_pctile,
+        close=close, high=high, low=low,
+        asset=asset_key)
     is_straddle = straddle_today["straddle_signal"].iloc[0] if len(straddle_today) > 0 else False
     straddle_reason = straddle_today["straddle_reason"].iloc[0] if is_straddle else ""
 
@@ -4432,17 +4447,21 @@ def main():
         _d_nfp, _, _nfp_d = days_to_next_event(last_date, "NFP", _asset_ev)
         _d_fut, _, _fut_d = days_to_next_event(last_date, "FUT_EXP", _asset_ev)
 
-        # 做多波动率 + 做空波动率 检测
+        # 做多波动率 + 做空波动率 检测 (v3.7.47 传 close/high/low 启用技术 score)
         _st_today = detect_straddle_signal(
-            _rv_pred, pd.DatetimeIndex([last_date]))
+            _rv_pred, pd.DatetimeIndex([last_date]),
+            rv_pctile=rv_pctile,
+            close=close, high=high, low=low, asset=asset_key)
         _is_straddle_pred = _st_today["straddle_signal"].iloc[0] \
             if len(_st_today) > 0 else False
         _straddle_reason_pred = _st_today["straddle_reason"].iloc[0] \
             if _is_straddle_pred else ""
 
+        # v3.7.49: 传 close/high/low 启用技术 score 模式
         _sv_today = detect_short_vol_signal(
             _rv_pred, rv_pctile, pd.DatetimeIndex([last_date]),
-            regime=regime)
+            regime=regime,
+            close=close, high=high, low=low, asset=asset_key)
         _is_short_vol_pred = _sv_today["short_vol_signal"].iloc[0] \
             if len(_sv_today) > 0 else False
         _short_vol_reason_pred = _sv_today["short_vol_reason"].iloc[0] \

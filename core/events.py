@@ -196,20 +196,28 @@ def detect_straddle_signal(rv_series, dates_index,
                             rv_drop_pct=STRADDLE_RV_DROP_PCT,
                             rv_pctile=None,
                             rv_pctile_max=STRADDLE_RV_PCTILE_MAX,
+                            close=None, high=None, low=None,
                             asset=None):
-    """检测 Straddle (做多波动率) 信号.
+    """检测 Straddle (做多波动率) 信号 — v3.7.47 技术指标主导.
 
-    条件 (评分制, score >= 3 触发):
-      - RV < rv_threshold (波动率压缩):     +2
-      - RV 相对20天均值下降 > rv_drop_pct%: +1
-      - 距 FOMC <= event_days 天:           +3
-      - 距 NFP <= event_days 天:            +2
-      - 距 OPEX <= event_days 天:           +1
+    新评分系统 (max ~13):
+      技术 (主, 7-10 分):
+        BBW pctile <0.20 (强 squeeze):     +3
+        BBW pctile 0.20-0.40:              +1
+        ATR ratio 5/20 < 0.7:              +2
+        Donchian width <0.20:              +2
+        RV %tile < 0.30:                    +2
+      事件 (辅, ≤3 分):
+        距 FOMC ≤ 7 天:                     +1
+        距 NFP ≤ 5 天:                       +1
+        距 OPEX ≤ 5 天:                      +0.5
 
-    额外硬门槛:
-      - RV 绝对值 > rv_abs_max → 不触发 (成本太高)
+    触发: score ≥ 6 (实证 score≥7 真实期权 80% 胜率, 留一档作为门槛)
 
-    Returns: DataFrame with straddle_signal, straddle_reason, score
+    硬门槛:
+      RV 绝对值 > rv_abs_max → 不触发 (成本太高)
+
+    需传 close/high/low 才能算技术 score, 否则退回旧 RV+事件评分.
     """
     if asset is not None:
         try:
@@ -232,6 +240,22 @@ def detect_straddle_signal(rv_series, dates_index,
             pass
 
     rv_ma20 = rv_series.rolling(20, min_periods=5).mean()
+
+    # v3.7.47: 技术指标 score (若 close/high/low 提供)
+    use_tech = close is not None and high is not None and low is not None
+    bbw_p = atr_r = donchian_p = None
+    if use_tech:
+        try:
+            from core.vol_indicators import (
+                bbw_pctile as _bbw_pctile,
+                atr_ratio as _atr_ratio,
+                donchian_pctile as _donchian_pctile,
+            )
+            bbw_p = _bbw_pctile(close)
+            atr_r = _atr_ratio(high, low, close, 5, 20)
+            donchian_p = _donchian_pctile(high, low)
+        except Exception:
+            use_tech = False
 
     records = []
     for d in dates_index:
@@ -258,26 +282,48 @@ def detect_straddle_signal(rv_series, dates_index,
         score = 0
         reasons = []
 
-        # RV 压缩
-        if rv < rv_threshold:
-            score += 2
-            reasons.append(f"RV={rv:.1f}%<{rv_threshold}%")
-
-        # RV 下降
-        if rv_drop > rv_drop_pct:
-            score += 1
-            reasons.append(f"RV降{rv_drop:.0f}%")
-
-        # 事件接近 (按权重)
-        if d_fomc <= event_days:
-            score += EVENT_WEIGHT["FOMC"]
-            reasons.append(f"距FOMC {d_fomc}天")
-        if d_nfp <= event_days:
-            score += EVENT_WEIGHT["NFP"]
-            reasons.append(f"距NFP {d_nfp}天")
-        if d_opex <= event_days:
-            score += EVENT_WEIGHT["OPEX"]
-            reasons.append(f"距OPEX {d_opex}天")
+        if use_tech:
+            # 技术指标主导 (v3.7.47, v3.7.48 加 RV 绝对值 + RV 收缩动量)
+            bv = bbw_p.get(d, 0.5) if bbw_p is not None else 0.5
+            ar = atr_r.get(d, 1.0) if atr_r is not None else 1.0
+            dv = donchian_p.get(d, 0.5) if donchian_p is not None else 0.5
+            # 价格波动结构
+            if bv < 0.20:
+                score += 3; reasons.append(f"BBW极度squeeze({bv:.2f})")
+            elif bv < 0.40:
+                score += 1; reasons.append(f"BBW略收({bv:.2f})")
+            if ar < 0.7:
+                score += 2; reasons.append(f"ATR收缩({ar:.2f})")
+            if dv < 0.20:
+                score += 2; reasons.append(f"通道紧({dv:.2f})")
+            # RV 三维度 (跨时间分位 + 绝对值 + 动量)
+            if rv_pct_d is not None and rv_pct_d < 0.30:
+                score += 2; reasons.append(f"RV%tile低({rv_pct_d:.2f})")
+            if rv < rv_threshold:                       # 绝对值低
+                score += 1; reasons.append(f"RV={rv:.1f}%<{rv_threshold:.0f}%")
+            if rv_drop > rv_drop_pct:                   # 仍在收缩
+                score += 1; reasons.append(f"RV降{rv_drop:.0f}%")
+            # 事件作为辅助加分
+            if d_fomc <= 7:
+                score += 1; reasons.append(f"距FOMC{d_fomc}天")
+            if d_nfp <= 5:
+                score += 1; reasons.append(f"距NFP{d_nfp}天")
+            if d_opex <= 5:
+                score += 0.5; reasons.append(f"距OPEX{d_opex}天")
+            signal = score >= 6
+        else:
+            # 旧 RV+事件评分 (兼容: close/high/low 没传)
+            if rv < rv_threshold:
+                score += 2; reasons.append(f"RV={rv:.1f}%<{rv_threshold}%")
+            if rv_drop > rv_drop_pct:
+                score += 1; reasons.append(f"RV降{rv_drop:.0f}%")
+            if d_fomc <= event_days:
+                score += EVENT_WEIGHT["FOMC"]; reasons.append(f"距FOMC {d_fomc}天")
+            if d_nfp <= event_days:
+                score += EVENT_WEIGHT["NFP"]; reasons.append(f"距NFP {d_nfp}天")
+            if d_opex <= event_days:
+                score += EVENT_WEIGHT["OPEX"]; reasons.append(f"距OPEX {d_opex}天")
+            signal = score >= 3
 
         # 硬门槛: RV 太高 → 成本太高, 不做
         if rv > rv_abs_max:
@@ -289,13 +335,17 @@ def detect_straddle_signal(rv_series, dates_index,
             signal = False
             if reasons:
                 reasons.append(f"但RV%tile={rv_pct_d:.2f}>{rv_pctile_max},IV过贵")
-        # v3.7.40: 事件邻近硬门槛 (仅 FOMC ≤ N 天才入场)
-        elif _event_only and d_fomc > _event_max_days:
+        # v3.7.41 双窗口过滤 — 实证拆桶 (GLD 21 年全量 ≥1.5% 突破占比):
+        #   FOMC 0-3d   : 17 笔, 87% 出突破 (急涨 alpha, 事件未消化)
+        #   FOMC 4-7d   : 3 笔, 33% (噪音, 屏蔽)
+        #   FOMC 8-12d  : 11 笔, 73% (后调整 alpha)
+        #   FOMC ≥13d   : 73 笔, 63% (静默压缩, 主力)
+        # 仅屏蔽 4-7d 噪音区, 其余全收
+        elif _event_only and (d_fomc >= 4 and d_fomc <= 7):
             signal = False
             if reasons:
-                reasons.append(f"但距FOMC{d_fomc}天>{_event_max_days},无事件驱动")
-        else:
-            signal = score >= 3
+                reasons.append(
+                    f"但距FOMC{d_fomc}d 落 4-7d 噪音区(33% 突破率), 屏蔽")
 
         records.append({
             "straddle_signal": signal,
@@ -460,6 +510,7 @@ def detect_short_vol_signal(rv_series, rv_pctile, dates_index,
                              score_trigger=SHORT_VOL_SCORE_TRIGGER,
                              regime=None,
                              daily_range=None,
+                             close=None, high=None, low=None,
                              asset=None):
     if asset is not None:
         try:
@@ -499,6 +550,20 @@ def detect_short_vol_signal(rv_series, rv_pctile, dates_index,
     rv_ma3 = rv_series.rolling(3, min_periods=2).mean()
     rv_ma10 = rv_series.rolling(10, min_periods=3).mean()
 
+    # v3.7.49: 技术指标 (BBW pct, ATR ratio) - 若 close/high/low 提供
+    use_tech = close is not None and high is not None and low is not None
+    bbw_p = atr_r = None
+    if use_tech:
+        try:
+            from core.vol_indicators import (bbw_pctile as _bbw_pctile,
+                                                atr_ratio as _atr_ratio)
+            bbw_p = _bbw_pctile(close)
+            atr_r = _atr_ratio(high, low, close, 5, 20)
+        except Exception:
+            use_tech = False
+
+    rv_mom5 = rv_series.pct_change(5)
+
     records = []
     for d in dates_index:
         rv = rv_series.get(d, 20)
@@ -522,58 +587,92 @@ def detect_short_vol_signal(rv_series, rv_pctile, dates_index,
         score = 0
         reasons = []
 
-        if rv_pctile_lo <= rv_pct <= rv_pctile_hi:
-            score += 2
-            reasons.append(f"RV%tile={rv_pct:.0%}∈[{rv_pctile_lo:.0%},{rv_pctile_hi:.0%}]")
-
-        if rv_abs_min <= rv <= rv_abs_max:
-            score += 1
-            reasons.append(f"RV={rv:.0f}%适中")
-
-        if rv_falling:
-            score += 2
-            reasons.append("RV趋势回落(3d<10d)")
-
-        if d_fomc > fomc_buffer + 5:
-            score += 2
-            reasons.append(f"距FOMC {d_fomc}天")
-        if d_nfp > nfp_buffer:
-            score += 1
-        if d_opex > opex_buffer:
-            score += 1
-
-        if regime_d in ("Bull", "Range"):
-            score += 1
-            reasons.append(f"{regime_d}稳定")
-
-        if daily_range is not None and dr_5d < daily_range_max:
-            score += 1
-            reasons.append(f"近5日振幅{dr_5d:.2f}%<{daily_range_max}%")
+        if use_tech:
+            # v3.7.49 修正: 做空 vol = (IV 贵 + 价格已 range-bound), 不是 vol expansion 顶
+            bv = bbw_p.get(d, 0.5) if bbw_p is not None else 0.5
+            ar = atr_r.get(d, 1.0) if atr_r is not None else 1.0
+            mom5 = rv_mom5.get(d, 0)
+            # 高 IV %tile (premium 大, 核心)
+            if rv_pct > 0.70:
+                score += 3; reasons.append(f"RV%tile={rv_pct:.0%}>70%(IV贵)")
+            elif rv_pct > 0.50:
+                score += 1; reasons.append(f"RV%tile={rv_pct:.0%}>50%")
+            # RV 拐头下降 (mean revert 启动)
+            if mom5 < -0.20:
+                score += 2; reasons.append(f"RV{mom5*100:.0f}%急降")
+            elif mom5 < -0.10:
+                score += 1; reasons.append(f"RV{mom5*100:.0f}%降")
+            # 价格已 range-bound (BBW/ATR 收缩, 不会大动)
+            if bv < 0.40:
+                score += 2; reasons.append(f"BBW收缩({bv:.2f})")
+            if ar < 1.0:
+                score += 1; reasons.append(f"ATR短/长<1({ar:.2f})")
+            # 远事件加分
+            if d_fomc > fomc_buffer + 5:
+                score += 1; reasons.append(f"距FOMC{d_fomc}天")
+            if d_nfp > nfp_buffer:
+                score += 1
+            if regime_d in ("Range",):
+                score += 1; reasons.append("Range regime")
+        else:
+            # 旧版 RV+事件评分 (兼容)
+            if rv_pctile_lo <= rv_pct <= rv_pctile_hi:
+                score += 2
+                reasons.append(f"RV%tile={rv_pct:.0%}∈[{rv_pctile_lo:.0%},{rv_pctile_hi:.0%}]")
+            if rv_abs_min <= rv <= rv_abs_max:
+                score += 1; reasons.append(f"RV={rv:.0f}%适中")
+            if rv_falling:
+                score += 2; reasons.append("RV趋势回落(3d<10d)")
+            if d_fomc > fomc_buffer + 5:
+                score += 2; reasons.append(f"距FOMC {d_fomc}天")
+            if d_nfp > nfp_buffer:
+                score += 1
+            if d_opex > opex_buffer:
+                score += 1
+            if regime_d in ("Bull", "Range"):
+                score += 1; reasons.append(f"{regime_d}稳定")
+            if daily_range is not None and dr_5d < daily_range_max:
+                score += 1
+                reasons.append(f"近5日振幅{dr_5d:.2f}%<{daily_range_max}%")
 
         # 硬门槛
+        # 硬门槛 (任意命中 → 屏蔽)
         block = None
-        if rv_pct > 0.75:
-            block = f"RV%tile={rv_pct:.0%}>75%(高位)"
-        elif rv_pct < 0.25:
-            block = f"RV%tile={rv_pct:.0%}<25%(premium太薄)"
-        elif rv < rv_abs_min:
-            block = f"RV={rv:.0f}%<{rv_abs_min}%"
-        elif rv > rv_abs_max:
-            block = f"RV={rv:.0f}%>{rv_abs_max}%"
-        elif d_fomc <= fomc_buffer:
-            block = f"距FOMC仅{d_fomc}天≤{fomc_buffer}"
-        elif d_nfp <= nfp_buffer:
-            block = f"距NFP仅{d_nfp}天≤{nfp_buffer}"
-        elif regime_d == "Bear":
-            block = "Bear regime"
-        elif min(d_fomc, d_nfp, d_opex) <= 5:
-            block = f"窗口内有事件(min={min(d_fomc,d_nfp,d_opex)}天)"
+        if use_tech:
+            # v3.7.49 简化硬门槛 (技术模式下用 RV %tile 上限不再卡 0.75)
+            if rv_pct < 0.25:
+                block = f"RV%tile={rv_pct:.0%}<25%(premium太薄)"
+            elif d_fomc <= 5:
+                block = f"距FOMC仅{d_fomc}天≤5(事件冲击风险)"
+            elif d_nfp <= 3:
+                block = f"距NFP仅{d_nfp}天≤3"
+            elif regime_d == "Bear":
+                block = "Bear regime(尾部风险)"
+        else:
+            if rv_pct > 0.75:
+                block = f"RV%tile={rv_pct:.0%}>75%(高位)"
+            elif rv_pct < 0.25:
+                block = f"RV%tile={rv_pct:.0%}<25%(premium太薄)"
+            elif rv < rv_abs_min:
+                block = f"RV={rv:.0f}%<{rv_abs_min}%"
+            elif rv > rv_abs_max:
+                block = f"RV={rv:.0f}%>{rv_abs_max}%"
+            elif d_fomc <= fomc_buffer:
+                block = f"距FOMC仅{d_fomc}天≤{fomc_buffer}"
+            elif d_nfp <= nfp_buffer:
+                block = f"距NFP仅{d_nfp}天≤{nfp_buffer}"
+            elif regime_d == "Bear":
+                block = "Bear regime"
+            elif min(d_fomc, d_nfp, d_opex) <= 5:
+                block = f"窗口内有事件(min={min(d_fomc,d_nfp,d_opex)}天)"
 
         if block:
             signal = False
             reasons = [block]
         else:
-            signal = score >= score_trigger
+            # tech 模式触发阈值 6, 旧模式用 score_trigger
+            _trigger = 6 if use_tech else score_trigger
+            signal = score >= _trigger
 
         records.append({
             "short_vol_signal": signal,

@@ -136,6 +136,72 @@ def suggest_changes(result):
     return suggestions
 
 
+def run_real_options_split_scan(asset: str, hold: int = 5) -> dict:
+    """v3.7.46: 加载真实期权回测 CSV, 跑 BC↔SP 单切扫描.
+
+    若 CSV 不存在或老旧 (>30 天), 触发重跑.
+    返回 best switch threshold + 对比 baseline.
+    """
+    import subprocess
+    csv_path = (Path(__file__).parent.parent.parent / "Gold"
+                  / "data" / "real_options_backtest"
+                  / f"{asset}_real_pnl_hold{hold}d.csv")
+    need_rerun = False
+    if not csv_path.exists():
+        need_rerun = True
+    else:
+        age_days = (datetime.now()
+                     - datetime.fromtimestamp(csv_path.stat().st_mtime)).days
+        if age_days > 30:
+            need_rerun = True
+    if need_rerun:
+        print(f"  真实期权 CSV 缺失/老旧, 重跑 backtest...")
+        subprocess.run([
+            "python", "-u",
+            str(Path(__file__).parent / "real_options_backtest.py"),
+            "--asset", asset, "--hold", str(hold),
+        ], check=False)
+
+    if not csv_path.exists():
+        return {"error": "real options CSV 仍缺失"}
+
+    df = pd.read_csv(csv_path)
+    bull = df[df['signal_type'].isin(['BUY CALL', 'SELL PUT'])].copy()
+    both = bull[bull['long_call_pnl_pct'].notna()
+                  & bull['short_put_pnl_pct'].notna()].copy()
+    n_total = len(both)
+    if n_total < 20:
+        return {"error": f"双策略 P&L 样本不足 ({n_total} 笔)"}
+
+    # 0.05 步长扫单切
+    import numpy as np
+    best = {'th': 0.5, 'wr': 0, 'eu': 0}
+    rows = []
+    for th in np.arange(0.05, 1.001, 0.05):
+        bc = both[both['rv_pctile'] < th]
+        sp = both[both['rv_pctile'] >= th]
+        if len(bc) == 0 or len(sp) == 0:
+            continue
+        wr_bc = (bc['long_call_pnl_pct'] > 0).mean()
+        wr_sp = (sp['short_put_pnl_pct'] > 0).mean()
+        n_bc, n_sp = len(bc), len(sp)
+        comb = (wr_bc * n_bc + wr_sp * n_sp) / (n_bc + n_sp)
+        eu = comb * (n_bc + n_sp)
+        rows.append({"th": round(th, 2), "n_bc": n_bc, "n_sp": n_sp,
+                       "wr_bc": round(wr_bc, 3), "wr_sp": round(wr_sp, 3),
+                       "combined_wr": round(comb, 3), "expected_wins": round(eu, 1)})
+        if eu > best['eu']:
+            best = {'th': round(th, 2), 'wr': round(comb, 3), 'eu': round(eu, 1),
+                     'n_bc': n_bc, 'n_sp': n_sp,
+                     'wr_bc': round(wr_bc, 3), 'wr_sp': round(wr_sp, 3)}
+
+    return {
+        "n_total": n_total,
+        "best_switch": best,
+        "all_thresholds": rows,
+    }
+
+
 def save_results(result, out_dir):
     """保存到 data/tune_history/."""
     os.makedirs(out_dir, exist_ok=True)
@@ -187,8 +253,27 @@ def main():
     for asset in assets:
         try:
             result = run_grid_search(asset, args.years, args.step)
+            # v3.7.46: 加真实期权切点扫描 (双源 — synth proxy + real options)
+            print(f"\n[{asset}] 真实期权 BC↔SP 切点扫描...")
+            real_split = run_real_options_split_scan(asset, hold=5)
+            result["real_options_split"] = real_split
             results_all.append(result)
             suggestions = suggest_changes(result)
+            # 加真实期权切点建议
+            if real_split.get("best_switch"):
+                bs = real_split["best_switch"]
+                cur_switch = result["current_config"]["rv_filter_low"]
+                if abs(bs["th"] - cur_switch) >= 0.05:
+                    suggestions.append({
+                        "type": "rv_split (real options)",
+                        "current": cur_switch,
+                        "best": bs["th"],
+                        "improve_note": (
+                            f"真实期权扫描: 切点 {bs['th']} 期望胜次 {bs['eu']:.1f} "
+                            f"(BC {bs.get('wr_bc',0)*100:.0f}%×{bs.get('n_bc',0)} + "
+                            f"SP {bs.get('wr_sp',0)*100:.0f}%×{bs.get('n_sp',0)})"
+                        ),
+                    })
             all_suggestions.extend(suggestions)
 
             # 打印简洁报告
@@ -226,10 +311,15 @@ def main():
     print(f"\n{'='*60}\n建议汇总\n{'='*60}")
     if all_suggestions:
         for s in all_suggestions:
-            print(f"  [{s['type']}] 当前 {s['current']} Sharpe {s['current_sharpe']:.3f}")
-            print(f"     建议 → {s['best']} Sharpe {s['best_sharpe']:.3f} "
-                  f"(改进 {s['improve_pct']:+.1f}%)")
-            print(f"     {s['note']}\n")
+            if s.get("type") == "rv_split (real options)":
+                print(f"  [{s['type']}] 当前切点 {s['current']:.2f} → 建议 {s['best']:.2f}")
+                print(f"     {s['improve_note']}\n")
+            else:
+                print(f"  [{s['type']}] 当前 {s['current']} "
+                      f"Sharpe {s['current_sharpe']:.3f}")
+                print(f"     建议 → {s['best']} Sharpe {s['best_sharpe']:.3f} "
+                      f"(改进 {s.get('improve_pct',0):+.1f}%)")
+                print(f"     {s.get('note','')}\n")
     else:
         print("  当前所有配置接近最优 (改进 < 5%), 无需切换\n")
 

@@ -91,6 +91,7 @@ def generate_daily_signals(close_d, high_d, low_d,
                            rv_filter=RV_FILTER_ENABLED,
                            rv_low=RV_FILTER_LOW,
                            rv_high=RV_FILTER_HIGH,
+                           volume=None,
                            asset=None):
     """asset 参数会查 strategy_config 覆盖默认阈值 (per-asset 校准)."""
     if asset is not None:
@@ -112,6 +113,19 @@ def generate_daily_signals(close_d, high_d, low_d,
     """
     bp_dates = upper_band.dropna().index.intersection(
         lower_band.dropna().index)
+
+    # v3.7.47: dir_indicators 计算 sizing 依据
+    sizing_atr = None
+    sizing_confirm = None
+    try:
+        from core.dir_indicators import atr_ratio_5_20, directional_confirm
+        sizing_atr = atr_ratio_5_20(high_d, low_d, close_d)
+        if volume is not None:
+            sizing_confirm = directional_confirm(
+                close_d, high_d, low_d, volume, side='BUY')
+    except Exception:
+        pass
+
     records = []
 
     for d in bp_dates:
@@ -161,6 +175,23 @@ def generate_daily_signals(close_d, high_d, low_d,
         if exit_sig:
             parts.append("EXIT")
 
+        # v3.7.47: sizing 倍数 (基础 1×, 加分: ATR 收缩 +1×, 反转齐心 +2×)
+        sizing = 1.0
+        sizing_reasons = []
+        if sizing_atr is not None and d in sizing_atr.index:
+            atr_v = sizing_atr.get(d, np.nan)
+            if not np.isnan(atr_v) and atr_v < 1.0:
+                sizing += 1.0
+                sizing_reasons.append(f"ATR收缩({atr_v:.2f})")
+        if sizing_confirm is not None and d in sizing_confirm.index:
+            cnt = sizing_confirm['confirm_count'].get(d, 0)
+            if cnt >= 3:
+                sizing += 2.0
+                sizing_reasons.append(f"反转齐心({int(cnt)}/4)")
+            elif cnt >= 2:
+                sizing += 1.0
+                sizing_reasons.append(f"反转部分({int(cnt)}/4)")
+
         records.append({
             "date": d, "close": c, "high": h, "low": lo,
             "upper": ub, "lower": lb,
@@ -170,6 +201,8 @@ def generate_daily_signals(close_d, high_d, low_d,
             "exit_signal": exit_sig,
             "regime": regime.get(d, "?"), "rv_pctile": rv,
             "signal_text": " + ".join(parts),
+            "sizing": round(sizing, 1),
+            "sizing_reasons": ", ".join(sizing_reasons) if sizing_reasons else "",
         })
 
     return pd.DataFrame(records).set_index("date")

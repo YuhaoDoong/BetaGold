@@ -5,6 +5,12 @@
   绝对 RV 步长 1% (整数百分比)
   Score 步长 1 (整数)
 
+方向性 RV 切点框架 (v3.7.46 实证):
+  rv_filter_low/high 是 BUY_CALL ↔ SELL_PUT 切换点 (单切, lo=hi).
+  rv_pctile < 切点 → BUY_CALL (低 IV 期权便宜, 直接做多)
+  rv_pctile ≥ 切点 → SELL_PUT (高 IV 替代, 收 premium 而非付)
+  v3.7.46 测试: 切点之上加 SKIP 屏蔽都使期望胜次下降 — 不加.
+
 
 
 设计目标:
@@ -93,17 +99,19 @@ ASSET_CONFIGS: Dict[str, AssetConfig] = {
     # GLD: v3.7.29 网格搜索最优
     # 5y 数据, 38 笔 BUY/SELL, 胜 82%, 总 +48.9%, Sharpe 0.638
     "GLD": AssetConfig(
-        rv_filter_enabled=False,        # v3.7.39: 真实期权 P&L 验证, 关 RV 过滤
-        rv_filter_low=0.50, rv_filter_high=0.85,  # 兜底 (rv_filter_enabled=False 不用)
-        short_vol_rv_pctile_lo=0.45,    # IC 保留, 没新数据
+        # v3.7.46 — 0.05 步长扫描后改回单切
+        # 双切 0.55/0.75 胜率 60.4% 但损失 25% 信号 (期望胜次降低)
+        # 单切 th=0.45: 8 BC (75% 胜) + 56 SP (57%), 合成 59.4%, 全覆盖
+        # 单切期望胜次=38 > 双切=29 → 选单切
+        rv_filter_enabled=True,
+        rv_filter_low=0.45,              # rv<0.45 → BUY_CALL (低 IV)
+        rv_filter_high=0.45,             # rv≥0.45 → SELL_PUT (中-高 IV 替代)
+        short_vol_rv_pctile_lo=0.45,
         short_vol_rv_pctile_hi=0.80,
-        straddle_rv_pctile_max=1.00,    # v3.7.39: 移除 STRADDLE 过滤
-        # v3.7.41 ATM strike 校准后真实 P&L:
-        # STRADDLE FOMC≤5d: 16 笔 50% 胜率 +5.4% (旧偏 OTM 时显示 +13.9%, 假象)
-        # STRADDLE FOMC>5d: 55 笔 64% 胜率 +2.1% — 仍有正期望
-        # 结论: event_proximity 仍有 edge 但小; 保留过滤但放宽为可选
+        straddle_rv_abs_max=30.0,
+        straddle_rv_pctile_max=1.00,
         last_tuned="2026-04-30",
-        notes="v3.7.41 ATM strike 校准, FOMC≤5d 边际收益 +5.4% 实测",
+        notes="v3.7.46 单切 0.45 (合成 59.4%, 64/64 全覆盖, 期望胜次最大)",
     ),
 
     # SLV: v3.7.30 SLV 单独 grid search
@@ -111,17 +119,20 @@ ASSET_CONFIGS: Dict[str, AssetConfig] = {
     # SHORT_VOL 5y, 0.25/0.775: 77 笔 88% +73.7% Sharpe 0.848
     # 与 GLD 显著不同 — SLV 笔数翻倍, 单笔波动更大
     "SLV": AssetConfig(
-        rv_filter_enabled=False,        # v3.7.39: 真实数据 SLV BUY CALL 无过滤 +265%
-        rv_filter_low=0.50, rv_filter_high=0.85,  # 兜底
+        # v3.7.46 — 单切优于双切 (期望胜次)
+        # 单切 th=0.75: 36 BC (67%) + 33 SP (67%), 合成 66.7%, 全覆盖
+        # 双切 0.30/0.80: 71.1% 但损失 35% 信号
+        # 单切期望胜次=46 > 双切=32 → 选单切
+        rv_filter_enabled=True,
+        rv_filter_low=0.75,
+        rv_filter_high=0.75,
         short_vol_rv_pctile_lo=0.25,
         short_vol_rv_pctile_hi=0.775,
-        straddle_rv_pctile_max=1.00,    # 移除 (SLV STRADDLE 整体 Sharpe 差)
-        # v3.7.41 strike 修正后真实 P&L: STRADDLE FOMC≤5d 仅 +0.9% 胜率 43%
-        # STRADDLE FOMC>5d 胜率 25% avg -2.0% — 几乎无 alpha
-        # 因此即使开 event_proximity_only, 也建议偏好 BUY CALL/SELL PUT
-        straddle_priority_score=99,     # 实质禁用 SLV STRADDLE 优先级
+        straddle_rv_abs_max=25.0,
+        straddle_rv_pctile_max=1.00,
+        straddle_priority_score=6,
         last_tuned="2026-04-30",
-        notes="v3.7.41 ATM strike 校准后, SLV STRADDLE alpha 微弱; 优先方向性",
+        notes="v3.7.46 SLV 单切 0.75 (合成 66.7%, 全覆盖, 期望胜次最大)",
     ),
 
     # 未来扩展示例 (留位):
