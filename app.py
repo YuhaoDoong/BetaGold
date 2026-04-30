@@ -1567,11 +1567,18 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                     return i
             return None
         def xi_arr(dates): return [xi(d) for d in dates if xi(d) is not None]
+        # v3.7.35: 天数多时只显示日期, 天数少时显示日期+时间
+        _show_hours = _intraday_days <= 5
         def _fmt_tick(x, pos):
             idx = int(round(x))
             if 0 <= idx < len(plot_ts):
                 ts = plot_ts[idx]
-                return ts.strftime("%m/%d %H:%M")
+                if _show_hours:
+                    return ts.strftime("%m/%d %H:%M")
+                # 天数多: 仅日期; 跨日时仅在日变化的第一根标日期
+                if idx == 0 or plot_ts[idx-1].date() != ts.date():
+                    return ts.strftime("%m/%d")
+                return ""
             return ""
         # 兼容旧 plot_dates 引用 (后续部分用 plot_dates 算 xlim 等)
         plot_dates = plot_ts
@@ -1677,29 +1684,53 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     _unified_viz = _dedupe(_unified_viz_raw, close_d,
                             log_price_fn=_intra_log_price)
 
+    # v3.7.35: 标记 + 图例增强 — 加 SHORT_VOL 标记说明, MIXED 有边框
     _sig_colors = {
-        "BUY CALL": ("#2196F3", "^"), "SELL PUT": ("#FF9800", "^"),
-        "EXIT": ("#F44336", "v"),
-        "STRADDLE": ("#FFD700", "*"),
-        "SHORT_VOL": ("#FF6F00", "P"),
+        "BUY CALL": ("#2196F3", "^"),    # 蓝 ▲
+        "SELL PUT": ("#FF9800", "^"),    # 橙 ▲ (方向性都用 ▲)
+        "EXIT": ("#F44336", "v"),        # 红 ▼
+        "STRADDLE": ("#FFD700", "*"),    # 金 ★ (做多波动率)
+        "SHORT_VOL": ("#FF6F00", "P"),   # 橘 ✚ (做空波动率, P = plus 十字)
     }
+    # 跟踪每种 chosen 是否已加图例 (避免重复)
+    _legend_added = set()
     for d, r in _unified_viz.iterrows():
         if xi(d) is None:
             continue
         chosen = r["chosen"]
         entry_p = r["entry_p"]
-        # MIXED: 有 "+" 取主信号 (方向性) 颜色但加紫边
         if "+" in chosen:
             base = chosen.split(" + ")[0]
             color, marker = _sig_colors.get(base, ("gray", "o"))
             size = 160
+            label_key = chosen
         else:
             color, marker = _sig_colors.get(chosen, ("gray", "o"))
             size = (200 if "STRADDLE" in chosen or "SHORT_VOL" in chosen
                     else (120 if chosen != "EXIT" else 100))
+            label_key = chosen
         edge = "purple" if "+" in chosen else "black"
-        ax.scatter([xi(d)], [entry_p * _r], marker=marker, s=size,
-                   color=color, edgecolors=edge, lw=1.0, zorder=6)
+        # 第一次出现时加 legend label
+        if label_key not in _legend_added:
+            _label = {
+                "BUY CALL": "▲ BUY CALL (做多)",
+                "SELL PUT": "▲ SELL PUT (高 RV 做多)",
+                "EXIT": "▼ EXIT (退出)",
+                "STRADDLE": "★ STRADDLE (做多波动率)",
+                "SHORT_VOL": "✚ SHORT_VOL (做空波动率)",
+            }.get(label_key, label_key)
+            ax.scatter([xi(d)], [entry_p * _r], marker=marker, s=size,
+                       color=color, edgecolors=edge, lw=1.0, zorder=6,
+                       label=_label)
+            _legend_added.add(label_key)
+        else:
+            ax.scatter([xi(d)], [entry_p * _r], marker=marker, s=size,
+                       color=color, edgecolors=edge, lw=1.0, zorder=6)
+    # 加 legend (放主图)
+    if _legend_added:
+        ax.legend(loc="upper left", fontsize=8, framealpha=0.85,
+                   ncol=min(len(_legend_added), 3),
+                   title="信号类型 (紫色边框=MIXED 组合)")
 
     # 回测止盈标注 (淡色); 跳过活跃持仓 (无 exit_date)
     _closed = [t for t in trades
@@ -2403,9 +2434,10 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         st.caption(f"今日 {_td_dt.date()} 尚无盘中触发. "
                    "(规则可在 core/intraday_triggers.py 调整)")
 
-    # ── 持仓管理 (只显示未平仓) ──
+    # ── 持仓管理 (v3.7.35: 信号模拟持仓) ──
     st.divider()
-    st.subheader("持仓管理")
+    st.subheader("📊 信号模拟持仓 (系统自动追踪)")
+    st.caption("基于 run_backtest + backtest_straddle/short_vol 的回测仓位 — 用于对照实盘")
 
     tp_recs = []
 
@@ -2698,6 +2730,164 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         st.dataframe(_tp_df, use_container_width=True, hide_index=True)
     else:
         st.caption("无未平仓持仓")
+
+    # ── 实盘持仓 (v3.7.35 手动录入, 用于校准模型) ──
+    st.divider()
+    st.subheader("💰 实盘持仓 (手动录入)")
+    st.caption("记录真实交易, 与系统模拟持仓对照, 用于模型校准 + IV/RV 偏差分析")
+
+    # 实盘持仓 csv 路径
+    _real_pos_path = os.path.join(_intra_cfg["data_root"],
+                                    f"real_positions_{asset_key.lower()}.csv")
+    # 加载已有
+    if os.path.exists(_real_pos_path):
+        _real_pos = pd.read_csv(_real_pos_path, parse_dates=["入场日", "出场日"])
+    else:
+        _real_pos = pd.DataFrame(columns=[
+            "入场日", "信号类型", "对应模拟信号", "工具",
+            "标的", "入场价", "Strike", "DTE",
+            "Long Call cost", "Long Put cost", "其他成本",
+            "总成本", "出场日", "Long Call exit", "Long Put exit", "出场价",
+            "实现 P&L", "备注",
+        ])
+
+    # 录入表单
+    with st.expander("➕ 录入新持仓", expanded=False):
+        with st.form("new_real_pos"):
+            cols_form = st.columns(4)
+            with cols_form[0]:
+                _entry_d = st.date_input("入场日", value=pd.Timestamp.now().date())
+                _sig_type = st.selectbox("信号类型",
+                                          ["BUY CALL", "SELL PUT", "STRADDLE",
+                                           "SHORT_VOL (IC)", "FUTURES_LONG", "其他"])
+                _underlying = st.text_input("标的代码", value=asset_key)
+            with cols_form[1]:
+                _instrument = st.selectbox("工具",
+                                            ["期权 (Long Straddle)",
+                                             "期权 (Short Strangle/IC)",
+                                             "期权 (Long Call)",
+                                             "期权 (Long Put)",
+                                             "期权 (Short Put)",
+                                             "期货 (Long)",
+                                             "ETF (现货)"])
+                _entry_price = st.number_input("入场价", value=0.0, step=0.01,
+                                                  format="%.2f")
+                _strike = st.number_input("Strike (期权)", value=0.0, step=0.5,
+                                            format="%.2f")
+            with cols_form[2]:
+                _dte = st.number_input("DTE (天)", value=0, step=1, min_value=0)
+                _call_cost = st.number_input("Long Call cost",
+                                                value=0.0, step=0.01,
+                                                format="%.2f")
+                _put_cost = st.number_input("Long Put cost",
+                                              value=0.0, step=0.01,
+                                              format="%.2f")
+            with cols_form[3]:
+                _other_cost = st.number_input("其他成本",
+                                                value=0.0, step=0.01,
+                                                format="%.2f")
+                _matched_sig = st.text_input("对应模拟信号 (可选)",
+                                              placeholder="e.g. 4/29 STRADDLE")
+                _notes = st.text_input("备注", placeholder="如 NFP 5/2")
+            _submit = st.form_submit_button("✅ 添加持仓")
+            if _submit and _entry_price > 0:
+                _total = _call_cost + _put_cost + _other_cost
+                _new_row = {
+                    "入场日": pd.Timestamp(_entry_d),
+                    "信号类型": _sig_type,
+                    "对应模拟信号": _matched_sig,
+                    "工具": _instrument,
+                    "标的": _underlying,
+                    "入场价": _entry_price,
+                    "Strike": _strike,
+                    "DTE": _dte,
+                    "Long Call cost": _call_cost,
+                    "Long Put cost": _put_cost,
+                    "其他成本": _other_cost,
+                    "总成本": _total,
+                    "出场日": pd.NaT,
+                    "Long Call exit": np.nan,
+                    "Long Put exit": np.nan,
+                    "出场价": np.nan,
+                    "实现 P&L": np.nan,
+                    "备注": _notes,
+                }
+                _real_pos = pd.concat([_real_pos, pd.DataFrame([_new_row])],
+                                        ignore_index=True)
+                _real_pos.to_csv(_real_pos_path, index=False)
+                st.success("已添加, 刷新页面查看")
+
+    # 平仓录入
+    if len(_real_pos) > 0:
+        _open_pos = _real_pos[_real_pos["出场日"].isna()]
+        if len(_open_pos) > 0:
+            with st.expander(f"🔚 平仓录入 ({len(_open_pos)} 个未平仓)",
+                              expanded=False):
+                _close_idx = st.selectbox(
+                    "选择持仓",
+                    _open_pos.index,
+                    format_func=lambda i: f"{_real_pos.loc[i, '入场日'].date()} "
+                                            f"{_real_pos.loc[i, '信号类型']} "
+                                            f"{_real_pos.loc[i, '工具']}")
+                with st.form("close_real_pos"):
+                    cc1, cc2, cc3 = st.columns(3)
+                    with cc1:
+                        _exit_d = st.date_input("出场日",
+                                                  value=pd.Timestamp.now().date())
+                        _exit_call = st.number_input(
+                            "Long Call exit", value=0.0, step=0.01, format="%.2f")
+                    with cc2:
+                        _exit_put = st.number_input(
+                            "Long Put exit", value=0.0, step=0.01, format="%.2f")
+                        _exit_price = st.number_input(
+                            "出场价 (标的)", value=0.0, step=0.01, format="%.2f")
+                    with cc3:
+                        _exit_other = st.number_input(
+                            "其他出场金额", value=0.0, step=0.01, format="%.2f")
+                        _close_notes = st.text_input("平仓备注")
+                    _submit_close = st.form_submit_button("✅ 平仓")
+                    if _submit_close:
+                        _entry = _real_pos.loc[_close_idx]
+                        _exit_total = _exit_call + _exit_put + _exit_other
+                        _pnl = _exit_total - _entry["总成本"]
+                        _real_pos.loc[_close_idx, "出场日"] = pd.Timestamp(_exit_d)
+                        _real_pos.loc[_close_idx, "Long Call exit"] = _exit_call
+                        _real_pos.loc[_close_idx, "Long Put exit"] = _exit_put
+                        _real_pos.loc[_close_idx, "出场价"] = _exit_price
+                        _real_pos.loc[_close_idx, "实现 P&L"] = _pnl
+                        if _close_notes:
+                            _real_pos.loc[_close_idx, "备注"] = (
+                                str(_real_pos.loc[_close_idx, "备注"]) +
+                                " | 平仓: " + _close_notes)
+                        _real_pos.to_csv(_real_pos_path, index=False)
+                        st.success(f"平仓 P&L = ${_pnl:+.2f}, 刷新查看")
+
+    # 显示
+    if len(_real_pos) > 0:
+        # 按入场日倒序
+        _real_disp = _real_pos.sort_values("入场日", ascending=False).copy()
+        _real_disp["入场日"] = _real_disp["入场日"].dt.strftime("%m/%d")
+        _real_disp["出场日"] = _real_disp["出场日"].apply(
+            lambda x: x.strftime("%m/%d") if pd.notna(x) else "持仓中")
+        st.dataframe(_real_disp, use_container_width=True, hide_index=True)
+
+        # 汇总 + 模型对比
+        _closed_real = _real_pos[_real_pos["出场日"].notna()]
+        if len(_closed_real) > 0:
+            _wins = (_closed_real["实现 P&L"] > 0).sum()
+            _total_pnl = _closed_real["实现 P&L"].sum()
+            cs1, cs2, cs3 = st.columns(3)
+            with cs1:
+                st.metric("已平仓", f"{len(_closed_real)}",
+                          delta=f"胜 {_wins}/{len(_closed_real)} ({_wins/len(_closed_real):.0%})")
+            with cs2:
+                st.metric("累计实现 P&L", f"${_total_pnl:+.2f}")
+            with cs3:
+                _avg = _total_pnl / len(_closed_real)
+                st.metric("平均/笔", f"${_avg:+.2f}")
+        st.caption(f"实盘记录文件: {_real_pos_path}")
+    else:
+        st.info("尚无实盘记录, 用上方表单录入实际开仓信息")
 
     # ── 统一策略回测 ──
     st.divider()
