@@ -42,21 +42,98 @@ def occ_symbol(underlying: str, expiry: str, strike: float,
     return f"{underlying.upper()}{yymmdd}{option_type.upper()}{strike_str}"
 
 
-def fetch_option_history(symbol: str, period: str = "6mo"
-                            ) -> Optional[pd.DataFrame]:
-    """拉单期权历史日 K 线 (yfinance)."""
+def occ_to_moomoo(occ_symbol_str: str) -> str:
+    """把 OCC 代码 (8 位 strike) 转成 Moomoo 格式 (无前导零).
+
+    SLV260515C00065000 → US.SLV260515C65000
+    GLD260515C00300000 → US.GLD260515C300000
+
+    Moomoo 期权代码: US.<UNDERLYING><YYMMDD><C/P><strike_thousandths_no_leading_zero>
+    """
+    # 从 OCC 末尾 8 位 strike 解码后去前导零
+    # 假设 underlying 长度 ≤ 5 (SLV, GLD, SPY 等)
+    s = occ_symbol_str.strip().upper()
+    # 找 strike 起始位 (倒数 8 位都是数字)
+    if len(s) < 15:
+        return f"US.{s}"
+    strike_8 = s[-8:]
+    rest = s[:-8]  # underlying + yymmdd + C/P
+    strike_int = int(strike_8)
+    # Moomoo 用 strike × 1000 整数, 但去掉前导零 (e.g. 65000, 300000)
+    return f"US.{rest}{strike_int}"
+
+
+def fetch_option_history_moomoo(symbol: str,
+                                   start: Optional[str] = None,
+                                   end: Optional[str] = None,
+                                   ) -> Optional[pd.DataFrame]:
+    """通过 Moomoo OpenD 拉期权历史日 K (fallback 源).
+
+    Moomoo 优势: 与 yfinance 互补. GLD 月度通常比 yfinance 多 ~6 月历史.
+    需 OpenD 在 127.0.0.1:11111 运行.
+
+    Args:
+        symbol: OCC 格式 (e.g. SLV260515C00065000) — 自动转 Moomoo 格式
+    """
+    try:
+        from moomoo import (OpenQuoteContext, RET_OK, KLType, AuType)
+    except ImportError:
+        return None
+    mm_code = occ_to_moomoo(symbol)
+    if start is None:
+        start = (pd.Timestamp.now() - pd.Timedelta(days=730)).strftime("%Y-%m-%d")
+    if end is None:
+        end = pd.Timestamp.now().strftime("%Y-%m-%d")
+    ctx = None
+    try:
+        ctx = OpenQuoteContext(host="127.0.0.1", port=11111)
+        ret, kline, _ = ctx.request_history_kline(
+            code=mm_code, start=start, end=end,
+            ktype=KLType.K_DAY, autype=AuType.NONE, max_count=1000,
+        )
+        if ret != RET_OK or not isinstance(kline, pd.DataFrame) or len(kline) == 0:
+            return None
+        # Moomoo schema: time_key, open, close, high, low, volume
+        df = pd.DataFrame({
+            "Open": kline["open"].astype(float).values,
+            "High": kline["high"].astype(float).values,
+            "Low": kline["low"].astype(float).values,
+            "Close": kline["close"].astype(float).values,
+            "Volume": kline["volume"].astype(float).values,
+        }, index=pd.to_datetime(kline["time_key"]).dt.normalize())
+        return df
+    except Exception as e:
+        print(f"[fetch_option_history_moomoo] {mm_code}: {e}")
+        return None
+    finally:
+        if ctx is not None:
+            try: ctx.close()
+            except Exception: pass
+
+
+def fetch_option_history(symbol: str, period: str = "6mo",
+                           use_moomoo_fallback: bool = True,
+                           ) -> Optional[pd.DataFrame]:
+    """拉单期权历史日 K 线 (yfinance 主, Moomoo 兜底).
+
+    v3.7.41: yfinance 失败 → Moomoo OpenD 兜底 (需在 11111 运行).
+    """
     try:
         import yfinance as yf
         t = yf.Ticker(symbol)
         df = t.history(period=period)
-        if df is None or len(df) == 0:
-            return None
-        # 去 timezone, normalize 日期
-        df.index = pd.to_datetime(df.index).tz_localize(None).normalize()
-        return df[["Open", "High", "Low", "Close", "Volume"]]
+        if df is not None and len(df) > 0:
+            df.index = pd.to_datetime(df.index).tz_localize(None).normalize()
+            return df[["Open", "High", "Low", "Close", "Volume"]]
     except Exception as e:
-        print(f"[fetch_option_history] {symbol}: {e}")
-        return None
+        print(f"[fetch_option_history.yf] {symbol}: {e}")
+
+    if use_moomoo_fallback:
+        df = fetch_option_history_moomoo(symbol)
+        if df is not None and len(df) > 0:
+            return df
+
+    return None
 
 
 def compute_real_straddle_pnl(call_hist: pd.DataFrame,
@@ -75,16 +152,12 @@ def compute_real_straddle_pnl(call_hist: pd.DataFrame,
     entry_d = pd.Timestamp(entry_date).normalize()
     exit_d_target = entry_d + pd.Timedelta(days=hold_days)
 
-    if entry_d not in call_hist.index:
-        avail = call_hist.index[call_hist.index >= entry_d]
-        if len(avail) == 0:
-            return None
-        entry_d = avail[0]
-    if entry_d not in put_hist.index:
-        avail = put_hist.index[put_hist.index >= entry_d]
-        if len(avail) == 0:
-            return None
-        entry_d = max(entry_d, avail[0])
+    # 在 call ∩ put 共同索引上找 ≥ entry_d 的首个交易日
+    common_idx = call_hist.index.intersection(put_hist.index)
+    avail_common = common_idx[common_idx >= entry_d]
+    if len(avail_common) == 0:
+        return None
+    entry_d = avail_common[0]
 
     col = "Open" if entry_price_mode == "open" else "Close"
     entry_call = float(call_hist.loc[entry_d, col])

@@ -97,9 +97,13 @@ ASSET_CONFIGS: Dict[str, AssetConfig] = {
         rv_filter_low=0.50, rv_filter_high=0.85,  # 兜底 (rv_filter_enabled=False 不用)
         short_vol_rv_pctile_lo=0.45,    # IC 保留, 没新数据
         short_vol_rv_pctile_hi=0.80,
-        straddle_rv_pctile_max=1.00,    # v3.7.39: 移除 STRADDLE 过滤 (屏蔽 +141.8%)
+        straddle_rv_pctile_max=1.00,    # v3.7.39: 移除 STRADDLE 过滤
+        # v3.7.41 ATM strike 校准后真实 P&L:
+        # STRADDLE FOMC≤5d: 16 笔 50% 胜率 +5.4% (旧偏 OTM 时显示 +13.9%, 假象)
+        # STRADDLE FOMC>5d: 55 笔 64% 胜率 +2.1% — 仍有正期望
+        # 结论: event_proximity 仍有 edge 但小; 保留过滤但放宽为可选
         last_tuned="2026-04-30",
-        notes="v3.7.39 真实期权 P&L 验证 - 方向性 RV 过滤反向有害, 关闭",
+        notes="v3.7.41 ATM strike 校准, FOMC≤5d 边际收益 +5.4% 实测",
     ),
 
     # SLV: v3.7.30 SLV 单独 grid search
@@ -112,8 +116,12 @@ ASSET_CONFIGS: Dict[str, AssetConfig] = {
         short_vol_rv_pctile_lo=0.25,
         short_vol_rv_pctile_hi=0.775,
         straddle_rv_pctile_max=1.00,    # 移除 (SLV STRADDLE 整体 Sharpe 差)
+        # v3.7.41 strike 修正后真实 P&L: STRADDLE FOMC≤5d 仅 +0.9% 胜率 43%
+        # STRADDLE FOMC>5d 胜率 25% avg -2.0% — 几乎无 alpha
+        # 因此即使开 event_proximity_only, 也建议偏好 BUY CALL/SELL PUT
+        straddle_priority_score=99,     # 实质禁用 SLV STRADDLE 优先级
         last_tuned="2026-04-30",
-        notes="v3.7.39 真实期权 P&L 验证 — RV 过滤反向, 关闭",
+        notes="v3.7.41 ATM strike 校准后, SLV STRADDLE alpha 微弱; 优先方向性",
     ),
 
     # 未来扩展示例 (留位):

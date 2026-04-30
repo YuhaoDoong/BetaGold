@@ -67,13 +67,53 @@ def smart_pick_expiry(signal_date) -> pd.Timestamp:
     return pd.Timestamp("2027-01-15")
 
 
-def leaps_strike(asset: str, spot: float) -> float:
-    """LEAPS 可用 strike 通常是整数, 取最近的常见 strike."""
+_LEAPS_STRIKE_CACHE: dict = {}
+
+
+def leaps_strike(asset: str, spot: float,
+                   expiry_str: str | None = None) -> float:
+    """LEAPS strike — yfinance 探测 ATM 可用 strike (v3.7.41 strike 修正).
+
+    旧版用硬编码 candidates 列表, GLD 间隔 $20+, 误差大.
+    新版按真实 LEAPS strike 间距 (GLD $5, SLV $1) 由 ATM 向外探测,
+    取首个有 yfinance 历史数据的 strike — 真正最接近 ATM.
+
+    传入 expiry_str 才能探测 (否则 fallback 到旧 candidates).
+    """
+    if expiry_str is None:
+        # fallback: 老接口, 用粗糙 candidates
+        if asset == "GLD":
+            cand = [380, 400, 420, 440, 460, 480, 500, 520, 540]
+        else:
+            cand = [30, 35, 40, 45, 50, 55, 60, 65, 70, 75]
+        return min(cand, key=lambda x: abs(x - spot))
+
+    cache_key = (asset, round(spot, 1), expiry_str)
+    if cache_key in _LEAPS_STRIKE_CACHE:
+        return _LEAPS_STRIKE_CACHE[cache_key]
+
     if asset == "GLD":
-        candidates = [350, 380, 400, 420, 440, 460, 480, 500, 520]
-    else:  # SLV
-        candidates = [30, 35, 40, 45, 50, 55, 60, 65, 70, 75]
-    return min(candidates, key=lambda x: abs(x - spot))
+        base = round(spot / 5) * 5
+        offsets = [0, 5, -5, 10, -10, 15, -15, 20, -20, 25, -25]
+    else:  # SLV $1 间隔
+        base = round(spot)
+        offsets = [0, 1, -1, 2, -2, 3, -3, 4, -4, 5, -5]
+
+    import yfinance as yf
+    for off in offsets:
+        k = base + off
+        if k <= 0:
+            continue
+        sym = occ_symbol(asset, expiry_str, k, "C")
+        try:
+            df = yf.Ticker(sym).history(period="1mo")
+            if df is not None and len(df) > 5:
+                _LEAPS_STRIKE_CACHE[cache_key] = float(k)
+                return float(k)
+        except Exception:
+            pass
+    _LEAPS_STRIKE_CACHE[cache_key] = float(base)
+    return float(base)
 
 
 def round_strike(spot: float, step: float = None) -> float:
@@ -305,13 +345,15 @@ def backtest_signal(asset, signal_date, signal_type, spot,
     sig_d = pd.Timestamp(signal_date)
     age_days = (pd.Timestamp.now() - sig_d).days
     # v3.7.39: 智能选 expiry — 老信号用 LEAPS, 新信号用月度
+    # v3.7.41: LEAPS strike 由 yfinance 探测 ATM 真实可用 strike (修正错配)
     if age_days >= 90:
         expiry = smart_pick_expiry(sig_d)
-        strike = leaps_strike(asset, spot)
+        expiry_str = expiry.strftime("%Y-%m-%d")
+        strike = leaps_strike(asset, spot, expiry_str)
     else:
         expiry = nearest_monthly_third_friday(sig_d, target_dte)
-        strike = find_valid_strike(asset, spot, expiry.strftime("%Y-%m-%d"))
-    expiry_str = expiry.strftime("%Y-%m-%d")
+        expiry_str = expiry.strftime("%Y-%m-%d")
+        strike = find_valid_strike(asset, spot, expiry_str)
     actual_dte = (expiry - sig_d).days
 
     result = {
