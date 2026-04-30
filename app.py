@@ -1684,7 +1684,7 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     _unified_viz = _dedupe(_unified_viz_raw, close_d,
                             log_price_fn=_intra_log_price)
 
-    # v3.7.35: 标记 + 图例增强 — 加 SHORT_VOL 标记说明, MIXED 有边框
+    # v3.7.37: 图例始终显示全部 marker 类型, 不受当前窗口信号影响
     _sig_colors = {
         "BUY CALL": ("#2196F3", "^"),    # 蓝 ▲
         "SELL PUT": ("#FF9800", "^"),    # 橙 ▲ (方向性都用 ▲)
@@ -1692,7 +1692,20 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         "STRADDLE": ("#FFD700", "*"),    # 金 ★ (做多波动率)
         "SHORT_VOL": ("#FF6F00", "P"),   # 橘 ✚ (做空波动率, P = plus 十字)
     }
-    # 跟踪每种 chosen 是否已加图例 (避免重复)
+    # 加 dummy scatter 让所有 5 个 marker 都进 legend
+    _legend_labels = {
+        "BUY CALL": "▲ BUY CALL (低 RV 做多)",
+        "SELL PUT": "▲ SELL PUT (高 RV 做多, 收 IV)",
+        "EXIT": "▼ EXIT (退出)",
+        "STRADDLE": "★ STRADDLE (做多波动率)",
+        "SHORT_VOL": "✚ SHORT_VOL Iron Condor (做空波动率)",
+    }
+    for _key in ["BUY CALL", "SELL PUT", "EXIT", "STRADDLE", "SHORT_VOL"]:
+        _c, _m = _sig_colors[_key]
+        # 透明且超出范围, 只为 legend 占位
+        ax.scatter([-100], [0], marker=_m, s=120, color=_c,
+                    edgecolors="black", lw=0.7,
+                    label=_legend_labels[_key])
     _legend_added = set()
     for d, r in _unified_viz.iterrows():
         if xi(d) is None:
@@ -1710,27 +1723,15 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                     else (120 if chosen != "EXIT" else 100))
             label_key = chosen
         edge = "purple" if "+" in chosen else "black"
-        # 第一次出现时加 legend label
-        if label_key not in _legend_added:
-            _label = {
-                "BUY CALL": "▲ BUY CALL (做多)",
-                "SELL PUT": "▲ SELL PUT (高 RV 做多)",
-                "EXIT": "▼ EXIT (退出)",
-                "STRADDLE": "★ STRADDLE (做多波动率)",
-                "SHORT_VOL": "✚ SHORT_VOL (做空波动率)",
-            }.get(label_key, label_key)
-            ax.scatter([xi(d)], [entry_p * _r], marker=marker, s=size,
-                       color=color, edgecolors=edge, lw=1.0, zorder=6,
-                       label=_label)
-            _legend_added.add(label_key)
-        else:
-            ax.scatter([xi(d)], [entry_p * _r], marker=marker, s=size,
-                       color=color, edgecolors=edge, lw=1.0, zorder=6)
-    # 加 legend (放主图)
-    if _legend_added:
-        ax.legend(loc="upper left", fontsize=8, framealpha=0.85,
-                   ncol=min(len(_legend_added), 3),
-                   title="信号类型 (紫色边框=MIXED 组合)")
+        # 实际信号 marker — 不再加 label (dummy scatter 已占位)
+        ax.scatter([xi(d)], [entry_p * _r], marker=marker, s=size,
+                    color=color, edgecolors=edge, lw=1.0, zorder=6)
+    # 始终显示全部 5 类 + MIXED 边框说明 (即使当前窗口没有该类信号)
+    ax.legend(loc="upper left", fontsize=8, framealpha=0.85, ncol=2,
+               title="信号类型 (紫色边框 = MIXED 组合)")
+    # 防止 dummy scatter (x=-100) 影响 X 轴自动缩放
+    if len(plot_dates) > 0:
+        ax.set_xlim(-0.5, len(plot_dates) - 0.5)
 
     # 回测止盈标注 (淡色); 跳过活跃持仓 (无 exit_date)
     _closed = [t for t in trades
@@ -2879,6 +2880,58 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                         st.success(f"平仓 P&L = ${_pnl:+.2f}, 刷新查看")
 
     # 显示
+    # ── 真实期权信号校准 (v3.7.37) ──
+    with st.expander("🔬 真实期权回测校准 (yfinance 历史 K 线)", expanded=False):
+        st.caption("用真实历史期权价格回测信号, 验证 RV-based 模型偏差")
+        cc1, cc2, cc3, cc4 = st.columns(4)
+        with cc1:
+            _cal_d = st.date_input("信号日",
+                                     value=pd.Timestamp.now().date()
+                                       - timedelta(days=30))
+        with cc2:
+            _cal_strike = st.number_input("Strike (ATM)",
+                                            value=0.0, step=0.5,
+                                            format="%.2f", key="cal_strike")
+        with cc3:
+            _cal_expiry = st.date_input("到期日",
+                                         value=pd.Timestamp.now().date()
+                                           + timedelta(days=30),
+                                         key="cal_expiry")
+        with cc4:
+            _cal_hold = st.number_input("持仓天数",
+                                          value=5, min_value=1, max_value=60,
+                                          step=1, key="cal_hold")
+        if st.button("🚀 拉真实期权 + 算 P&L"):
+            from core.options_history import real_pnl_for_signal
+            _strike_arg = _cal_strike if _cal_strike > 0 else None
+            with st.spinner("从 yfinance 拉历史 K 线..."):
+                _cal_res = real_pnl_for_signal(
+                    underlying=asset_key,
+                    signal_date=_cal_d.strftime("%Y-%m-%d"),
+                    expiry=_cal_expiry.strftime("%Y-%m-%d"),
+                    strike=_strike_arg,
+                    hold_days=_cal_hold,
+                )
+            if "error" in _cal_res:
+                st.error(f"❌ {_cal_res['error']}")
+            else:
+                st.success(f"✅ 找到期权: {_cal_res['call_sym']} + {_cal_res['put_sym']}")
+                cm1, cm2, cm3 = st.columns(3)
+                with cm1:
+                    st.metric("入场 Long Straddle",
+                                f"${_cal_res['entry_total']:.2f}",
+                                delta=f"Call ${_cal_res['entry_call']:.2f} + Put ${_cal_res['entry_put']:.2f}")
+                with cm2:
+                    st.metric(f"末日平仓 ({_cal_res['exit_date']})",
+                                f"${_cal_res['exit_total']:.2f}",
+                                delta=f"{_cal_res['pnl_close_pct']:+.1f}%")
+                with cm3:
+                    st.metric("持仓期最大 (上帝视角)",
+                                f"${_cal_res['max_straddle_close']:.2f}",
+                                delta=f"{_cal_res['max_pnl_close_pct']:+.1f}%")
+                st.caption(f"持仓 {_cal_res['actual_hold_days']}d "
+                            f"(目标 {_cal_hold}d) | 期权代码上方所示")
+
     if len(_real_pos) > 0:
         # 按入场日倒序
         _real_disp = _real_pos.sort_values("入场日", ascending=False).copy()
