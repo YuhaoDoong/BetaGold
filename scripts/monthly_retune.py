@@ -43,7 +43,10 @@ def load_asset_data(asset):
 
 def run_grid_search(asset, years=5, step=0.025):
     """跑全部 grid search, 返回 dict."""
-    from scripts.tune_thresholds import grid_directional, grid_short_vol
+    from scripts.tune_thresholds import (
+        grid_directional, grid_short_vol, grid_straddle_pctile,
+    )
+    from core.strategy_config import GRID_PRECISION
     data = load_asset_data(asset)
     cur = get_config(asset)
 
@@ -51,6 +54,8 @@ def run_grid_search(asset, years=5, step=0.025):
     df_dir = grid_directional(data, years, step)
     print(f"[{asset}] SHORT_VOL 网格...")
     df_sv = grid_short_vol(data, years, step)
+    print(f"[{asset}] STRADDLE pctile 网格 (step={GRID_PRECISION['rv_pctile']})...")
+    df_st = grid_straddle_pctile(data, years, GRID_PRECISION["rv_pctile"])
 
     def top_n(df, by, n=5):
         if len(df) == 0:
@@ -63,6 +68,9 @@ def run_grid_search(asset, years=5, step=0.025):
     cur_sv = df_sv[(df_sv["lo"] == cur.short_vol_rv_pctile_lo)
                     & (df_sv["hi"] == cur.short_vol_rv_pctile_hi)]
     cur_sv_row = cur_sv.iloc[0].to_dict() if len(cur_sv) else None
+    cur_st = (df_st[df_st["th"] == cur.straddle_rv_pctile_max]
+              if len(df_st) else df_st)
+    cur_st_row = cur_st.iloc[0].to_dict() if len(cur_st) else None
 
     return {
         "asset": asset,
@@ -74,16 +82,19 @@ def run_grid_search(asset, years=5, step=0.025):
             "rv_filter_high": cur.rv_filter_high,
             "short_vol_rv_pctile_lo": cur.short_vol_rv_pctile_lo,
             "short_vol_rv_pctile_hi": cur.short_vol_rv_pctile_hi,
+            "straddle_rv_pctile_max": cur.straddle_rv_pctile_max,
             "last_tuned": cur.last_tuned,
         },
         "current_perf": {
             "directional": cur_dir_row,
             "short_vol": cur_sv_row,
+            "straddle": cur_st_row,
         },
         "directional_top_sharpe": top_n(df_dir, "sharpe"),
         "directional_top_total": top_n(df_dir, "total"),
         "short_vol_top_sharpe": top_n(df_sv, "sharpe"),
         "short_vol_top_total": top_n(df_sv, "total"),
+        "straddle_top_sharpe": top_n(df_st, "sharpe") if len(df_st) else [],
     }
 
 

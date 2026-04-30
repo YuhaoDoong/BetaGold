@@ -102,7 +102,8 @@ launchctl load ~/Library/LaunchAgents/com.golddash.retune.plist
 | v3.7.29 | RV 阈值精细网格 (步长 0.025) GLD 优化 |
 | v3.7.30 | Per-Asset 校准: SLV 单独 grid search + 集中参数管理 core/strategy_config.py |
 | v3.7.31 | 月度自动重测系统: scripts/monthly_retune.py + 状态跟踪 + Dashboard 显示 + launchd 示例 |
-| **v3.7.32** | **STRADDLE 加 RV %tile < 0.50 过滤 (5y 实证 Sharpe 0.638→0.670, 胜率 79%→82%; 之前漏测 STRADDLE 在 RV %tile 中位区表现; 高 IV 时 STRADDLE 没 alpha)** |
+| v3.7.32 | STRADDLE 加 RV %tile < 0.50 过滤 (5y 实证 Sharpe +5%) |
+| **v3.7.33** | **RV %tile 精度统一 0.01 (GRID_PRECISION 集中管理) + GLD/SLV STRADDLE per-asset 校准: GLD 0.42 (Sharpe 0.922), SLV 0.20 (Sharpe 1.258); SLV STRADDLE 实际比 GLD 表现更好** |
 
 ## 用户偏好
 

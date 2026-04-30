@@ -1,5 +1,12 @@
 """可调节参数集中管理 — 支持 per-asset 校准.
 
+全局精度规范 (v3.7.33):
+  RV %tile 网格步长统一 0.01 (跨方向性 / SHORT_VOL / STRADDLE 三处)
+  绝对 RV 步长 1% (整数百分比)
+  Score 步长 1 (整数)
+
+
+
 设计目标:
   1. 集中: 所有策略可调阈值放一处, 方便 grid search / 定期重测
   2. Per-asset: 每个资产有独立配置 (GLD / SLV / 未来 QQQ 等)
@@ -87,8 +94,9 @@ ASSET_CONFIGS: Dict[str, AssetConfig] = {
         rv_filter_high=0.80,
         short_vol_rv_pctile_lo=0.45,
         short_vol_rv_pctile_hi=0.80,
-        last_tuned="2026-04-29",
-        notes="v3.7.29 5y grid search optimal",
+        straddle_rv_pctile_max=0.42,    # v3.7.33: 步长 0.01 精细搜索, Sharpe 0.922
+        last_tuned="2026-04-30",
+        notes="v3.7.33 5y grid (step 0.01) — GLD STRADDLE pctile_max 0.42",
     ),
 
     # SLV: v3.7.30 SLV 单独 grid search
@@ -100,8 +108,9 @@ ASSET_CONFIGS: Dict[str, AssetConfig] = {
         rv_filter_high=0.75,           # 比 GLD 更宽松 (SLV 信号边缘多)
         short_vol_rv_pctile_lo=0.25,   # 比 GLD 低很多 (SLV vol 整体高)
         short_vol_rv_pctile_hi=0.775,
-        last_tuned="2026-04-29",
-        notes="v3.7.30 SLV-specific 5y grid search",
+        straddle_rv_pctile_max=0.20,    # v3.7.33: SLV 严格 (Sharpe 1.258)
+        last_tuned="2026-04-30",
+        notes="v3.7.33 SLV-specific 5y grid (step 0.01)",
     ),
 
     # 未来扩展示例 (留位):
@@ -124,3 +133,13 @@ def tunable_params() -> list:
     """所有可调参数名 (用于 grid search 脚本)."""
     return [f.name for f in AssetConfig.__dataclass_fields__.values()
             if f.name not in ("last_tuned", "tune_period_days", "notes")]
+
+
+# 全局网格搜索精度 (v3.7.33+ 统一标准)
+GRID_PRECISION = {
+    "rv_pctile": 0.01,    # RV %tile 网格步长 (方向性/STRADDLE/SHORT_VOL 全用)
+    "rv_abs": 1.0,        # 绝对 RV 步长 (%)
+    "score": 1,           # Score 阈值步长
+    "bp": 0.025,          # Band position 步长
+}
+

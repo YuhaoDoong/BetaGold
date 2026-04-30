@@ -577,6 +577,69 @@ elif rv_pct_d is not None and rv_pct_d > rv_pctile_max:
 
 GLD/SLV 暂用同一阈值 0.50, 后续 SLV 可单独 grid search 校准.
 
+## 16. STRADDLE pctile 精细搜索 (步长 0.01) + Per-Asset 校准 (v3.7.33)
+
+### 用户提问
+1. RV %tile 精度提高, 跨策略统一; 加入参数集中管理
+2. GLD 和 SLV 分开各测一次最优
+
+### 全局精度规范
+
+```python
+# core/strategy_config.py
+GRID_PRECISION = {
+    "rv_pctile": 0.01,    # RV %tile 网格步长 (方向性/STRADDLE/SHORT_VOL 全用)
+    "rv_abs": 1.0,        # 绝对 RV 步长 (%)
+    "score": 1,           # Score 阈值步长
+    "bp": 0.025,          # Band position 步长
+}
+```
+
+### GLD STRADDLE 网格 (5y, 步长 0.01)
+
+| RV %tile 上限 | 笔数 | 胜率 | 总 | Sharpe |
+|-----|------|------|------|--------|
+| < 0.30 | 26 | 88% | +37.3% | 1.009 |
+| **< 0.42 ✅** | **34** | **85%** | +42.3% | **0.922** |
+| < 0.50 (旧默认) | 39 | 82% | +52.4% | 0.670 |
+| < 0.80 = 无过滤 | 52 | 79% | +68.2% | 0.638 |
+
+**GLD 选 0.42**: 笔数 ≥ 30 中 Sharpe 最高 (0.922). 比 0.50 提升 +37% Sharpe.
+
+### SLV STRADDLE 网格 (5y, 步长 0.01)
+
+| RV %tile 上限 | 笔数 | 胜率 | 总 | Sharpe |
+|------|------|------|------|--------|
+| **< 0.20 ✅** | **31** | **90%** | +53.2% | **1.258** |
+| < 0.30 | 32 | 88% | +53.1% | 1.200 |
+| < 0.40 = 全部 | 34 | 85% | +56.3% | 1.137 |
+| ≥ 0.40 = 无过滤 | 34 | 85% | +56.3% | 1.137 |
+
+**SLV 特点**: 5y 全部 34 笔 STRADDLE 入场都在 RV %tile < 0.40 (绝对 RV < 25% 硬门槛已自然约束). 设 < 0.20 切掉边缘 3 笔但 Sharpe 飞升至 **1.258** (相比 GLD 的 0.922 显著高).
+
+### Per-Asset 最优应用
+
+```python
+# core/strategy_config.py ASSET_CONFIGS
+"GLD": straddle_rv_pctile_max=0.42  # Sharpe 0.922
+"SLV": straddle_rv_pctile_max=0.20  # Sharpe 1.258 (SLV 单笔波动大但 STRADDLE 命中率高)
+```
+
+### 精度统一 + 工具更新
+
+- `scripts/tune_thresholds.py`: 加 `--param straddle` 选项, 统一用 `GRID_PRECISION["rv_pctile"]=0.01`
+- `scripts/monthly_retune.py`: 月度重测含 STRADDLE 维度
+- 输出 csv: `tmp/grid_<asset>_straddle.csv`
+
+### 跨资产 STRADDLE 表现对比
+
+| 资产 | 最优阈值 | Sharpe | 胜率 | 5y 总 |
+|------|----------|--------|------|--------|
+| GLD | < 0.42 | 0.922 | 85% | +42.3% |
+| SLV | < 0.20 | **1.258** | **90%** | +53.2% |
+
+**SLV STRADDLE 实际比 GLD 表现更好** — 白银对事件反应更剧烈, 跨 FOMC 大动概率更高.
+
 ## 总结: 关键 alpha 来源
 
 按 Sharpe 排序:

@@ -114,6 +114,39 @@ def grid_directional(data, years, step):
     return pd.DataFrame(results)
 
 
+def grid_straddle_pctile(data, years, step=0.01):
+    """STRADDLE RV %tile 上限网格 (步长统一 0.01).
+
+    在 baseline (无 RV %tile 过滤) 基础上, 测试不同上限阈值的影响.
+    """
+    from core.events import backtest_straddle
+    start = pd.Timestamp.now() - pd.Timedelta(days=years * 365)
+    dates = data["features"].index[data["features"].index >= start]
+    trades_base = backtest_straddle(
+        data["close"], data["high"], data["low"],
+        data["rv_10d"], dates,
+    )
+    if not trades_base:
+        return pd.DataFrame()
+
+    rv_pct = data["rv_pct"]
+    results = []
+    for th in np.arange(0.20, 1.01, step):
+        th = round(th, 3)
+        filtered = [t for t in trades_base
+                    if rv_pct.get(t["entry_date"], 0.5) < th]
+        if not filtered:
+            continue
+        pnls = [t["pnl_pct"] for t in filtered]
+        wins = sum(1 for t in filtered if t["pnl_pct"] > 0)
+        sharpe = np.mean(pnls) / (np.std(pnls) + 1e-9)
+        results.append({
+            "th": th, "n": len(filtered), "wr": wins / len(filtered),
+            "total": sum(pnls), "sharpe": sharpe,
+        })
+    return pd.DataFrame(results)
+
+
 def grid_short_vol(data, years, step):
     """SHORT_VOL Iron Condor RV %tile 中位窄带网格."""
     start = pd.Timestamp.now() - pd.Timedelta(days=years * 365)
@@ -166,7 +199,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--asset", default="GLD", choices=["GLD", "SLV"])
     parser.add_argument("--param", default="all",
-                         choices=["rv_filter", "short_vol", "all"])
+                         choices=["rv_filter", "short_vol", "straddle", "all"])
     parser.add_argument("--years", type=int, default=5)
     parser.add_argument("--step", type=float, default=0.025)
     parser.add_argument("--out-dir", default="/tmp")
@@ -187,13 +220,34 @@ def main():
         print(f"\n详细数据 → {out_path}")
 
     if args.param in ("short_vol", "all"):
-        print(f"\n[2/2] SHORT_VOL Iron Condor 网格 (步长 {args.step})...")
+        print(f"\n[2/3] SHORT_VOL Iron Condor 网格 (步长 {args.step})...")
         df_sv = grid_short_vol(data, args.years, args.step)
         report(df_sv, "SHORT_VOL", cur.short_vol_rv_pctile_lo,
                 cur.short_vol_rv_pctile_hi)
         out_path = f"{args.out_dir}/grid_{args.asset}_shortvol.csv"
         df_sv.to_csv(out_path, index=False)
         print(f"\n详细数据 → {out_path}")
+
+    if args.param in ("straddle", "all"):
+        # STRADDLE 用统一步长 0.01 (v3.7.33+ 全局精度规范)
+        from core.strategy_config import GRID_PRECISION
+        print(f"\n[3/3] STRADDLE RV %tile 上限网格 (步长 {GRID_PRECISION['rv_pctile']})...")
+        df_st = grid_straddle_pctile(data, args.years,
+                                       GRID_PRECISION["rv_pctile"])
+        if len(df_st) > 0:
+            print(f"\n=== STRADDLE: Top 5 by Sharpe (n ≥ 25) ===")
+            sub = df_st[df_st["n"] >= 25]
+            if len(sub) > 0:
+                print(sub.nlargest(5, "sharpe").to_string(index=False))
+            cur_st = df_st[df_st["th"] == cur.straddle_rv_pctile_max]
+            if len(cur_st):
+                r = cur_st.iloc[0]
+                print(f"\n[当前 < {cur.straddle_rv_pctile_max}]: "
+                      f"n={r['n']:.0f} 胜{r['wr']*100:.0f}% "
+                      f"总{r['total']:+.1f}% Sharpe{r['sharpe']:.3f}")
+            out_path = f"{args.out_dir}/grid_{args.asset}_straddle.csv"
+            df_st.to_csv(out_path, index=False)
+            print(f"\n详细数据 → {out_path}")
 
     print(f"\n下一步: 如果某 Top 配置 vs 当前 > 5% 改进, 编辑")
     print(f"    core/strategy_config.py ASSET_CONFIGS['{args.asset}']")
