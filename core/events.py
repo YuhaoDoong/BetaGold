@@ -187,11 +187,16 @@ STRADDLE_HOLD_DAYS = 5     # 持仓天数
 STRADDLE_WIN_MOVE = 0      # 波动 > 成本即为盈利 (0 = 自动用成本)
 
 
+STRADDLE_RV_PCTILE_MAX = 0.50  # v3.7.32: RV %tile > 此值不触发 (实证)
+
 def detect_straddle_signal(rv_series, dates_index,
                             rv_threshold=STRADDLE_RV_THRESHOLD,
                             rv_abs_max=STRADDLE_RV_ABS_MAX,
                             event_days=STRADDLE_EVENT_DAYS,
-                            rv_drop_pct=STRADDLE_RV_DROP_PCT):
+                            rv_drop_pct=STRADDLE_RV_DROP_PCT,
+                            rv_pctile=None,
+                            rv_pctile_max=STRADDLE_RV_PCTILE_MAX,
+                            asset=None):
     """检测 Straddle (做多波动率) 信号.
 
     条件 (评分制, score >= 3 触发):
@@ -206,6 +211,15 @@ def detect_straddle_signal(rv_series, dates_index,
 
     Returns: DataFrame with straddle_signal, straddle_reason, score
     """
+    if asset is not None:
+        try:
+            from core.strategy_config import get_config
+            _ac = get_config(asset)
+            if hasattr(_ac, "straddle_rv_pctile_max"):
+                rv_pctile_max = _ac.straddle_rv_pctile_max
+        except Exception:
+            pass
+
     rv_ma20 = rv_series.rolling(20, min_periods=5).mean()
 
     records = []
@@ -213,6 +227,8 @@ def detect_straddle_signal(rv_series, dates_index,
         rv = rv_series.get(d, 50)
         rv_avg = rv_ma20.get(d, rv)
         rv_drop = (rv_avg - rv) / rv_avg * 100 if rv_avg > 0 else 0
+        # v3.7.32: RV %tile 上限过滤 (高 IV 时 STRADDLE 没 alpha)
+        rv_pct_d = (rv_pctile.get(d, 0.5) if rv_pctile is not None else None)
 
         # 找最近的各类事件
         d_fomc, _, fomc_d = days_to_next_event(d, "FOMC")
@@ -257,6 +273,11 @@ def detect_straddle_signal(rv_series, dates_index,
             signal = False
             if reasons:
                 reasons.append(f"但RV={rv:.0f}%>阈值{rv_abs_max}%,成本过高")
+        # v3.7.32: RV %tile 太高 → IV 贵, 没 alpha (实证 5y Sharpe 0.55)
+        elif rv_pct_d is not None and rv_pct_d > rv_pctile_max:
+            signal = False
+            if reasons:
+                reasons.append(f"但RV%tile={rv_pct_d:.2f}>{rv_pctile_max},IV过贵")
         else:
             signal = score >= 3
 

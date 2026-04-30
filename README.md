@@ -101,7 +101,8 @@ launchctl load ~/Library/LaunchAgents/com.golddash.retune.plist
 | v3.7.26-28 | SLV 1h 数据兜底 / auto_refresh 补 SLV 1h / 主图横坐标 / 1-60 天 / 今日预测 sharex 合并 |
 | v3.7.29 | RV 阈值精细网格 (步长 0.025) GLD 优化 |
 | v3.7.30 | Per-Asset 校准: SLV 单独 grid search + 集中参数管理 core/strategy_config.py |
-| **v3.7.31** | **月度自动重测系统: scripts/monthly_retune.py + 状态跟踪 + Dashboard 状态显示 + macOS launchd 调度示例** |
+| v3.7.31 | 月度自动重测系统: scripts/monthly_retune.py + 状态跟踪 + Dashboard 显示 + launchd 示例 |
+| **v3.7.32** | **STRADDLE 加 RV %tile < 0.50 过滤 (5y 实证 Sharpe 0.638→0.670, 胜率 79%→82%; 之前漏测 STRADDLE 在 RV %tile 中位区表现; 高 IV 时 STRADDLE 没 alpha)** |
 
 ## 用户偏好
 

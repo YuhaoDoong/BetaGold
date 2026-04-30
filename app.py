@@ -1455,7 +1455,7 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
 
     # Straddle 检测
     rv_s = features["rv_10d"] if "rv_10d" in features.columns else pd.Series(20, index=features.index)
-    straddle_today = detect_straddle_signal(rv_s, pd.DatetimeIndex([last_date]))
+    straddle_today = detect_straddle_signal(rv_s, pd.DatetimeIndex([last_date]), rv_pctile=rv_pctile, asset=asset_key)
     is_straddle = straddle_today["straddle_signal"].iloc[0] if len(straddle_today) > 0 else False
     straddle_reason = straddle_today["straddle_reason"].iloc[0] if is_straddle else ""
 
@@ -1667,7 +1667,7 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         dedupe_unified as _dedupe,
     )
 
-    _straddle_viz = _dst(rv_s, viz_dates)
+    _straddle_viz = _dst(rv_s, viz_dates, rv_pctile=rv_pctile, asset=asset_key)
     _short_vol_viz = _dsv(rv_s, rv_pctile, viz_dates, regime=regime)
     _unified_viz_raw = _bus(sig_df, _straddle_viz, close_d, high_d, low_d,
                              short_vol_df=_short_vol_viz)
@@ -2708,7 +2708,7 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                               detect_short_vol_signal as _detect_short_vol)
     _uni_start = pd.Timestamp(today_sgt) - timedelta(days=180)
     _uni_dates = features.index[features.index >= _uni_start]
-    _straddle_full = _detect_straddle(rv_s, _uni_dates)
+    _straddle_full = _detect_straddle(rv_s, _uni_dates, rv_pctile=rv_pctile, asset=asset_key)
     _short_vol_full = _detect_short_vol(rv_s, rv_pctile, _uni_dates, regime=regime)
     _uni = build_unified_signals(sig_df, _straddle_full, close_d, high_d, low_d,
                                   short_vol_df=_short_vol_full)
@@ -3636,7 +3636,7 @@ def main():
         _rvp_win = rv_pctile.reindex(_viz_idx)
 
         # 信号窗口 (做多/做空波动率)
-        _long_w = _dlv_pred_top(_rv_chart_top, _viz_idx)
+        _long_w = _dlv_pred_top(_rv_chart_top, _viz_idx, rv_pctile=rv_pctile, asset=asset_key)
         _short_w = _dsv_pred_top(_rv_chart_top, rv_pctile, _viz_idx, regime=regime)
 
         fig_combo, (ax_st, ax_rv1, ax_rv2) = plt.subplots(

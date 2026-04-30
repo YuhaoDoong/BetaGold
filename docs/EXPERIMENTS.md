@@ -524,6 +524,59 @@ scripts/com.golddash.retune.plist.example  — macOS launchd 示例
 - `<asset>_<date>.json`: 单次完整 grid search 结果
 - `latest.json`: 最新汇总 (dashboard 读取)
 
+## 15. STRADDLE RV %tile 过滤 (v3.7.32, 用户提问发现)
+
+### 起因
+之前所有 RV %tile 过滤实验都聚焦方向性 + SHORT_VOL, **STRADDLE 从未测过**.
+今日 (2026-04-29) RV %tile = 0.532 (中位偏低), STRADDLE 仍触发 (score=5,
+基于 FOMC + NFP 邻近). 用户问: STRADDLE 是否也该看 RV %tile?
+
+### 实证 (5y GLD, 52 笔 STRADDLE baseline)
+
+| 配置 | 笔数 | 胜率 | 总收益 | Sharpe |
+|------|------|------|--------|--------|
+| 当前 (无过滤) | 52 | 79% | +68.2% | 0.638 |
+| **RV %tile < 0.30** | 26 | **88%** | +37.3% | **1.009** ⭐ |
+| **RV %tile < 0.40** | 31 | **87%** | +39.0% | **0.907** |
+| **RV %tile < 0.50** | 39 | 82% | +52.4% | **0.670** ✅ 平衡 |
+| RV %tile < 0.70 | 49 | 80% | +63.6% | 0.626 |
+| RV %tile > 0.50 (反向) | **13** | **69%** | +15.8% | 0.552 ❌ |
+
+### 关键洞察
+
+1. **STRADDLE 在高 RV %tile 时表现差** — RV %tile > 0.50 入场仅 13 笔, 胜率 69%
+2. **加 < 0.50 过滤**: Sharpe 0.638 → 0.670 (+5%), 胜率 79% → 82%, 笔数 52 → 39
+3. **加 < 0.30 过滤** (极保守): Sharpe **+58%** 至 1.009 但只剩 26 笔
+4. RV %tile 中位区是 IV "温水区" — 对所有策略都是表现最差区间
+
+### 经济学解释
+STRADDLE = 买双向 ATM Call+Put, 成本 ≈ IV × √T:
+- RV %tile 低 → IV 便宜 → premium 小 → 即使移动小也能赢
+- RV %tile 高 → IV 贵 → premium 大 → 需要更大移动才覆盖成本
+- RV %tile 中 → IV 既不便宜也不贵, 对应市场预期已 priced in vol → 难有 alpha
+
+### 决策: 加 RV %tile < 0.50 过滤 (v3.7.32)
+
+**为什么不取 < 0.30 (Sharpe 1.009 最优)?**
+- 笔数 26 太少 (5y, ~5 笔/年), 单笔异常对总 P&L 影响过大
+- 0.50 平衡 Sharpe + 频次, 实战可重复性更好
+
+**未实施前**: 今日 STRADDLE 触发 (RV %tile 0.532 仍通过)
+**实施后**: 今日 STRADDLE 不触发 (0.532 > 0.50), 与方向性逻辑一致
+
+### 应用 + per-asset
+
+```python
+# core/strategy_config.py
+straddle_rv_pctile_max: float = 0.50
+
+# core/events.py detect_straddle_signal 加硬门槛:
+elif rv_pct_d is not None and rv_pct_d > rv_pctile_max:
+    signal = False  # IV 贵, 不入场
+```
+
+GLD/SLV 暂用同一阈值 0.50, 后续 SLV 可单独 grid search 校准.
+
 ## 总结: 关键 alpha 来源
 
 按 Sharpe 排序:

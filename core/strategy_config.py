@@ -40,6 +40,7 @@ class AssetConfig:
     straddle_rv_abs_max: float = 25.0     # RV > 此值不触发
     straddle_event_days: int = 3          # 距事件 ≤ 此天数加分
     straddle_rv_drop_pct: float = 30.0    # RV 相对均值下降 > 此 %
+    straddle_rv_pctile_max: float = 0.50  # v3.7.32: RV %tile > 此值不入场
     straddle_hold_days: int = 5
     straddle_priority_score: int = 6      # ≥ 此分单走 STRADDLE
 
