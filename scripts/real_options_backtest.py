@@ -169,6 +169,90 @@ def real_short_put_pnl(put_hist, entry_d, hold_days=5):
     }
 
 
+def real_iron_condor_full(asset, signal_date, spot, expiry, hold_days=5,
+                            short_sigma=1.6, wing_sigma=3.0, rv_for_strike=20):
+    """构建 4 腿 Iron Condor 并计算真实 P&L.
+
+    Args:
+        asset: 'GLD' / 'SLV'
+        signal_date: 'YYYY-MM-DD'
+        spot: 信号日 underlying 价
+        expiry: 'YYYY-MM-DD'
+        hold_days: 持仓天数
+        short_sigma/wing_sigma: 1.6σ short, 3σ long wing
+        rv_for_strike: RV (%) 估算 strike 距离 (sigma_pct = RV × √(DTE/365))
+
+    Returns: P&L dict 或 None
+    """
+    sig_d = pd.Timestamp(signal_date)
+    exp_d = pd.Timestamp(expiry)
+    dte = (exp_d - sig_d).days
+    sigma_pct = rv_for_strike / 100 * (dte / 365) ** 0.5
+    short_offset = sigma_pct * short_sigma * spot
+    wing_offset = sigma_pct * wing_sigma * spot
+
+    # 4 strike
+    if asset == "GLD":
+        strike_step = 5  # GLD LEAPS 通常 $5 间隔
+    else:
+        strike_step = 5
+    short_call_k = round((spot + short_offset) / strike_step) * strike_step
+    long_call_k = round((spot + wing_offset) / strike_step) * strike_step
+    short_put_k = round((spot - short_offset) / strike_step) * strike_step
+    long_put_k = round((spot - wing_offset) / strike_step) * strike_step
+
+    # 拉 4 个 series
+    syms = {
+        "sc": occ_symbol(asset, expiry, short_call_k, "C"),
+        "lc": occ_symbol(asset, expiry, long_call_k, "C"),
+        "sp": occ_symbol(asset, expiry, short_put_k, "P"),
+        "lp": occ_symbol(asset, expiry, long_put_k, "P"),
+    }
+    hists = {}
+    for k, sym in syms.items():
+        h = fetch_option_history(sym, period="2y")
+        if h is None or len(h) < 5:
+            return None
+        hists[k] = h
+
+    entry_d_ts = pd.Timestamp(signal_date).normalize()
+    exit_target = entry_d_ts + pd.Timedelta(days=hold_days)
+    common = hists["sc"].index
+    for k in ["lc", "sp", "lp"]:
+        common = common & hists[k].index
+    avail = common[(common >= entry_d_ts) & (common <= exit_target)]
+    if len(avail) < 2:
+        return None
+    e_d = avail[0]
+    x_d = avail[-1]
+
+    # 入场 (Open): 卖 sc + sp, 买 lc + lp
+    sc_e = hists["sc"].loc[e_d, "Open"]
+    sp_e = hists["sp"].loc[e_d, "Open"]
+    lc_e = hists["lc"].loc[e_d, "Open"]
+    lp_e = hists["lp"].loc[e_d, "Open"]
+    credit = (sc_e + sp_e) - (lc_e + lp_e)
+
+    # 平仓 (Close): 反向操作
+    sc_x = hists["sc"].loc[x_d, "Close"]
+    sp_x = hists["sp"].loc[x_d, "Close"]
+    lc_x = hists["lc"].loc[x_d, "Close"]
+    lp_x = hists["lp"].loc[x_d, "Close"]
+    debit = (sc_x + sp_x) - (lc_x + lp_x)
+    pnl = credit - debit  # short vol: credit 缩小赚
+
+    return {
+        "entry_date": e_d.strftime("%Y-%m-%d"),
+        "exit_date": x_d.strftime("%Y-%m-%d"),
+        "ic_short_call_k": short_call_k, "ic_long_call_k": long_call_k,
+        "ic_short_put_k": short_put_k, "ic_long_put_k": long_put_k,
+        "ic_credit": credit, "ic_debit_at_exit": debit,
+        "ic_pnl": pnl,
+        "ic_pnl_pct_of_credit": pnl / credit * 100 if abs(credit) > 0.01 else 0,
+        "ic_max_loss": (wing_offset - short_offset) - credit,  # 最大亏 (理论)
+    }
+
+
 def real_iron_condor_pnl(short_call, long_call, short_put, long_put,
                             entry_d, hold_days=5):
     """4 腿 Iron Condor P&L.
@@ -273,8 +357,17 @@ def backtest_signal(asset, signal_date, signal_type, spot,
         result["straddle_pnl_pct"] = st["pnl_close_pct"]
         result["straddle_max_pnl_pct"] = st["max_pnl_close_pct"]
 
-    # Iron Condor (略复杂 — 需 4 strikes; 简化用 spot ± 1.6σ short, ± 3σ long)
-    # 这部分跳过 (需额外拉 2 个 strike, 多 4 倍请求, 后续可加)
+    # Iron Condor (4 腿真实 P&L) — 仅在 SHORT_VOL 信号触发时跑 (节约 yfinance 调用)
+    if signal_type == "SHORT_VOL" and rv is not None:
+        try:
+            ic = real_iron_condor_full(
+                asset, signal_date, spot, expiry_str, hold_days,
+                rv_for_strike=rv,
+            )
+            if ic:
+                result.update(ic)
+        except Exception as e:
+            result["ic_error"] = str(e)
 
     return result
 

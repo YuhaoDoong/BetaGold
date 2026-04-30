@@ -219,6 +219,17 @@ def detect_straddle_signal(rv_series, dates_index,
                 rv_pctile_max = _ac.straddle_rv_pctile_max
         except Exception:
             pass
+    # v3.7.40: 事件邻近过滤 (per-asset config)
+    _event_only = False
+    _event_max_days = 5
+    if asset is not None:
+        try:
+            from core.strategy_config import get_config
+            _ac = get_config(asset)
+            _event_only = getattr(_ac, "straddle_event_proximity_only", False)
+            _event_max_days = getattr(_ac, "straddle_event_max_days", 5)
+        except Exception:
+            pass
 
     rv_ma20 = rv_series.rolling(20, min_periods=5).mean()
 
@@ -278,6 +289,11 @@ def detect_straddle_signal(rv_series, dates_index,
             signal = False
             if reasons:
                 reasons.append(f"但RV%tile={rv_pct_d:.2f}>{rv_pctile_max},IV过贵")
+        # v3.7.40: 事件邻近硬门槛 (仅 FOMC ≤ N 天才入场)
+        elif _event_only and d_fomc > _event_max_days:
+            signal = False
+            if reasons:
+                reasons.append(f"但距FOMC{d_fomc}天>{_event_max_days},无事件驱动")
         else:
             signal = score >= 3
 

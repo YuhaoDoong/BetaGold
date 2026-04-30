@@ -48,6 +48,9 @@ class AssetConfig:
     straddle_event_days: int = 3          # 距事件 ≤ 此天数加分
     straddle_rv_drop_pct: float = 30.0    # RV 相对均值下降 > 此 %
     straddle_rv_pctile_max: float = 0.50  # v3.7.32: RV %tile > 此值不入场
+    # v3.7.40: 事件邻近过滤 (实证: 距 FOMC ≤5 天 58% 胜率, >5 天 19%)
+    straddle_event_proximity_only: bool = True   # True: 仅 FOMC ≤ N 天才入场
+    straddle_event_max_days: int = 5      # 距 FOMC 必须 ≤ 此值才触发
     straddle_hold_days: int = 5
     straddle_priority_score: int = 6      # ≥ 此分单走 STRADDLE
 
