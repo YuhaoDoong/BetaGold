@@ -47,6 +47,35 @@ def nearest_monthly_third_friday(d: pd.Timestamp,
     return first + pd.Timedelta(weeks=2)
 
 
+def smart_pick_expiry(signal_date) -> pd.Timestamp:
+    """智能选 expiry — 老信号用 LEAPS (270115 上市最早), 新信号用月度.
+
+    yfinance 期权数据可达性:
+      270115 LEAPS: 上市约 2024-10 (18 个月历史)
+      260918 (中长): 2025-08 (8 月历史)
+      月度近月: 通常上市 6-12 个月前
+    """
+    sig_d = pd.Timestamp(signal_date)
+    age = (pd.Timestamp.now() - sig_d).days
+    if age < 90:
+        # 新信号: 月度 ~45 DTE
+        return nearest_monthly_third_friday(sig_d, 45)
+    if age < 180:
+        # 中老: 260918 (2026 三季度月度) 或 270115
+        return pd.Timestamp("2026-09-18")
+    # 老信号 (>6 月前): LEAPS 必选
+    return pd.Timestamp("2027-01-15")
+
+
+def leaps_strike(asset: str, spot: float) -> float:
+    """LEAPS 可用 strike 通常是整数, 取最近的常见 strike."""
+    if asset == "GLD":
+        candidates = [350, 380, 400, 420, 440, 460, 480, 500, 520]
+    else:  # SLV
+        candidates = [30, 35, 40, 45, 50, 55, 60, 65, 70, 75]
+    return min(candidates, key=lambda x: abs(x - spot))
+
+
 def round_strike(spot: float, step: float = None) -> float:
     """ATM strike — 自动按价位选 step.
 
@@ -190,11 +219,16 @@ def backtest_signal(asset, signal_date, signal_type, spot,
                       hold_days=5, target_dte=45, rv=None):
     """对单个信号跑真实期权 P&L (4 类策略并行)."""
     sig_d = pd.Timestamp(signal_date)
-    expiry = nearest_monthly_third_friday(sig_d, target_dte)
+    age_days = (pd.Timestamp.now() - sig_d).days
+    # v3.7.39: 智能选 expiry — 老信号用 LEAPS, 新信号用月度
+    if age_days >= 90:
+        expiry = smart_pick_expiry(sig_d)
+        strike = leaps_strike(asset, spot)
+    else:
+        expiry = nearest_monthly_third_friday(sig_d, target_dte)
+        strike = find_valid_strike(asset, spot, expiry.strftime("%Y-%m-%d"))
     expiry_str = expiry.strftime("%Y-%m-%d")
     actual_dte = (expiry - sig_d).days
-    # 智能找有数据的 strike (yfinance 不允许所有 strike, 试 ATM ± 2 step)
-    strike = find_valid_strike(asset, spot, expiry_str)
 
     result = {
         "signal_date": signal_date,
@@ -281,9 +315,9 @@ def run_full_backtest(asset, hold_days=5, target_dte=45,
                                               regime=regime,
                                               daily_range=(high-low)/close*100)
 
-    # 限定范围 (yfinance 期权只能拉到 ~6mo 历史)
+    # 限定范围 (LEAPS 拉到 ~18mo, 月度 ~6mo)
     if date_min is None:
-        date_min = pd.Timestamp.now() - pd.Timedelta(days=180)
+        date_min = pd.Timestamp.now() - pd.Timedelta(days=540)  # 18 月
     if date_max is None:
         date_max = pd.Timestamp.now() - pd.Timedelta(days=hold_days+5)
     if isinstance(date_min, str):

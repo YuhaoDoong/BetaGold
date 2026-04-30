@@ -90,13 +90,13 @@ ASSET_CONFIGS: Dict[str, AssetConfig] = {
     # GLD: v3.7.29 网格搜索最优
     # 5y 数据, 38 笔 BUY/SELL, 胜 82%, 总 +48.9%, Sharpe 0.638
     "GLD": AssetConfig(
-        rv_filter_low=0.50,
-        rv_filter_high=0.80,
-        short_vol_rv_pctile_lo=0.45,
+        rv_filter_enabled=False,        # v3.7.39: 真实期权 P&L 验证, 关 RV 过滤
+        rv_filter_low=0.50, rv_filter_high=0.85,  # 兜底 (rv_filter_enabled=False 不用)
+        short_vol_rv_pctile_lo=0.45,    # IC 保留, 没新数据
         short_vol_rv_pctile_hi=0.80,
-        straddle_rv_pctile_max=0.42,    # v3.7.33: 步长 0.01 精细搜索, Sharpe 0.922
+        straddle_rv_pctile_max=1.00,    # v3.7.39: 移除 STRADDLE 过滤 (屏蔽 +141.8%)
         last_tuned="2026-04-30",
-        notes="v3.7.33 5y grid (step 0.01) — GLD STRADDLE pctile_max 0.42",
+        notes="v3.7.39 真实期权 P&L 验证 - 方向性 RV 过滤反向有害, 关闭",
     ),
 
     # SLV: v3.7.30 SLV 单独 grid search
@@ -104,13 +104,13 @@ ASSET_CONFIGS: Dict[str, AssetConfig] = {
     # SHORT_VOL 5y, 0.25/0.775: 77 笔 88% +73.7% Sharpe 0.848
     # 与 GLD 显著不同 — SLV 笔数翻倍, 单笔波动更大
     "SLV": AssetConfig(
-        rv_filter_low=0.50,
-        rv_filter_high=0.75,           # 比 GLD 更宽松 (SLV 信号边缘多)
-        short_vol_rv_pctile_lo=0.25,   # 比 GLD 低很多 (SLV vol 整体高)
+        rv_filter_enabled=False,        # v3.7.39: 真实数据 SLV BUY CALL 无过滤 +265%
+        rv_filter_low=0.50, rv_filter_high=0.85,  # 兜底
+        short_vol_rv_pctile_lo=0.25,
         short_vol_rv_pctile_hi=0.775,
-        straddle_rv_pctile_max=0.20,    # v3.7.33: SLV 严格 (Sharpe 1.258)
+        straddle_rv_pctile_max=1.00,    # 移除 (SLV STRADDLE 整体 Sharpe 差)
         last_tuned="2026-04-30",
-        notes="v3.7.33 SLV-specific 5y grid (step 0.01)",
+        notes="v3.7.39 真实期权 P&L 验证 — RV 过滤反向, 关闭",
     ),
 
     # 未来扩展示例 (留位):
