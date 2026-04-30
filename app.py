@@ -1170,12 +1170,20 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     has_open_position = False
     entry_price_open = peak_open = pullback_stop = 0
     if trades:
-        last_trade = trades[-1]
-        # 最后一笔已平仓 → 检查之后是否有新买入信号
-        buy_after_last = sig_df[
-            (sig_df["buy_signal"]) &
-            (sig_df.index > last_trade["exit_date"])
-        ]
+        # 最后一笔可能是活跃仓 (exit_date=None) — 跳到最后一笔已平仓
+        closed_trades = [t for t in trades
+                          if t.get("exit_date") is not None
+                          and not t.get("active", False)]
+        if closed_trades:
+            last_trade = closed_trades[-1]
+            # 最后一笔已平仓 → 检查之后是否有新买入信号
+            buy_after_last = sig_df[
+                (sig_df["buy_signal"]) &
+                (sig_df.index > last_trade["exit_date"])
+            ]
+        else:
+            # 没有已平仓的: 第一笔就活跃, 看全部 buy 信号
+            buy_after_last = sig_df[sig_df["buy_signal"]]
         if len(buy_after_last) > 0:
             last_buy = buy_after_last.index[-1]
             has_open_position = True
@@ -1469,7 +1477,7 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     # v3.7.47: 传 close/high/low 启用技术指标 score 模式
     straddle_today = detect_straddle_signal(
         rv_s, pd.DatetimeIndex([last_date]), rv_pctile=rv_pctile,
-        close=close, high=high, low=low,
+        close=close_d, high=high_d, low=low_d,
         asset=asset_key)
     is_straddle = straddle_today["straddle_signal"].iloc[0] if len(straddle_today) > 0 else False
     straddle_reason = straddle_today["straddle_reason"].iloc[0] if is_straddle else ""
@@ -3402,7 +3410,8 @@ def main():
     bp_s = bp.reindex(bp_dates)
     rv_p = rv_pctile.reindex(bp_dates)
     is_bull = regime.reindex(bp_dates) == "Bull"
-    buy_call, sell_put, exit_sig = generate_signals(bp_s, rv_p, is_bull)
+    buy_call, sell_put, exit_sig = generate_signals(bp_s, rv_p, is_bull,
+                                                         asset=asset_key)
 
     # last_date = 最后一天有模型预测的日期 (用于 Band / 信号)
     # price_date = 最新的现货收盘价日期 (用于顶部指标 / 图表)

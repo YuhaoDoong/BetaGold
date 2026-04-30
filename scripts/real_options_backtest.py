@@ -289,7 +289,7 @@ def real_iron_condor_full(asset, signal_date, spot, expiry, hold_days=5,
     exit_target = entry_d_ts + pd.Timedelta(days=hold_days)
     common = hists["sc"].index
     for k in ["lc", "sp", "lp"]:
-        common = common & hists[k].index
+        common = common.intersection(hists[k].index)
     avail = common[(common >= entry_d_ts) & (common <= exit_target)]
     if len(avail) < 2:
         return None

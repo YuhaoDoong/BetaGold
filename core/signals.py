@@ -42,13 +42,28 @@ def compute_rv_pctile(rv, window=252):
     return rv.rolling(window, min_periods=60).rank(pct=True)
 
 
-def generate_signals(bp_s, rv_p, is_bull):
+def generate_signals(bp_s, rv_p, is_bull, asset=None):
     """
     V2 信号生成 (水平触发 + 期权类型区分).
 
+    v3.7.50: 用 strategy_config 切点 (per-asset, 月度重训) 替代硬编码 0.85.
+    asset='GLD' → 切点 0.45 (单切, BC↔SP)
+    asset='SLV' → 切点 0.75
+    asset=None → 兜底用 0.85 (兼容老调用)
+
     返回 (buy_call, sell_put, exit_sig) — 三个 bool Series.
     """
-    rv_high = rv_p > 0.85
+    rv_threshold = 0.85
+    if asset is not None:
+        try:
+            from core.strategy_config import get_config
+            _ac = get_config(asset)
+            # 单切语义: rv >= rv_filter_high → SELL_PUT, 否则 BUY_CALL
+            rv_threshold = _ac.rv_filter_high
+        except Exception:
+            pass
+
+    rv_high = rv_p >= rv_threshold
 
     buy_zone = is_bull & (bp_s < 0.30)
     buy_call = buy_zone & (~rv_high)
