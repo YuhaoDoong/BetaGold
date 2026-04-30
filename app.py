@@ -2000,14 +2000,22 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         def _xi1h(d): return _d2i_1h.get(d)
         def _xi1h_arr(dates): return [_d2i_1h[d] for d in dates if d in _d2i_1h]
 
+        # v3.7.36: 与主图统一时间格式 (sharex 下 bottom 子图 formatter 覆盖主图)
+        # 天数 ≤ 5: 显示日期+时间; > 5: 仅日期 (避免 24h 时间充斥)
         def _fmt1h(x, pos):
             idx = int(round(x))
             if 0 <= idx < len(_idx_1h):
                 dt = _idx_1h[idx]
-                # 每天第一根显示日期, 其余显示时间
-                if idx == 0 or dt.date() != _idx_1h[idx - 1].date():
-                    return dt.strftime("%m/%d\n%H:%M")
-                return dt.strftime("%H:%M")
+                if _show_hours:
+                    # 短窗口: 日变化时显示日期+时间, 否则仅时间
+                    if idx == 0 or dt.date() != _idx_1h[idx - 1].date():
+                        return dt.strftime("%m/%d\n%H:%M")
+                    return dt.strftime("%H:%M")
+                else:
+                    # 长窗口: 仅日变化时显示日期, 其余空白
+                    if idx == 0 or dt.date() != _idx_1h[idx - 1].date():
+                        return dt.strftime("%m/%d")
+                    return ""
             return ""
 
         # v3.7.25: 复用合并 fig 的 ax_kline / ax_sq_main, 不再独立 fig2
@@ -2187,9 +2195,17 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         ax_sq.axhline(0, color="black", lw=0.5)
         ax_sq.set_ylabel("Squeeze Mom")
         ax_sq.grid(True, alpha=0.3)
-        # X 轴 datetime 格式 - 仅 bottom 子图 (sharex 标准做法)
+        # v3.7.36: 长窗口 (>5d) 改用日界 ticks, 短窗口用均匀 ticks
         ax_sq.xaxis.set_major_formatter(FuncFormatter(_fmt1h))
-        ax_sq.xaxis.set_major_locator(MaxNLocator(integer=True, nbins=15))
+        if _show_hours:
+            ax_sq.xaxis.set_major_locator(MaxNLocator(integer=True, nbins=15))
+        else:
+            # 长窗口: 把 tick 放在每日第一根 1h bar 上
+            day_change_idx = [i for i, ts in enumerate(_idx_1h)
+                                if i == 0 or ts.date() != _idx_1h[i-1].date()]
+            # 每隔 N 天 (避免太密)
+            step = max(1, len(day_change_idx) // 12)
+            ax_sq.set_xticks(day_change_idx[::step])
 
         # 全部 5 子图绘制完毕, 一次性渲染合并 fig
         plt.tight_layout()
