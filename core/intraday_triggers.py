@@ -76,8 +76,13 @@ RULES_EXIT = (
     "kdj_k_cross_d_down",
 )
 
-DEFAULT_BUY_RULES = ("stoch_rsi_cross_up_oversold", "macd_bullish_cross")
-DEFAULT_EXIT_RULES = ("stoch_rsi_cross_down_overbought", "macd_bearish_cross")
+DEFAULT_BUY_RULES = ("stoch_rsi_cross_up_oversold",
+                       "stoch_rsi_in_oversold",       # v3.7.56: 沉默触发 (价格在底 + Stoch oversold 即可)
+                       "macd_bullish_cross",
+                       "macd_hist_turn_up")
+DEFAULT_EXIT_RULES = ("stoch_rsi_cross_down_overbought",
+                        "stoch_rsi_in_overbought",     # v3.7.56: 沉默触发对称
+                        "macd_bearish_cross")
 
 
 # ── 指标计算 ──────────────────────────────────────────────
