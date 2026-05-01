@@ -49,6 +49,15 @@ def load_kline_db():
 
 def save_kline_db(df):
     os.makedirs(os.path.dirname(KLINE_DB_PATH), exist_ok=True)
+    # v3.7.56: dtype 一致化 (避免 pyarrow mixed-type 报错)
+    df = df.copy()
+    df["date"] = df["date"].astype(str).str[:10]  # YYYY-MM-DD 字符串
+    for c in ["open","high","low","close","volume","strike","dte_at_date"]:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+    for c in ["code","expiry","option_type"]:
+        if c in df.columns:
+            df[c] = df[c].astype(str)
     df.to_parquet(KLINE_DB_PATH, index=False)
     csv_path = KLINE_DB_PATH.replace(".parquet", ".csv")
     df.to_csv(csv_path, index=False)
