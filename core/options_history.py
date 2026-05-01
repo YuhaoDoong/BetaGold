@@ -111,14 +111,58 @@ def fetch_option_history_moomoo(symbol: str,
             except Exception: pass
 
 
+_KLINE_DB_CACHE = None
+
+
+def fetch_option_history_kline_db(symbol: str) -> Optional[pd.DataFrame]:
+    """Local kline_db (Moomoo 累积快照) — 第三 fallback.
+
+    v3.7.51: yfinance + Moomoo 都拉不到时 (尤其 IC 1.6σ/3σ 远 OTM strike),
+    查本地 EOD 累积的 all_klines.parquet.
+
+    支持 OCC 或 Moomoo 格式自动转换.
+    """
+    global _KLINE_DB_CACHE
+    if _KLINE_DB_CACHE is None:
+        try:
+            db_path = ("/Users/yhdong/Gold/data/raw/options_history/"
+                        "kline_db/all_klines.parquet")
+            import os
+            if not os.path.exists(db_path):
+                _KLINE_DB_CACHE = pd.DataFrame()
+                return None
+            _KLINE_DB_CACHE = pd.read_parquet(db_path)
+        except Exception:
+            _KLINE_DB_CACHE = pd.DataFrame()
+            return None
+    if _KLINE_DB_CACHE.empty:
+        return None
+    # OCC → Moomoo 格式 (kline_db 用 US.<tic><yymmdd><C/P><strike int 5位>)
+    mm_code = occ_to_moomoo(symbol) if not symbol.startswith("US.") else symbol
+    sub = _KLINE_DB_CACHE[_KLINE_DB_CACHE["code"] == mm_code]
+    if not len(sub):
+        return None
+    df = pd.DataFrame({
+        "Open": sub["open"].astype(float).values,
+        "High": sub["high"].astype(float).values,
+        "Low": sub["low"].astype(float).values,
+        "Close": sub["close"].astype(float).values,
+        "Volume": sub["volume"].astype(float).values,
+    }, index=pd.to_datetime(sub["date"]).dt.normalize())
+    df = df.sort_index()
+    return df
+
+
 def fetch_option_history(symbol: str, period: str = "6mo",
                            use_moomoo_fallback: bool = True,
+                           use_kline_db_fallback: bool = True,
                            max_retries: int = 3,
                            ) -> Optional[pd.DataFrame]:
-    """拉单期权历史日 K 线 (yfinance 主 + 重试, Moomoo 兜底).
+    """拉单期权历史日 K 线.
 
-    v3.7.41: + Moomoo OpenD 兜底.
-    v3.7.42: + yfinance 限流自动重试 (指数退避 1/2/4 秒).
+    v3.7.41: + Moomoo OpenD 兜底
+    v3.7.42: + yfinance 限流自动重试
+    v3.7.51: + kline_db 兜底 (本地累积快照, 补 IC 远 OTM strike)
     """
     import time
     last_err = None
@@ -130,22 +174,24 @@ def fetch_option_history(symbol: str, period: str = "6mo",
             if df is not None and len(df) > 0:
                 df.index = pd.to_datetime(df.index).tz_localize(None).normalize()
                 return df[["Open", "High", "Low", "Close", "Volume"]]
-            # 空 DataFrame: 可能是不存在的 strike, 不重试 yfinance 直接转 Moomoo
             break
         except Exception as e:
             last_err = e
             msg = str(e).lower()
             if "rate" in msg or "too many" in msg or "throttle" in msg:
-                # 限流: 指数退避重试
                 time.sleep(2 ** attempt)
                 continue
-            # 其他错误不重试
             break
     if last_err is not None:
         print(f"[fetch_option_history.yf] {symbol}: {last_err}")
 
     if use_moomoo_fallback:
         df = fetch_option_history_moomoo(symbol)
+        if df is not None and len(df) > 0:
+            return df
+
+    if use_kline_db_fallback:
+        df = fetch_option_history_kline_db(symbol)
         if df is not None and len(df) > 0:
             return df
 
