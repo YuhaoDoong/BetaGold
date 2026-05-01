@@ -1287,7 +1287,7 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
 
         _rv_pct_today = float(rv_pctile.get(last_date, 0))
 
-        # 波动率信号 (做多 vs 做空)
+        # 波动率信号 (做多 vs 做空) — v3.7.50 启用 tech-score 模式
         from core.events import (detect_straddle_signal as _dsv_long,
                                   detect_short_vol_signal as _dsv_short)
         try:
@@ -1296,10 +1296,16 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                 else pd.Series(20, index=features.index)
         except Exception:
             _rv_series_sb = pd.Series(20, index=close_d.index)
-        _vol_long_today = _dsv_long(_rv_series_sb, pd.DatetimeIndex([last_date]))
+        # bug fix: 之前没传 close/high/low, 一直走旧 RV+事件 score 模式
+        _vol_long_today = _dsv_long(_rv_series_sb, pd.DatetimeIndex([last_date]),
+                                       rv_pctile=rv_pctile,
+                                       close=close_d, high=high_d, low=low_d,
+                                       asset=asset_key)
         _vol_short_today = _dsv_short(_rv_series_sb, rv_pctile,
-                                       pd.DatetimeIndex([last_date]),
-                                       regime=regime)
+                                         pd.DatetimeIndex([last_date]),
+                                         regime=regime,
+                                         close=close_d, high=high_d, low=low_d,
+                                         asset=asset_key)
         _vlong_sig = (_vol_long_today["straddle_signal"].iloc[0]
                       if len(_vol_long_today) > 0 else False)
         _vshort_sig = (_vol_short_today["short_vol_signal"].iloc[0]
@@ -1308,20 +1314,32 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                         if len(_vol_long_today) > 0 else 0)
         _vshort_score = (_vol_short_today["short_vol_score"].iloc[0]
                          if len(_vol_short_today) > 0 else 0)
+
+        # v3.7.50 STRADDLE sizing (实证 GLD 73% / SLV 70% 胜率 score≥6)
+        # score 6 = 1× / 7 = 1.5× / 8+ = 2× (累计 +125% vs 单切 +68%)
+        def _vol_sizing(s):
+            if s >= 8: return "2×"
+            if s >= 7: return "1.5×"
+            if s >= 6: return "1×"
+            return None
+        _long_sz = _vol_sizing(_vlong_score)
+        _short_sz = _vol_sizing(_vshort_score)
+
         if _vlong_sig and _vshort_sig:
             _vol_label = ("↑做多波动率" if _vlong_score >= _vshort_score
                           else "↓做空波动率")
             _vol_emo = "🟣"
-            _vol_delta = f"L{_vlong_score} / S{_vshort_score}"
+            sz = _long_sz if _vlong_score >= _vshort_score else _short_sz
+            _vol_delta = f"L{_vlong_score} / S{_vshort_score} | 仓 {sz or '—'}"
         elif _vlong_sig:
             _vol_label, _vol_emo = "↑做多波动率", "🟣"
-            _vol_delta = f"score={_vlong_score}"
+            _vol_delta = f"score={_vlong_score} | 仓 {_long_sz or '—'}"
         elif _vshort_sig:
             _vol_label, _vol_emo = "↓做空波动率", "🟠"
-            _vol_delta = f"score={_vshort_score}"
+            _vol_delta = f"score={_vshort_score} | 仓 {_short_sz or '—'}"
         else:
             _vol_label, _vol_emo = "中性", "⚪"
-            _vol_delta = f"L{_vlong_score} / S{_vshort_score}"
+            _vol_delta = f"L{_vlong_score} / S{_vshort_score} (未触发≥6)"
 
         # ── 信号时效面板 + 关键事件倒计时 (v3.7.19) ──
         # US 期权时段 SGT: 21:30 ~ 04:00 (次日)
