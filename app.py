@@ -1384,13 +1384,16 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
 
         sb1, sb2, sb3, sb4, sb5 = st.columns(5)
         with sb1:
-            # v3.7.54: 用实时 bp_est 判窗口, 区分"当前可入场" vs "今日已触过"
+            # v3.7.54/55: 三态 — 可入场 / 已触过 (含 pre-market 反弹) / 未开启
+            # 含日内 + 1h pre-market 是否触过 0.30 buy zone
             if _window_open:
                 _w_label, _w_delta = "✅ 可入场", f"实时 bp={bp_est:.2f} < 0.30"
             elif _window_touched:
-                _w_label = "⚠️ 已触过"
-                _w_delta = (f"日内 bp_low={_bp_low_today:.2f} 触过 / "
-                            f"现 bp={bp_est:.2f}, 已反弹")
+                # 区分: 是日线 daily Low 触过, 还是 pre-market 1h 触过
+                _w_label = "⚠️ 已触过 (无效)"
+                _w_delta = (f"今日触底 bp={_bp_low_today:.2f} 但已反弹"
+                            f" → 现 bp={bp_est:.2f}, 不可入场,"
+                            f" 等盘中回踩 + 技术确认")
             else:
                 _w_label = "未开启"
                 _w_delta = (f"现 bp={bp_est:.2f} (需 < 0.30)"
