@@ -1262,14 +1262,18 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         _exit_shfe = _exit_spot * _cny / _g
 
         # ── 状态条: 今日窗口 / 盘中实时 / 持仓 / Regime / RV ──
-        # 今日窗口: 今日日线 bp_low 是否 < 0.30 (数据过期时不显示)
+        # v3.7.54: 修语义 — 窗口"已开启"应该指"当前实时 bp < 0.30 可入场",
+        # 而不是"今日 day-low 触过" (因 pre-market 触底但盘中已反弹的情况误导)
         _today_row = sig_df.loc[last_date] \
             if (last_date in sig_df.index and not _stale_raw) else None
         _bp_low_today = (float(_today_row["bp_low"])
                          if _today_row is not None
                          and "bp_low" in _today_row.index else None)
-        _window_open = (_bp_low_today is not None
-                        and _bp_low_today < 0.30)
+        # 用实时 bp_est 判断窗口当前状态
+        _window_open = (bp_est is not None and bp_est < 0.30)
+        # 历史是否触过 (信息性, 不等于可入场)
+        _window_touched = (_bp_low_today is not None
+                            and _bp_low_today < 0.30)
 
         # 盘中实时: 用实时 bp_est + 最近 1h Stoch RSI 状态
         # 加载日 log 看今天是否已有触发
@@ -1380,10 +1384,18 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
 
         sb1, sb2, sb3, sb4, sb5 = st.columns(5)
         with sb1:
-            st.metric("今日窗口",
-                      "已开启" if _window_open else "未开启",
-                      delta=f"日内 bp={_bp_low_today:.2f}"
-                      if _bp_low_today is not None else "—")
+            # v3.7.54: 用实时 bp_est 判窗口, 区分"当前可入场" vs "今日已触过"
+            if _window_open:
+                _w_label, _w_delta = "✅ 可入场", f"实时 bp={bp_est:.2f} < 0.30"
+            elif _window_touched:
+                _w_label = "⚠️ 已触过"
+                _w_delta = (f"日内 bp_low={_bp_low_today:.2f} 触过 / "
+                            f"现 bp={bp_est:.2f}, 已反弹")
+            else:
+                _w_label = "未开启"
+                _w_delta = (f"现 bp={bp_est:.2f} (需 < 0.30)"
+                            if bp_est else "—")
+            st.metric("今日窗口", _w_label, delta=_w_delta)
         with sb2:
             st.metric("盘中实时", f"{_intra_emo} {_intra_state}",
                       delta=f"实时 bp≈{bp_est:.2f} | "
@@ -1428,23 +1440,30 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             _data_age = (pd.Timestamp(today_sgt) - _ld.normalize()).days
             _is_stale = _data_age > 1
 
+            # v3.7.54: 信号 = 当前可执行 (实时 bp_est < 0.30)
+            # 历史触过 (今日 pre-market 跌过) → 显"已触过", 不推工具入场
             if _is_stale:
                 sig_text = "数据过期"
                 _delta_str = (f"末数据 {_ld.date()} ({_data_age}d ago) — "
                               f"重启 dashboard 触发数据刷新")
-            elif _raw_sig:
-                # 当日有效信号 — 只在 last_date 实际触发时显示
+            elif _raw_sig and bp_est is not None and bp_est < 0.30:
+                # 当下 bp 仍在 buy zone — 工具推荐有效
                 sig_text = _sig_map.get(_raw_sig, _raw_sig)
                 _sizing_tag = ""
                 if _sizing > 1.0 and _has_open_buy:
                     _sizing_tag = f" | 仓位 {_sizing:.0f}× ({_sizing_reasons})"
-                _delta_str = (f"Regime: {last_regime} | bp={last_bp:.3f} | "
+                _delta_str = (f"Regime: {last_regime} | 实时 bp={bp_est:.3f} | "
                               f"RV={rv_pctile.get(last_date,0):.0%}{_sizing_tag}")
+            elif _raw_sig:
+                # 今日 day-low 触过但已反弹 — 不可执行
+                sig_text = "今日已触过 (已反弹)"
+                _delta_str = (f"曾触发 {_raw_sig} 但现 bp={bp_est:.2f} > 0.30, "
+                              f"等下次回踩")
             else:
                 sig_text = "今日无信号"
-                _delta_str = (f"bp={last_bp:.3f} (需 < 0.30 触发) | "
+                _delta_str = (f"现 bp={bp_est:.3f} (需 < 0.30) | "
                               f"RV={rv_pctile.get(last_date,0):.0%} | "
-                              f"持仓 / 历史信号见可视化与持仓管理")
+                              f"持仓 / 历史见可视化")
             st.metric("当日信号", sig_text, delta=_delta_str)
         st.markdown('</div>', unsafe_allow_html=True)
 
@@ -2327,9 +2346,11 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     st.subheader("期权策略实时面板")
     st.caption("4 类策略并列展示, 入场信号触发时对应策略高亮 ✅, 否则灰显示 (未激活)")
 
-    # v3.7.53: 数据过期时屏蔽所有"当日激活"判定 — 历史信号不应在 实时面板 显示
+    # v3.7.53/54: 数据过期 OR 当前 bp_est ≥ 0.30 时, 屏蔽方向性"激活"
+    # (今日已触过但已反弹的情况不应继续显"激活")
     _ld2 = pd.Timestamp(last_date)
     _stale_today = (pd.Timestamp(today_sgt) - _ld2.normalize()).days > 1
+    _live_actionable = bp_est is not None and bp_est < 0.30
 
     # 当日各策略激活状态
     _r2 = sig_df.loc[last_date] if (last_date in sig_df.index and not _stale_today) else None
@@ -2337,14 +2358,21 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                   if (last_date in _unified_viz_raw.index and not _stale_today)
                   else None)
     _chosen_today = _uni_today["chosen"] if _uni_today is not None else None
-    _is_buy_call = (_chosen_today is not None and "BUY CALL" in _chosen_today)
-    _is_sell_put = (_chosen_today is not None and "SELL PUT" in _chosen_today)
+    # 方向性 (BC/SP) 必须实时 bp 仍在 buy zone 才算激活
+    _is_buy_call = (_chosen_today is not None
+                     and "BUY CALL" in _chosen_today and _live_actionable)
+    _is_sell_put = (_chosen_today is not None
+                     and "SELL PUT" in _chosen_today and _live_actionable)
+    # 波动率信号不依赖 bp (是 vol 触发, 不是 band)
     _is_straddle_now = (_chosen_today is not None and "STRADDLE" in _chosen_today)
     _is_short_vol_now = (_chosen_today is not None and "SHORT_VOL" in _chosen_today)
     if _stale_today:
         st.warning(f"⚠️ 数据过期 (末日 {_ld2.date()}, 距今 "
                    f"{(pd.Timestamp(today_sgt)-_ld2.normalize()).days}d) — "
                    f"4 策略实时激活均强制视为未触发. 重启 dashboard 触发刷新.")
+    elif _chosen_today and not _live_actionable and _chosen_today in ("BUY CALL","SELL PUT"):
+        st.info(f"ℹ️ 方向性信号 {_chosen_today} 今日触过但已反弹 (现 bp={bp_est:.2f}), "
+                f"实时面板 BC/SP 不再激活. 历史触发见可视化 marker.")
 
     # 当前价位 + 估算 1σ (5d hold)
     _spot = gc_now if gc_now > 0 else last_close * _viz_ratio
