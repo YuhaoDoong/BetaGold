@@ -1204,8 +1204,13 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         bp_est = (gld_est - next_lower) / (next_upper - next_lower) \
             if next_upper > next_lower else 0
         # 判断当前信号
-        _raw_sig = sig_df.loc[last_date]["signal_text"] \
-            if last_date in sig_df.index else ""
+        # v3.7.53: 数据过期时, _raw_sig 强制清空, 不显示历史信号
+        _ld_raw = pd.Timestamp(last_date)
+        _stale_raw = (pd.Timestamp(today_sgt) - _ld_raw.normalize()).days > 1
+        if last_date in sig_df.index and not _stale_raw:
+            _raw_sig = sig_df.loc[last_date]["signal_text"]
+        else:
+            _raw_sig = ""
         _has_open_buy = "BUY" in _raw_sig or "SELL PUT" in _raw_sig
         # v3.7.47: 推荐仓位倍数 (sizing 来自 dir_indicators)
         _sizing = 1.0
@@ -1257,9 +1262,9 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         _exit_shfe = _exit_spot * _cny / _g
 
         # ── 状态条: 今日窗口 / 盘中实时 / 持仓 / Regime / RV ──
-        # 今日窗口: 今日日线 bp_low 是否 < 0.30
+        # 今日窗口: 今日日线 bp_low 是否 < 0.30 (数据过期时不显示)
         _today_row = sig_df.loc[last_date] \
-            if last_date in sig_df.index else None
+            if (last_date in sig_df.index and not _stale_raw) else None
         _bp_low_today = (float(_today_row["bp_low"])
                          if _today_row is not None
                          and "bp_low" in _today_row.index else None)
@@ -1407,7 +1412,8 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             st.metric(f"看空/止盈 >{oi_tag}", f"${_exit_spot:{_price_fmt}}",
                       delta=f"{_etf_label} > ${eff_bp090:.2f} | {_shfe_label} > ¥{_exit_shfe:.1f}")
         with c3:
-            # 工具映射 (实证回测最优工具): 见 README v3.6.6
+            # v3.7.53 — 盘中信号页面只显当日有效信号 (历史信号去持仓管理 / chart 看)
+            # 工具映射 (实证回测最优工具):
             #   BUY CALL 类信号 → 期货多头 + 3% 止损 (96% wr vs 期权 73%)
             #   SELL PUT 类信号 → 期权 Sell Put (100% wr vs 期货 68%)
             _sig_map = {
@@ -1417,14 +1423,29 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                 "BUY CALL + EXIT": "期货多头 (有退出)",
                 "SELL PUT + EXIT": "Sell Put (有退出)",
             }
-            sig_text = _sig_map.get(_raw_sig, _raw_sig if _raw_sig else "—")
-            # v3.7.47: 加 sizing 倍数显示
-            _sizing_tag = ""
-            if _sizing > 1.0 and _has_open_buy:
-                _sizing_tag = f" | 仓位 {_sizing:.0f}× ({_sizing_reasons})"
-            st.metric("最新信号", sig_text,
-                      delta=f"Regime: {last_regime} | bp={last_bp:.3f} | "
-                            f"RV={rv_pctile.get(last_date,0):.0%}{_sizing_tag}")
+            # 数据过期检测: last_date 距今 > 1 个交易日 视为过期
+            _ld = pd.Timestamp(last_date)
+            _data_age = (pd.Timestamp(today_sgt) - _ld.normalize()).days
+            _is_stale = _data_age > 1
+
+            if _is_stale:
+                sig_text = "数据过期"
+                _delta_str = (f"末数据 {_ld.date()} ({_data_age}d ago) — "
+                              f"重启 dashboard 触发数据刷新")
+            elif _raw_sig:
+                # 当日有效信号 — 只在 last_date 实际触发时显示
+                sig_text = _sig_map.get(_raw_sig, _raw_sig)
+                _sizing_tag = ""
+                if _sizing > 1.0 and _has_open_buy:
+                    _sizing_tag = f" | 仓位 {_sizing:.0f}× ({_sizing_reasons})"
+                _delta_str = (f"Regime: {last_regime} | bp={last_bp:.3f} | "
+                              f"RV={rv_pctile.get(last_date,0):.0%}{_sizing_tag}")
+            else:
+                sig_text = "今日无信号"
+                _delta_str = (f"bp={last_bp:.3f} (需 < 0.30 触发) | "
+                              f"RV={rv_pctile.get(last_date,0):.0%} | "
+                              f"持仓 / 历史信号见可视化与持仓管理")
+            st.metric("当日信号", sig_text, delta=_delta_str)
         st.markdown('</div>', unsafe_allow_html=True)
 
         # 实时价格行 (紫色背景)
@@ -2104,20 +2125,25 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             if _squeeze_on.get(dt, False):
                 ax_price.axvspan(i - 0.5, i + 0.5, alpha=0.08, color="red")
 
+        # v3.7.53: 数据过期时, 入场窗口高亮关掉
+        _ld_zone = pd.Timestamp(last_date)
+        _stale_zone = (pd.Timestamp(today_sgt) - _ld_zone.normalize()).days > 1
+
         # 入场窗口标注: 当日线有买入信号时, Stoch RSI < 30 的区域高亮
         _has_buy_signal = False
         _signal_type_today = ""
-        if last_date in _unified_viz_raw.index:
+        if not _stale_zone and last_date in _unified_viz_raw.index:
             _chosen_today = _unified_viz_raw.loc[last_date, "chosen"]
             if _chosen_today in ("BUY CALL", "SELL PUT"):
                 _has_buy_signal = True
                 _signal_type_today = _chosen_today
-        # 也检查最近2天 (用 raw, 不去重: 今日状态判断与历史去重无关)
-        for _dd in _unified_viz_raw.index[-3:]:
-            _ch = _unified_viz_raw.loc[_dd, "chosen"]
-            if _ch in ("BUY CALL", "SELL PUT"):
-                _has_buy_signal = True
-                _signal_type_today = _ch
+        # 也检查最近2天 — 但若数据过期就不检查
+        if not _stale_zone:
+            for _dd in _unified_viz_raw.index[-3:]:
+                _ch = _unified_viz_raw.loc[_dd, "chosen"]
+                if _ch in ("BUY CALL", "SELL PUT"):
+                    _has_buy_signal = True
+                    _signal_type_today = _ch
 
         # "反转穿越20 + 近BB下轨" = 最优入场信号 (61%胜率 on 1h)
         _cross_20_up = (_stoch_rsi_k > 20) & (_stoch_rsi_k.shift(1) <= 20)
@@ -2301,15 +2327,24 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     st.subheader("期权策略实时面板")
     st.caption("4 类策略并列展示, 入场信号触发时对应策略高亮 ✅, 否则灰显示 (未激活)")
 
+    # v3.7.53: 数据过期时屏蔽所有"当日激活"判定 — 历史信号不应在 实时面板 显示
+    _ld2 = pd.Timestamp(last_date)
+    _stale_today = (pd.Timestamp(today_sgt) - _ld2.normalize()).days > 1
+
     # 当日各策略激活状态
-    _r2 = sig_df.loc[last_date] if last_date in sig_df.index else None
+    _r2 = sig_df.loc[last_date] if (last_date in sig_df.index and not _stale_today) else None
     _uni_today = (_unified_viz_raw.loc[last_date]
-                  if last_date in _unified_viz_raw.index else None)
+                  if (last_date in _unified_viz_raw.index and not _stale_today)
+                  else None)
     _chosen_today = _uni_today["chosen"] if _uni_today is not None else None
     _is_buy_call = (_chosen_today is not None and "BUY CALL" in _chosen_today)
     _is_sell_put = (_chosen_today is not None and "SELL PUT" in _chosen_today)
     _is_straddle_now = (_chosen_today is not None and "STRADDLE" in _chosen_today)
     _is_short_vol_now = (_chosen_today is not None and "SHORT_VOL" in _chosen_today)
+    if _stale_today:
+        st.warning(f"⚠️ 数据过期 (末日 {_ld2.date()}, 距今 "
+                   f"{(pd.Timestamp(today_sgt)-_ld2.normalize()).days}d) — "
+                   f"4 策略实时激活均强制视为未触发. 重启 dashboard 触发刷新.")
 
     # 当前价位 + 估算 1σ (5d hold)
     _spot = gc_now if gc_now > 0 else last_close * _viz_ratio
