@@ -5,3 +5,10 @@ data/
 .fred_key
 *.png
 scripts/test_*.py
+
+# v3.7.52: 真实期权回测 + 本地累积 K 线 — 显式包含
+!data/
+!data/real_options_backtest/
+!data/real_options_backtest/**
+!data/options_history/
+!data/options_history/**

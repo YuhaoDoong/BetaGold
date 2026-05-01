@@ -136,9 +136,29 @@ def auto_refresh_market_data(cfg: dict):
                     last_bday = ref - timedelta(days=2)
                 else:
                     last_bday = ref
+                # v3.7.52: 防腐校验 — 末行 Close == 前一日 Close 且 Volume<10% 均量
+                # = yfinance 美股开盘时返回了不完整 bar, 需重拉
                 if last_date >= last_bday:
-                    results.append((_label, f"已是最新 ({last_date})"))
-                    continue
+                    is_corrupt = False
+                    try:
+                        if len(existing) >= 2:
+                            prev_close = float(existing.iloc[-2]["Close"])
+                            last_close_v = float(existing.iloc[-1]["Close"])
+                            last_vol = float(existing.iloc[-1].get("Volume", 0))
+                            avg_vol = existing.iloc[-30:]["Volume"].mean()
+                            if (last_close_v == prev_close
+                                  and last_vol < avg_vol * 0.1):
+                                is_corrupt = True
+                                results.append((_label,
+                                    f"末行损坏 (close 重复+量低), 强制重拉"))
+                    except Exception:
+                        pass
+                    if not is_corrupt:
+                        results.append((_label, f"已是最新 ({last_date})"))
+                        continue
+                    # 损坏 → 删末行重拉
+                    existing = existing.iloc[:-1]
+                    last_date = existing.index[-1].date()
                 start = last_date + timedelta(days=1)
                 new_data = yf.Ticker(_ticker).history(
                     start=start.strftime("%Y-%m-%d"),

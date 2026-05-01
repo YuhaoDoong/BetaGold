@@ -52,13 +52,23 @@ launchctl load ~/Library/LaunchAgents/com.golddash.retune.plist
 固化层 (历史代表价)  每日多触发取最差 (买:max / 卖:min) → 持仓/回测全部读这里
 ```
 
-### 完整策略矩阵 (v3.6.x 实证最优)
+### 完整策略矩阵 (v3.7.50 真实期权 18mo 实证)
 
-| RV %tile | 方向性信号 | 推荐工具 | 备选波动率策略 |
-|----------|-----------|----------|----------------|
-| < 50% (低/中性) | BUY CALL 类 | **期货多头 + 3% 止损** (96% wr) | Long Straddle (低 RV+临 FOMC) |
-| 50-85% (温水) | ❌ 屏蔽 | ❌ 不做方向 | **Iron Condor 16Δ/5Δ** (83% wr) |
-| > 85% (恐慌) | SELL PUT 类 | **期权 Sell Put** (100% wr) | Long Straddle (临界) |
+| RV %tile | 方向性信号 | 推荐工具 | 波动率策略 |
+|----------|-----------|----------|------------|
+| < 切点 (低 IV) | BUY CALL 类 | **Buy Call** (期权便宜, delta gain) | tech-score ≥6 → Long Straddle |
+| ≥ 切点 (高 IV) | SELL PUT 类 | **Sell Put** (收 premium 替代 long call) | tech-score ≥6 → Long Straddle |
+
+**切点** (BC↔SP 切换, 单切, per-asset 在 strategy_config 月度重训):
+- GLD: rv_pctile **0.45** (实证看涨 n=64, 切换合成胜率 59.4%)
+- SLV: rv_pctile **0.75** (实证看涨 n=69, 切换合成胜率 66.7%)
+
+**STRADDLE tech-score** (v3.7.49 重构, 实证 score≥6 触发):
+- BBW pctile / ATR ratio / Donchian width / RV%tile / RV abs / RV momentum + 事件辅助
+- 18mo 真实期权胜率: GLD 73% (n=22) / **SLV 70% (n=53, 从 baseline 33% 反转)**
+- score 4-5 是噪音区 (17-33% 胜), 必须避开
+
+**Sizing** (score 6=1× / 7=1.5× / 8+=2×): 累计收益 +125% vs 单切 +68%
 
 ### 胜率定义 (按 vega/delta 实际盈亏)
 
@@ -104,6 +114,13 @@ launchctl load ~/Library/LaunchAgents/com.golddash.retune.plist
 | v3.7.31 | 月度自动重测系统: scripts/monthly_retune.py + 状态跟踪 + Dashboard 显示 + launchd 示例 |
 | v3.7.32 | STRADDLE 加 RV %tile < 0.50 过滤 (5y 实证 Sharpe +5%) |
 | **v3.7.33** | **RV %tile 精度统一 0.01 (GRID_PRECISION 集中管理) + GLD/SLV STRADDLE per-asset 校准: GLD 0.42 (Sharpe 0.922), SLV 0.20 (Sharpe 1.258); SLV STRADDLE 实际比 GLD 表现更好** |
+| v3.7.39-43 | 真实期权回测 (yfinance OCC) + 多 expiry DTE 适配 + 4 策略止损 + Moomoo fallback |
+| v3.7.44-46 | RV 阈值反复 (跟用户原 SELL_PUT 设计意图调和) — 单切 GLD 0.45 / SLV 0.75 |
+| v3.7.47-48 | 波动率技术指标重构 (vol_indicators.py BBW/ATR/Donchian/long_vol/short_vol score) |
+| v3.7.49 | events.py STRADDLE/SHORT_VOL 改 tech-score 主导 (事件 30%), score≥6 触发 |
+| **v3.7.50** | **真实期权 18mo 验证 STRADDLE 通过 (GLD 73%/SLV 70% 胜率), Dashboard sizing 显示, generate_signals 与 strategy_config 切点 unify** |
+| v3.7.51 | kline_db (本地 EOD 累积) 作为 yfinance/Moomoo 第三 fallback |
+| v3.7.52 | 数据腐败检测 (close 重复+量低 → 强制重拉); daily_eod_options.py 每日采集 cron |
 
 ## 用户偏好
 
