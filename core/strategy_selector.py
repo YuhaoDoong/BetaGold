@@ -26,7 +26,7 @@ VOL_DIR_BOTH_STRONG = 4          # 4 ≤ vol_score < priority → MIXED (同向�
 
 def dedupe_unified(unified_df, close_d, log_price_fn=None,
                    add_drop_pct=1.0, dir_gap_days=1,
-                   straddle_gap_days=3):
+                   straddle_gap_days=3, low_d=None):
     """对 build_unified_signals 输出去重, 返回保留行的子集 + entry_p 列.
 
     规则 (v3.7.57 调整):
@@ -49,6 +49,16 @@ def dedupe_unified(unified_df, close_d, log_price_fn=None,
         return unified_df
 
     def _price(d, chosen):
+        """获取 d 当日代表价格 (worst-of-day):
+
+        v3.7.59 修: 加仓识别不再用 close, 改用 daily Low (盘中最低/谷底).
+        因为收盘价无法预测 + 实战加仓应在盘中触发, 不等收盘.
+
+        优先级:
+          1. log_price_fn (intraday_signal_log 的实际盘中触发价)
+          2. low_d.get(d) (daily Low, 即 day's worst-of-day)
+          3. close_d.get(d) (兜底)
+        """
         if log_price_fn is not None \
                 and "STRADDLE" not in chosen \
                 and "SHORT_VOL" not in chosen:
@@ -56,6 +66,11 @@ def dedupe_unified(unified_df, close_d, log_price_fn=None,
             p = log_price_fn(d, side)
             if p is not None:
                 return p
+        # v3.7.59: 改用 daily Low 而非 close
+        if low_d is not None:
+            v = low_d.get(d)
+            if v is not None and v > 0:
+                return float(v)
         return close_d.get(d, 0)
 
     prev = {}  # {chosen_type: (date, price, score)}

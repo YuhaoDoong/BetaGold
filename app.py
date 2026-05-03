@@ -1071,9 +1071,15 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         _intraday_1h = gld_1h[gld_1h.index > _last_d_bd]
         if len(_intraday_1h) > 0:
             _new_d = _intraday_1h.index[-1].normalize()
-            _new_h = _intraday_1h["High"].max()
-            _new_l = _intraday_1h["Low"].min()
-            _new_c = _intraday_1h["Close"].iloc[-1]
+            # v3.7.59: 过滤 yfinance prepost 脏数据 (Low 偏离 Close > 5% 是异常)
+            _clean = _intraday_1h.copy()
+            _clean = _clean[(_clean["Low"] >= _clean["Close"] * 0.95) &
+                              (_clean["High"] <= _clean["Close"] * 1.05)]
+            if len(_clean) == 0:
+                _clean = _intraday_1h
+            _new_h = _clean["High"].max()
+            _new_l = _clean["Low"].min()
+            _new_c = _clean["Close"].iloc[-1]
             # append 一个新的"今日"条目 (实时数据)
             _close_for_sig.loc[_new_d] = _new_c
             _high_for_sig.loc[_new_d] = _new_h
@@ -1766,7 +1772,8 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     def _intra_log_price(d, side):
         return _log_price(d, side)
     _unified_viz = _dedupe(_unified_viz_raw, close_d,
-                            log_price_fn=_intra_log_price)
+                            log_price_fn=_intra_log_price,
+                            low_d=low_d)
 
     # v3.7.37: 图例始终显示全部 marker 类型, 不受当前窗口信号影响
     _sig_colors = {
@@ -3927,7 +3934,8 @@ def main():
                 return float(lk.loc[d_n, "price"])
 
             _uni_dd_chart = _dedupe_chart(_uni_raw_chart, close,
-                                           log_price_fn=_lp_chart)
+                                           log_price_fn=_lp_chart,
+                                           low_d=low)
             # 限制到 viz_dates
             _uni_dd_chart = _uni_dd_chart[
                 _uni_dd_chart.index.isin(viz_dates)]
