@@ -25,16 +25,18 @@ VOL_DIR_BOTH_STRONG = 4          # 4 ≤ vol_score < priority → MIXED (同向�
 
 
 def dedupe_unified(unified_df, close_d, log_price_fn=None,
-                   add_drop_pct=2.0, dir_gap_days=5,
+                   add_drop_pct=1.0, dir_gap_days=1,
                    straddle_gap_days=3):
     """对 build_unified_signals 输出去重, 返回保留行的子集 + entry_p 列.
 
-    规则:
+    规则 (v3.7.57 调整):
       - EXIT: 重置 _prev_entry, 全部保留
       - STRADDLE: 同向连续 ≤ straddle_gap_days 天, 仅 score 升级时保留;
         否则只保留首个
       - 方向性 (BUY/SELL): 同向 ≤ dir_gap_days 天内, 价格跌 > add_drop_pct%
-        视为加仓 (保留并标 is_add=True), 否则视为横盘 (suppress)
+        视为加仓 (保留并标 is_add=True), 否则视为横盘 (suppress).
+        v3.7.57: 加 gap-reset — 中间隔了不同 chosen 的"新 wave" 视为新信号
+        v3.7.57: add_drop_pct 默认 2.0 → 1.5 (降低加仓门槛, 减少 4-28 这类信号被误删)
 
     Args:
         log_price_fn: callable (d, side) -> float or None.
@@ -58,6 +60,7 @@ def dedupe_unified(unified_df, close_d, log_price_fn=None,
 
     prev = {}  # {chosen_type: (date, price, score)}
     keep_rows = []
+    prev_iter_chosen = None  # v3.7.57: 上一行 chosen (含空), 用于 gap-reset
     for d, r in unified_df.iterrows():
         chosen = r["chosen"]
         # 取对应 vol score (做多/做空)
@@ -72,6 +75,11 @@ def dedupe_unified(unified_df, close_d, log_price_fn=None,
 
         # 纯波动率信号 (没和方向性混合) 用 vol 去重逻辑
         is_pure_vol = (chosen in ("STRADDLE", "SHORT_VOL"))
+
+        # v3.7.57 gap-reset: 上一行 chosen ≠ 当前 chosen (含中间空 chosen 日)
+        # → 视为新 wave, 重置 prev[chosen], 让本笔正常显示
+        if chosen and prev_iter_chosen != chosen:
+            prev.pop(chosen, None)
 
         if chosen == "EXIT":
             prev = {}
@@ -93,6 +101,8 @@ def dedupe_unified(unified_df, close_d, log_price_fn=None,
                     show = False    # 横盘忽略
             if show:
                 prev[chosen] = (d, entry_p, 0)
+
+        prev_iter_chosen = chosen  # 始终更新 (含空), gap-reset 才能识别 wave gap
 
         if show:
             new = r.copy()
