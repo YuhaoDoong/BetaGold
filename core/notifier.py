@@ -111,29 +111,66 @@ class TelegramChannel(Channel):
     def send(self, subject: str, body: str, **meta) -> bool:
         if not self._enabled:
             return False
-        # TODO: 实装 Telegram bot API 调用
-        return False
+        try:
+            import urllib.parse, urllib.request
+            url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
+            data = urllib.parse.urlencode({
+                "chat_id": self.chat_id,
+                "text": f"*{subject}*\n\n{body}",
+                "parse_mode": "Markdown",
+            }).encode()
+            req = urllib.request.Request(url, data=data)
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return resp.status == 200
+        except Exception as e:
+            print(f"[telegram] {e}")
+            return False
 
 
 class EmailChannel(Channel):
-    """邮件推送 (待实现)."""
+    """SMTP 邮件推送 (v3.7.58 实装)."""
     name = "email"
 
     def __init__(self, smtp_host: Optional[str] = None,
+                 smtp_port: int = 587,
+                 smtp_user: Optional[str] = None,
+                 smtp_pass: Optional[str] = None,
+                 from_addr: Optional[str] = None,
                  to_addrs: Optional[List[str]] = None):
         self.smtp_host = smtp_host or os.environ.get("SMTP_HOST", "")
-        self.to_addrs = to_addrs or []
-        self._enabled = bool(self.smtp_host and self.to_addrs)
+        self.smtp_port = smtp_port
+        self.smtp_user = smtp_user or os.environ.get("SMTP_USER", "")
+        self.smtp_pass = smtp_pass or os.environ.get("SMTP_PASS", "")
+        self.from_addr = from_addr or os.environ.get("SMTP_FROM",
+                                                       self.smtp_user)
+        env_to = os.environ.get("SMTP_TO", "")
+        self.to_addrs = to_addrs or ([a.strip() for a in env_to.split(",")
+                                        if a.strip()])
+        self._enabled = bool(self.smtp_host and self.to_addrs and self.smtp_user)
 
     def send(self, subject: str, body: str, **meta) -> bool:
         if not self._enabled:
             return False
-        # TODO: 实装 smtplib
-        return False
+        try:
+            import smtplib
+            from email.mime.text import MIMEText
+            msg = MIMEText(body, "plain", "utf-8")
+            msg["Subject"] = subject
+            msg["From"] = self.from_addr
+            msg["To"] = ", ".join(self.to_addrs)
+            with smtplib.SMTP(self.smtp_host, self.smtp_port, timeout=15) as s:
+                s.starttls()
+                if self.smtp_pass:
+                    s.login(self.smtp_user, self.smtp_pass)
+                s.send_message(msg)
+            return True
+        except Exception as e:
+            print(f"[email] {e}")
+            return False
 
 
 class WebhookChannel(Channel):
-    """通用 webhook (POST JSON to URL, 待实现)."""
+    """通用 webhook (POST JSON, v3.7.58 实装)."""
     name = "webhook"
 
     def __init__(self, url: Optional[str] = None):
@@ -143,8 +180,22 @@ class WebhookChannel(Channel):
     def send(self, subject: str, body: str, **meta) -> bool:
         if not self._enabled:
             return False
-        # TODO: requests.post(self.url, json={...})
-        return False
+        try:
+            import urllib.request
+            payload = json.dumps({
+                "subject": subject,
+                "body": body,
+                **{k: v for k, v in meta.items()
+                   if isinstance(v, (str, int, float, bool, list, dict))},
+            }).encode()
+            req = urllib.request.Request(
+                self.url, data=payload,
+                headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return resp.status in (200, 201, 204)
+        except Exception as e:
+            print(f"[webhook] {e}")
+            return False
 
 
 # ── Notifier 主类 ──
