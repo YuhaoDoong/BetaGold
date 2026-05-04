@@ -144,14 +144,20 @@ def open_position(data_root: str, asset: str, strategy: str,
 
 def close_position(data_root: str, asset: str, exit_time: pd.Timestamp,
                    ul_price: float,
-                   option_price: Optional[float] = None) -> int:
-    """平仓所有该 asset 的 OPEN 持仓 (BUY side). EXIT trigger 触发.
+                   option_price: Optional[float] = None,
+                   skip_strategies: tuple = ("STRADDLE", "SHORT_VOL")) -> int:
+    """平仓 BUY 持仓 (不平 STRADDLE/SHORT_VOL — 它们走 DTE/profit 自 exit).
     返回平仓笔数.
     """
     df = load_positions(data_root)
     if len(df) == 0:
         return 0
     mask = (df["asset"] == asset) & (df["status"] == "OPEN") & (df["side"] == "BUY")
+    # v3.7.90: STRADDLE/SHORT_VOL 跟方向性 EXIT 触发分离
+    if skip_strategies:
+        _skip_mask = df["strategy"].astype(str).apply(
+            lambda s: any(skip in s for skip in skip_strategies))
+        mask = mask & ~_skip_mask
     if not mask.any():
         return 0
     n_closed = 0
