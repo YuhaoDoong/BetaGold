@@ -1747,9 +1747,10 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         # 默认范围: 14 天 (用户偏好两周内)
         _max_days = {"1m": 7, "5m": 60, "15m": 60,
                       "30m": 60, "1h": 730}.get(_interval_code, 60)
+        # v3.7.80: 默认 7 天, 范围 1-14 天 (用户偏好两周内)
         _intraday_days = st.sidebar.slider(
-            f"{_interval_code} 回看天数", 1,
-            min(60, _max_days), min(14, _max_days))
+            f"{_interval_code} 回看天数", 1, min(14, _max_days),
+            min(7, _max_days))
     else:
         lookback_days = st.sidebar.slider("回看天数", 30, 180, 65)
         lookback = last_date - timedelta(days=lookback_days)
@@ -2249,7 +2250,8 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     _futures_ticker = "GC=F" if asset_key == "GLD" else "SI=F"
     _futures_name = "COMEX Gold" if asset_key == "GLD" else "COMEX Silver"
     # 强制用 1h 与主图对齐, 数据源 = gld_1h.csv (与主图 _1h 同步)
-    _kline_interval = "1h"
+    # v3.7.80: 用 user-selected interval (默认 15m)
+    _kline_interval = locals().get("_interval_code", "1h") if _is_1h_view else "1h"
     _kline_data = gld_1h if gld_1h is not None else _fetch_futures_kline(_futures_ticker, "1h")
     _kline_label = f"{_futures_name} 1h"
 
@@ -2451,6 +2453,27 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             f"{_signal_tag}",
             fontsize=11, fontweight="bold")
         ax_price.grid(True, alpha=0.3)
+        # v3.7.80: K 线 chart 图例 — 期权/期货 marker 区别
+        from matplotlib.lines import Line2D
+        _kline_legend = [
+            Line2D([0],[0], marker="^", color="w", markerfacecolor="#2196F3",
+                    markeredgecolor="black", markersize=10,
+                    label="▲ BUY CALL 期权 (盘中)"),
+            Line2D([0],[0], marker="^", color="w", markerfacecolor="#FF9800",
+                    markeredgecolor="black", markersize=10,
+                    label="▲ SELL PUT 期权 (盘中)"),
+            Line2D([0],[0], marker="D", color="w", markerfacecolor="#2196F3",
+                    markeredgecolor="black", markersize=10,
+                    label="◇ BUY 期货 (非盘中, 24h)"),
+            Line2D([0],[0], marker="D", color="w", markerfacecolor="#FF9800",
+                    markeredgecolor="black", markersize=10,
+                    label="◇ SELL 期货 (非盘中)"),
+            Line2D([0],[0], marker="v", color="w", markerfacecolor="#F44336",
+                    markeredgecolor="black", markersize=10,
+                    label="▼ EXIT"),
+        ]
+        ax_price.legend(handles=_kline_legend, loc="upper left",
+                        fontsize=7, framealpha=0.85, ncol=3)
 
         # ── 把 1h/15m 时间戳投影到 K线索引 x (与 price/squeeze 对齐) ──
         _ref_nums = np.array([mdates.date2num(t) for t in _idx_1h])
@@ -2507,8 +2530,15 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         # _live_buys, 后者有时丢数据). log 已确认含 4-29 09:30 EDT \$414.16.
         from core.intraday_triggers import dedupe_intraday as _dd_chart
         if len(_intra_log_asset) > 0:
-            _log_buys = _intra_log_asset[_intra_log_asset["side"] == "BUY"]
-            _log_exits = _intra_log_asset[_intra_log_asset["side"] == "EXIT"]
+            # v3.7.80: 按 timeframe 过滤 — 只显示当前 interval 触发, 避免 1h+15m 混合
+            _tf_match = f"{_interval_code.replace('m','')}m" \
+                if _interval_code != "1h" else "60m"
+            _log_buys = _intra_log_asset[
+                (_intra_log_asset["side"] == "BUY") &
+                (_intra_log_asset.get("timeframe", "") == _tf_match)]
+            _log_exits = _intra_log_asset[
+                (_intra_log_asset["side"] == "EXIT") &
+                (_intra_log_asset.get("timeframe", "") == _tf_match)]
             # dedupe 每天独立, 用 daily Low 做 sanity 截 dirty 价位
             def _dedupe_per_day(log_df, side):
                 if not len(log_df):
