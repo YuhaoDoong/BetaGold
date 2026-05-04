@@ -2580,15 +2580,16 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                                         "intraday_signal_log.parquet")
         _thresholds_intra = sig_df[["bp030_price", "bp090_price"]]
 
+        # v3.7.98: 'all' 太严, 多日 0 触发 → 改 'any' + dedupe 0.3 过滤噪音
         _live_buys_raw = _ig_detect(
             _kline_data, _thresholds_intra,
             _IG_Cfg(timeframe_minutes=_interval_min, side="BUY",
-                    rule_set=_IG_BUY, confirm_mode="all"),  # v3.7.83
+                    rule_set=_IG_BUY, confirm_mode="any"),
             asset=asset_key, daily_low=low_d, daily_high=high_d)
         _live_exits_raw = _ig_detect(
             _kline_data, _thresholds_intra,
             _IG_Cfg(timeframe_minutes=_interval_min, side="EXIT",
-                    rule_set=_IG_EXIT, confirm_mode="all"),  # v3.7.83
+                    rule_set=_IG_EXIT, confirm_mode="any"),
             asset=asset_key, daily_low=low_d, daily_high=high_d)
         # v3.7.67: 日内去重 — 同日多触发只保留显著加仓点 (≥0.5% 跌幅)
         _live_buys = _ig_dedupe(_live_buys_raw, side="BUY", min_drop_pct=0.3)
