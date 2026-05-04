@@ -1197,15 +1197,12 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                                            dedup_first=True, min_drop_pct=0.3) \
         if len(_intra_log_asset) else pd.DataFrame()
     # v3.7.73: 计算每日 BUY/EXIT trigger 平均时间 (用于主图 marker x 位置)
-    # v3.7.85: 按当前 user-selected interval 的 timeframe 过滤, 避免 1h+5m 混合
-    _avg_tf_match = (f"{_interval_code.replace('m','')}m"
-                       if _is_1h_view and _interval_code != "1h" else "60m") \
-        if _is_1h_view else "60m"
-    def _avg_trigger_time(side):
+    # v3.7.85: timeframe filter 在 user 选完 interval 后再算 (见 _avg_buy_time =).
+    def _avg_trigger_time(side, tf_match):
         if not len(_intra_log_asset): return {}
         sub = _intra_log_asset[
             (_intra_log_asset["side"] == side) &
-            (_intra_log_asset.get("timeframe", "") == _avg_tf_match)
+            (_intra_log_asset.get("timeframe", "") == tf_match)
         ].copy()
         out = {}
         for d, grp in sub.groupby("date"):
@@ -1215,8 +1212,9 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             avg_ns = ts_list.astype("int64").mean()
             out[pd.Timestamp(d)] = pd.Timestamp(int(avg_ns))
         return out
-    _avg_buy_time = _avg_trigger_time("BUY")
-    _avg_exit_time = _avg_trigger_time("EXIT")
+    # 占位; 真正赋值在下方读完 _interval_code 之后
+    _avg_buy_time: dict = {}
+    _avg_exit_time: dict = {}
 
     # 真实策略回测 — 入场/退出价用 log 代表价 + 3% 止损 + 连续熔断
     trades = run_backtest(
@@ -1761,6 +1759,12 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     else:
         lookback_days = st.sidebar.slider("回看天数", 30, 180, 65)
         lookback = last_date - timedelta(days=lookback_days)
+    # v3.7.85: 现在 _interval_code 已就绪, 计算 avg trigger time (按 timeframe 过滤)
+    _avg_tf_match = ((f"{_interval_code.replace('m','')}m"
+                        if _interval_code != "1h" else "60m")
+                       if _is_1h_view else "60m")
+    _avg_buy_time = _avg_trigger_time("BUY", _avg_tf_match)
+    _avg_exit_time = _avg_trigger_time("EXIT", _avg_tf_match)
     # v3.7.84: 主图数据源改 COMEX 期货 (GC=F/SI=F) — 23h 全球夜盘, 真伦敦金价
     # ETF (GLD/SLV) 只 US session 6.5h, 缺亚欧夜盘 — 用户诉求显示 24h
     # 实现: 拉 GC=F (gold scale $3800) → 除以 _viz_ratio → ETF-等价 scale ($400)
