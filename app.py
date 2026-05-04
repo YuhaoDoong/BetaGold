@@ -1191,10 +1191,10 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     _intra_log_asset = _intra_log_full[_intra_log_full["asset"] == asset_key] \
         if len(_intra_log_full) else _intra_log_full
     _worst_buy_lookup = _ig_avg_global(_intra_log_asset, "BUY",
-                                          dedup_first=True, min_drop_pct=1.5) \
+                                          dedup_first=True, min_drop_pct=0.3) \
         if len(_intra_log_asset) else pd.DataFrame()
     _worst_exit_lookup = _ig_avg_global(_intra_log_asset, "EXIT",
-                                           dedup_first=True, min_drop_pct=1.5) \
+                                           dedup_first=True, min_drop_pct=0.3) \
         if len(_intra_log_asset) else pd.DataFrame()
     # v3.7.73: 计算每日 BUY/EXIT trigger 平均时间 (用于主图 marker x 位置)
     def _avg_trigger_time(side):
@@ -1202,7 +1202,7 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         sub = _intra_log_asset[_intra_log_asset["side"] == side].copy()
         out = {}
         for d, grp in sub.groupby("date"):
-            dd = _ig_dedupe_g(grp, side=side, min_drop_pct=1.5)
+            dd = _ig_dedupe_g(grp, side=side, min_drop_pct=0.3)
             if len(dd) == 0: continue
             ts_list = pd.to_datetime(dd["trigger_time"])
             avg_ns = ts_list.astype("int64").mean()
@@ -2502,16 +2502,16 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         _live_buys_raw = _ig_detect(
             _kline_data, _thresholds_intra,
             _IG_Cfg(timeframe_minutes=_interval_min, side="BUY",
-                    rule_set=_IG_BUY, confirm_mode=2),  # v3.7.82
+                    rule_set=_IG_BUY, confirm_mode="all"),  # v3.7.83
             asset=asset_key, daily_low=low_d, daily_high=high_d)
         _live_exits_raw = _ig_detect(
             _kline_data, _thresholds_intra,
             _IG_Cfg(timeframe_minutes=_interval_min, side="EXIT",
-                    rule_set=_IG_EXIT, confirm_mode=2),  # v3.7.82
+                    rule_set=_IG_EXIT, confirm_mode="all"),  # v3.7.83
             asset=asset_key, daily_low=low_d, daily_high=high_d)
         # v3.7.67: 日内去重 — 同日多触发只保留显著加仓点 (≥0.5% 跌幅)
-        _live_buys = _ig_dedupe(_live_buys_raw, side="BUY", min_drop_pct=1.5)
-        _live_exits = _ig_dedupe(_live_exits_raw, side="EXIT", min_drop_pct=1.5)
+        _live_buys = _ig_dedupe(_live_buys_raw, side="BUY", min_drop_pct=0.3)
+        _live_exits = _ig_dedupe(_live_exits_raw, side="EXIT", min_drop_pct=0.3)
 
         # 写入持久 log (去重交给 upsert)
         try:
@@ -2555,7 +2555,7 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                     if d_hi > 0:
                         grp_clean["price"] = grp_clean["price"].clip(
                             upper=d_hi * 1.003)
-                    dd = _dd_chart(grp_clean, side=side, min_drop_pct=1.5)
+                    dd = _dd_chart(grp_clean, side=side, min_drop_pct=0.3)
                     if len(dd):
                         rows.append(dd)
                 if not rows:
