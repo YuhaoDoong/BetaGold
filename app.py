@@ -3117,37 +3117,60 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         if not _ent_pricing["legs"]:
             continue  # kline_db 无该日期权数据
         _ent_prem = _ent_pricing["entry_price"]
+        _ent_legs = _ent_pricing.get("leg_prices", [])
         # v3.7.96: 真实期权退出规则 (50% profit / stop / expiry / 时间)
         _sim = _sim_exit(_ent_pricing, _du, _strat, _today_dt_u)
         _is_closed = _sim.get("is_closed", False)
         _gain_u = _sim.get("pnl_pct", 0.0)
-        _exit_label = "未触发"
-        _exit_value_str = "—"
+        _exit_legs = _sim.get("leg_prices", [])
+        # v3.7.97: 单腿价格显示 (用户偏好单腿 — 流动性高/价格更平滑)
+        # SELL PUT: "Short P\$465: \$22.13 / Long P\$445: \$13.45 = 收 \$8.55"
+        # STRADDLE: "Call \$X / Put \$Y = \$Z"
+        # BUY CALL: "Call \$X"
+        def _fmt_legs(legs_def, leg_prices):
+            if not legs_def or not leg_prices:
+                return "—"
+            parts = []
+            for (lab, code, K, qty), (lp_lab, p) in zip(legs_def, leg_prices):
+                if "short" in lab:
+                    parts.append(f"-P${K:.0f}@${p:.2f}")
+                elif "put" in lab:
+                    parts.append(f"+P${K:.0f}@${p:.2f}")
+                elif "call" in lab:
+                    parts.append(f"+C${K:.0f}@${p:.2f}")
+            return " / ".join(parts)
+        _ent_str = _fmt_legs(_ent_pricing["legs"], _ent_legs)
+        if "SELL PUT" in _strat:
+            _ent_str += f" → 收${_ent_prem:.2f}"
+        elif "STRADDLE" in _strat or "SHORT_VOL" in _strat:
+            _ent_str += f" → ${_ent_prem:.2f}"
         if _is_closed:
             _exit_d_u = _sim["exit_date"]
             _ex_val = _sim["exit_value"]
             _exit_label = f'{_exit_d_u.strftime("%m-%d")} ({_sim["exit_reason"]})'
-            _exit_value_str = (f"平收${_ex_val:.2f}" if "SELL PUT" in _strat
-                                 else f"平${_ex_val:.2f}")
+            _exit_str = _fmt_legs(_ent_pricing["legs"], _exit_legs)
+            if "SELL PUT" in _strat:
+                _exit_str += f" → 平收${_ex_val:.2f}"
+            else:
+                _exit_str += f" → 平${_ex_val:.2f}"
             _exit_spot_u = float(close_d.get(_exit_d_u, _cur_spot_u))
         else:
             _ex_val = _sim.get("current_value", 0)
             _exit_label = f'OPEN ({_sim.get("hold_days", 0)}d)'
-            _exit_value_str = (f"现收${_ex_val:.2f}" if "SELL PUT" in _strat
-                                 else f"现${_ex_val:.2f}")
+            _exit_str = _fmt_legs(_ent_pricing["legs"], _exit_legs)
+            if "SELL PUT" in _strat:
+                _exit_str += f" → 现${_ex_val:.2f}"
+            else:
+                _exit_str += f" → 现${_ex_val:.2f}"
             _exit_spot_u = _cur_spot_u
-        if "SELL PUT" in _strat:
-            _ent_str = f"收${_ent_prem:.2f}"
-        else:
-            _ent_str = f"${_ent_prem:.2f}"
         _rec = {
             "信号日": _du.strftime("%m-%d"),
             "策略": _strat,
-            "合约": _ent_pricing.get("source", "—")[:35],
+            "合约": _ent_pricing.get("source", "—"),
             "入场Spot": f"${_entry_spot_u:.2f}",
             "入场期权": _ent_str,
             "平/现Spot": f"${_exit_spot_u:.2f}",
-            "平/现期权": _exit_value_str,
+            "平/现期权": _exit_str,
             "P&L%": f"{_gain_u:+.1f}%",
             "出场原因": _exit_label,
         }

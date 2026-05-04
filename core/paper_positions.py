@@ -441,18 +441,47 @@ def price_strategy_at(asset: str, strategy: str,
     out = {"legs": [], "entry_price": 0.0, "daily_open_price": 0.0,
            "daily_close_price": 0.0, "kline_codes": [], "source": "—"}
     if "BUY CALL" in strategy:
+        # v3.7.97: 根据"买点深度+IV"决定单腿还是价差
+        # 单腿 BUY CALL: 买点深 (spot 低) + IV 小 → 期权便宜, 杠杆好
+        # 否则 bull call spread (+ATM call / -OTM +5% call): 期权贵时降本
+        # 简化判定: 若 use_spread=True (调用方传入) → spread; 否则 single
+        _use_spread = bool(out.get("force_spread", False))
         c = pick_liquid_monthly_option(asset, signal_date, spot_at_trigger,
                                           "C", dte_target)
-        if c:
+        if c and not _use_spread:
             entry = interpolate_option_intraday(c, daily_O, daily_C,
                                                    spot_at_trigger,
                                                    daily_H, daily_L)
+            _e = c["expiry"][5:].replace("-", "/")
             out.update(legs=[("long_call", c["code"], c["strike"], 1)],
                         entry_price=entry,
+                        leg_prices=[("long_call", entry)],
                         daily_open_price=c["open"],
                         daily_close_price=c["close"],
                         kline_codes=[c["code"]],
-                        source=f"kline_db {c['code']}")
+                        source=f"C${c['strike']:.0f} ({_e})")
+        elif c:  # bull call spread
+            short_K = round(c["strike"] * 1.05)
+            sc = pick_liquid_monthly_option(asset, signal_date, short_K,
+                                               "C", dte_target)
+            if sc and sc["strike"] > c["strike"]:
+                lc_intra = interpolate_option_intraday(c, daily_O, daily_C,
+                                                            spot_at_trigger,
+                                                            daily_H, daily_L)
+                sc_intra = interpolate_option_intraday(sc, daily_O, daily_C,
+                                                            spot_at_trigger,
+                                                            daily_H, daily_L)
+                debit = lc_intra - sc_intra  # 净付出
+                _e = c["expiry"][5:].replace("-", "/")
+                out.update(legs=[("long_call", c["code"], c["strike"], 1),
+                                  ("short_call", sc["code"], sc["strike"], -1)],
+                            entry_price=debit,
+                            leg_prices=[("long_call", lc_intra),
+                                         ("short_call", sc_intra)],
+                            daily_open_price=c["open"] - sc["open"],
+                            daily_close_price=c["close"] - sc["close"],
+                            kline_codes=[c["code"], sc["code"]],
+                            source=f"+C${c['strike']:.0f}/-C${sc['strike']:.0f} ({_e})")
     elif "SELL PUT" in strategy:
         sp = pick_liquid_monthly_option(asset, signal_date, spot_at_trigger,
                                            "P", dte_target)
@@ -489,13 +518,16 @@ def price_strategy_at(asset: str, strategy: str,
                                                        spot_at_trigger,
                                                        daily_H, daily_L)
             credit = sp_intra - lp_intra
+            _e = sp["expiry"][5:].replace("-", "/")
             out.update(legs=[("short_put", sp["code"], sp["strike"], -1),
                               ("long_put", lp["code"], lp["strike"], 1)],
                         entry_price=credit,
+                        leg_prices=[("short_put", sp_intra),
+                                     ("long_put", lp_intra)],
                         daily_open_price=sp["open"] - lp["open"],
                         daily_close_price=sp["close"] - lp["close"],
                         kline_codes=[sp["code"], lp["code"]],
-                        source=f"kline_db {sp['code']} / {lp['code']}")
+                        source=f"-P${sp['strike']:.0f}/+P${lp['strike']:.0f} ({_e})")
     elif "STRADDLE" in strategy:
         c = pick_liquid_monthly_option(asset, signal_date, spot_at_trigger,
                                           "C", 14)  # STRADDLE 短 DTE
@@ -509,13 +541,16 @@ def price_strategy_at(asset: str, strategy: str,
                                                        spot_at_trigger,
                                                        daily_H, daily_L)
             total = c_intra + p_intra
+            _e = c["expiry"][5:].replace("-", "/")
             out.update(legs=[("long_call", c["code"], c["strike"], 1),
                               ("long_put", p["code"], p["strike"], 1)],
                         entry_price=total,
+                        leg_prices=[("long_call", c_intra),
+                                     ("long_put", p_intra)],
                         daily_open_price=c["open"] + p["open"],
                         daily_close_price=c["close"] + p["close"],
                         kline_codes=[c["code"], p["code"]],
-                        source=f"kline_db {c['code']} + {p['code']}")
+                        source=f"C${c['strike']:.0f}+P${p['strike']:.0f} ({_e})")
     return out
 
 
@@ -567,16 +602,21 @@ def simulate_option_exit(entry_pricing: dict, signal_date: pd.Timestamp,
     days = sorted(set(db[db["code"].isin([l[1] for l in legs])]["date"].unique()))
     days_after = [d for d in days if pd.Timestamp(d) > sig_d]
     hold_days = 0
+    leg_prices_at_exit = []  # 出场时各 leg 真实 close
     for d in days_after:
         d_ts = pd.Timestamp(d)
         if d_ts > today_dt: break
         # 每 leg close 算 cur_value
         cur_total = 0.0; ok = True
+        leg_prices_today = []
         for _lab, _code, _K, _qty in legs:
             r = db[(db["code"] == _code) & (db["date"] == d_ts)]
             if not len(r): ok = False; break
-            cur_total += _qty * float(r.iloc[0]["close"])
+            _p = float(r.iloc[0]["close"])
+            leg_prices_today.append((_lab, _p))
+            cur_total += _qty * _p
         if not ok: continue
+        leg_prices_at_exit = leg_prices_today
         cur_value = -cur_total if is_credit else cur_total
         hold_days += 1
         # 检查退出
@@ -589,7 +629,8 @@ def simulate_option_exit(entry_pricing: dict, signal_date: pd.Timestamp,
                      if is_credit else "+100% profit",
                      "pnl_pct": ((entry_value - cur_value) / entry_value * 100
                                   if is_credit
-                                  else (cur_value / entry_value - 1) * 100)}
+                                  else (cur_value / entry_value - 1) * 100),
+                     "leg_prices": leg_prices_at_exit}
         if stop_loss is not None and (
             (is_credit and cur_value >= stop_loss) or
             (is_long_dir and cur_value <= stop_loss)):
@@ -598,7 +639,8 @@ def simulate_option_exit(entry_pricing: dict, signal_date: pd.Timestamp,
                      "exit_reason": "stop loss",
                      "pnl_pct": ((entry_value - cur_value) / entry_value * 100
                                   if is_credit
-                                  else (cur_value / entry_value - 1) * 100)}
+                                  else (cur_value / entry_value - 1) * 100),
+                     "leg_prices": leg_prices_at_exit}
         # STRADDLE 持仓 14d
         if is_long_vol and hold_days >= 14:
             return {"is_closed": True, "exit_date": d_ts,
@@ -618,14 +660,16 @@ def simulate_option_exit(entry_pricing: dict, signal_date: pd.Timestamp,
                      "exit_reason": "expiry",
                      "pnl_pct": ((entry_value - cur_value) / entry_value * 100
                                   if is_credit
-                                  else (cur_value / entry_value - 1) * 100)}
+                                  else (cur_value / entry_value - 1) * 100),
+                     "leg_prices": leg_prices_at_exit}
     # 未触发退出 → OPEN (用最新 close 算 mark-to-market)
     if hold_days > 0 and ok:
         return {"is_closed": False, "current_value": cur_value,
                  "hold_days": hold_days,
                  "pnl_pct": ((entry_value - cur_value) / entry_value * 100
                               if is_credit
-                              else (cur_value / entry_value - 1) * 100)}
+                              else (cur_value / entry_value - 1) * 100),
+                 "leg_prices": leg_prices_at_exit}
     return {"is_closed": False}
 
 
