@@ -104,7 +104,25 @@ def load_all():
     if usdcny_s is not None and len(usdcny_s) > 0:
         usdcny_rate = float(usdcny_s.iloc[-1])
 
-    return gld, range_df, regime, rv_pctile, gc_gld_ratio, usdcny_rate
+    # v3.7.62: SI=F / SLV 比率 (跟 GC/GLD 同步管理)
+    si_slv_ratio = None
+    try:
+        import os as _os
+        slv_path = _os.path.join(cfg["data_root"], "raw/market/slv.csv")
+        si_path = _os.path.join(cfg["data_root"], "raw/market/silver.csv")
+        if _os.path.exists(slv_path) and _os.path.exists(si_path):
+            slv_df = pd.read_csv(slv_path, index_col=0, parse_dates=True)
+            si_df = pd.read_csv(si_path, index_col=0, parse_dates=True)
+            si_common = slv_df.index.intersection(si_df.index)
+            if len(si_common) > 20:
+                si_slv_ratio = float(
+                    (si_df.loc[si_common[-60:], "Close"]
+                     / slv_df.loc[si_common[-60:], "Close"]).mean())
+    except Exception:
+        pass
+
+    return (gld, range_df, regime, rv_pctile, gc_gld_ratio, usdcny_rate,
+             si_slv_ratio)
 
 
 @st.cache_data(ttl=300)
@@ -1199,7 +1217,12 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     eff_bp030 = oi_adj_bp030 if oi_adj_bp030 > 0 else next_bp030
     eff_bp090 = oi_adj_bp090 if oi_adj_bp090 > 0 else next_bp090
 
-    gc_gld_r = gc_gld_ratio if gc_gld_ratio else (10.9 if asset_key == "GLD" else 1.11)
+    # v3.7.62: SLV 用 si_slv_ratio (动态算), GLD 用 gc_gld_ratio
+    if asset_key == "GLD":
+        gc_gld_r = gc_gld_ratio if gc_gld_ratio else 10.9
+    else:
+        gc_gld_r = (locals().get("si_slv_ratio") if locals().get("si_slv_ratio")
+                    else 1.11)
     _rt_ticker = "GC=F" if asset_key == "GLD" else "SI=F"
     rt = _get_realtime_prices(_rt_ticker)
     _cny = rt["usdcny"] if rt else (usdcny_rate if usdcny_rate else 7.0)
@@ -1466,24 +1489,26 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             st.metric(f"看空/止盈 >{oi_tag}", f"${_exit_spot:{_price_fmt}}",
                       delta=f"{_etf_label} > ${eff_bp090:.2f} | {_shfe_label} > ¥{_exit_shfe:.1f}")
         with c3:
-            # v3.7.62: session-aware 工具路由 — 期权 vs 期货独立
+            # v3.7.62: session-aware 工具路由 — 默认期权, 非 US session 用期货补窗外
             # US 期权 regular session: SGT 21:30 ~ 04:00 (= US 9:30-16:00 EDT)
-            # 之外: 期权流动性差 / 不可下单, 必须用期货 (GC=F 23h 交易)
+            # 之外 (盘前/盘后/亚欧时段): 期权流动性差, 用期货 24h 抓机会
+            _fut_label = "GC=F" if asset_key == "GLD" else "SI=F"
+            _opt_label = "GLD" if asset_key == "GLD" else "SLV"
             if _is_us_session:
                 _sig_map = {
-                    "BUY CALL": "🎯 期权 Buy Call (US session 中)",
-                    "SELL PUT": "🎯 期权 Sell Put (推 100%)",
-                    "EXIT": "平仓 / 做空",
-                    "BUY CALL + EXIT": "Buy Call (有退出)",
-                    "SELL PUT + EXIT": "Sell Put (有退出)",
+                    "BUY CALL": f"🎯 {_opt_label} Buy Call (期权 US session)",
+                    "SELL PUT": f"🎯 {_opt_label} Sell Put (期权 推 100%)",
+                    "EXIT": f"平仓 / {_opt_label} 做空",
+                    "BUY CALL + EXIT": f"{_opt_label} Buy Call (有退出)",
+                    "SELL PUT + EXIT": f"{_opt_label} Sell Put (有退出)",
                 }
             else:
                 _sig_map = {
-                    "BUY CALL": "📈 期货多头 GC=F (期权关闭, 推 96%)",
-                    "SELL PUT": "📈 期货多头 GC=F (期权关闭, sell put 替代不可)",
-                    "EXIT": "📉 期货空头 GC=F (期权关闭)",
-                    "BUY CALL + EXIT": "期货多头 (有退出)",
-                    "SELL PUT + EXIT": "期货多头 (有退出)",
+                    "BUY CALL": f"📈 期货多头 {_fut_label} (期权关闭, 24h 抓窗外机会)",
+                    "SELL PUT": f"📈 期货多头 {_fut_label} (期权关闭, sell put 不可代用)",
+                    "EXIT": f"📉 期货空头 {_fut_label} (期权关闭)",
+                    "BUY CALL + EXIT": f"期货多头 {_fut_label} (有退出)",
+                    "SELL PUT + EXIT": f"期货多头 {_fut_label} (有退出)",
                 }
             # 数据过期检测: last_date 距今 > 1 个交易日 视为过期
             _ld = pd.Timestamp(last_date)
@@ -3499,11 +3524,13 @@ def main():
 
     if asset_key == "GLD":
         with st.spinner("加载黄金数据..."):
-            gld, range_df, regime, rv_pctile, gc_gld_ratio, usdcny_rate = load_all()
+            (gld, range_df, regime, rv_pctile, gc_gld_ratio, usdcny_rate,
+             si_slv_ratio) = load_all()
     else:
         with st.spinner("加载白银数据..."):
             # 复用黄金的 Regime (宏观环境对金银都适用)
-            gld_for_regime, _, regime, rv_pctile_gld, _, usdcny_rate = load_all()
+            (gld_for_regime, _, regime, rv_pctile_gld, _, usdcny_rate,
+             si_slv_ratio) = load_all()
             # 加载白银数据
             _slv_path = os.path.join(cfg_refresh["data_root"], "raw", "market", "slv.csv")
             _slv_oos_path = os.path.join(cfg_refresh["data_root"], "models", "dl_range_slv_oos.parquet")
