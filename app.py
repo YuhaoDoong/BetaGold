@@ -2073,12 +2073,8 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                 _xi_target = _xi_at(_avg_t) if _avg_t else xi(d)
                 _yp = entry_p
             elif part == "EXIT":
-                _avg_t = _avg_exit_time.get(pd.Timestamp(d))
-                if _avg_t is None and _is_1h_view:
-                    continue
-                _xi_target = _xi_at(_avg_t) if _avg_t else xi(d)
-                # v3.7.86/87: y 用真实出场触发价 (而非 entry_p = 入场价)
-                _yp = _avg_exit_price.get(pd.Timestamp(d), entry_p)
+                # v3.7.89: EXIT 不在这里画, 走下方独立 log-driven loop
+                continue
             else:
                 _xi_target = xi(d)
                 _yp = entry_p
@@ -2088,6 +2084,19 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             ax.scatter([_xi_target], [(_yp + y_offset) * _r],
                         marker=marker, s=size, color=color,
                         edgecolors=edge, lw=1.0, zorder=6)
+    # v3.7.89: EXIT marker 单一来源 — intraday log 直读, 每个 dedupe-survivor 一个标
+    if len(_intra_log_asset):
+        from core.intraday_triggers import dedupe_intraday as _dd_exit
+        _exit_log = _intra_log_asset[_intra_log_asset["side"] == "EXIT"]
+        for _d_exit, _grp_exit in _exit_log.groupby("date"):
+            _dd_e = _dd_exit(_grp_exit, side="EXIT", min_drop_pct=0.3)
+            for _, _re in _dd_e.iterrows():
+                _t_e = pd.Timestamp(_re["trigger_time"])
+                _x_e = _xi_at(_t_e)
+                if _x_e is None: continue
+                ax.scatter([_x_e], [float(_re["price"]) * _r],
+                            marker="v", s=120, color="#F44336",
+                            edgecolors="black", lw=1.0, zorder=6)
     # 始终显示全部 5 类 + MIXED 边框说明 (即使当前窗口没有该类信号)
     ax.legend(loc="upper left", fontsize=8, framealpha=0.85, ncol=2,
                title="信号类型 (紫色边框 = MIXED 组合)")
@@ -2095,25 +2104,8 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     if len(plot_dates) > 0:
         ax.set_xlim(-0.5, len(plot_dates) - 0.5)
 
-    # 回测止盈标注 (淡色); 跳过活跃持仓 (无 exit_date)
-    _closed = [t for t in trades
-               if not t.get("active") and t.get("exit_date") is not None]
-    tdf_viz = pd.DataFrame(_closed) if _closed else pd.DataFrame()
-    if len(tdf_viz) > 0:
-        for _, t in tdf_viz.iterrows():
-            xd = t["exit_date"]
-            if xd not in d2i or t["exit_type"] == "BandExit":
-                continue
-            cx = {"Pullback":"#FF6600","MACD":"#9C27B0","StopLoss":"#B71C1C","Timeout":"gray"}
-            mk = {"Pullback":"s","MACD":"D","StopLoss":"X","Timeout":"X"}
-            ax.scatter([xi(xd)], [t["exit_price"] * _r],
-                       marker=mk.get(t["exit_type"],"o"), s=80,
-                       color=cx.get(t["exit_type"],"gray"),
-                       edgecolors="black", lw=0.5, alpha=0.5, zorder=4)
-            ax.annotate(f"{t['gain']:+.1f}%",
-                        xy=(xi(xd), t["exit_price"] * _r),
-                        xytext=(3, 6), textcoords="offset points", fontsize=6,
-                        color=cx.get(t["exit_type"],"gray"), alpha=0.7)
+    # v3.7.89: 删除回测 exit 散点 (用户反馈"落在每次日期刻度线上"刺眼)
+    # EXIT marker 现单一来源 = intraday log (上方独立循环), 真实时间+价格.
 
     # 事件日期标注 (FOMC/OPEX/NFP)
     _asset_type = "gold" if asset_key == "GLD" else "silver"
@@ -2952,770 +2944,175 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                                                   if _is_straddle_now else ""),
                                 rv_val=rv)
 
-    # ── 今日临时交易记录 (盘中累积, 第二天清零, 只 worst 进持仓管理) ──
+    # ════════════════════════════════════════════════════════════════
+    # v3.7.89 持仓管理重构: 4 节合并为 2 节 (按用户需求精简)
+    # (1) 今日盘中触发  (2) 历史未平仓信号 (含真实期权 entry/current)
+    # 删除: 盘中触发实盘模拟 / 日线信号模拟持仓 / 实盘持仓手动录入
+    # ════════════════════════════════════════════════════════════════
+
+    # ── (1) 今日盘中触发 ──
     st.divider()
-    st.subheader(f"今日盘中触发 ({today_sgt})")
-
-    _td_dt = pd.Timestamp(today_sgt)
-    _td_log = _intra_log_asset[
-        _intra_log_asset["date"] == _td_dt] \
-        if len(_intra_log_asset) else _intra_log_asset
-
-    if len(_td_log) > 0:
-        _td_log = _td_log.sort_values("trigger_time")
-        _td_buys = _td_log[_td_log["side"] == "BUY"]
-        _td_exits = _td_log[_td_log["side"] == "EXIT"]
-        # 汇总: 触发次数 + worst 代表价 (即将进持仓管理)
-        _hint_parts = [f"已触发 {len(_td_log)} 次"]
-        if len(_td_buys) > 0:
-            _bw = _ig_worst_global(_td_buys, "BUY")
-            if len(_bw) > 0:
-                _bp = float(_bw.iloc[0]["price"])
-                _hint_parts.append(
-                    f"BUY worst ${_bp:.2f} (伦敦金 ${_bp * _viz_ratio:.1f}) "
-                    f"× {int(_bw.iloc[0]['n_triggers'])}")
-        if len(_td_exits) > 0:
-            _ew = _ig_worst_global(_td_exits, "EXIT")
-            if len(_ew) > 0:
-                _ep = float(_ew.iloc[0]["price"])
-                _hint_parts.append(
-                    f"EXIT worst ${_ep:.2f} (伦敦金 ${_ep * _viz_ratio:.1f}) "
-                    f"× {int(_ew.iloc[0]['n_triggers'])}")
-        st.markdown("**" + " | ".join(_hint_parts) + "**")
-
-        _td_tbl = pd.DataFrame({
-            "时间": _td_log["trigger_time"].dt.strftime("%H:%M"),
-            "方向": _td_log["side"],
-            f"价格 {asset_key}":
-                _td_log["price"].apply(lambda x: f"${x:.2f}"),
-            f"价格 {_viz_spot_label}":
-                _td_log["price"].apply(
-                    lambda x: f"${x * _viz_ratio:.1f}"),
-            "阈值": _td_log["bp_threshold"].apply(
-                lambda x: f"${x:.2f}"),
-            "周期": _td_log["timeframe"],
-            "命中规则": _td_log["rules"],
-        })
-        # 倒序: 最新触发在最前
-        st.dataframe(_td_tbl.iloc[::-1],
-                     use_container_width=True, hide_index=True)
-        st.caption("第二天 0 点该表清零, 当日 worst 那笔会沉淀到下面持仓管理.")
-    else:
-        st.caption(f"今日 {_td_dt.date()} 尚无盘中触发. "
-                   "(规则可在 core/intraday_triggers.py 调整)")
-
-    # ── v3.7.86: 盘中触发 → paper 持仓自动同步 ──
-    st.divider()
-    st.subheader("🔴 盘中触发实盘模拟 (每次触发记一笔, 等待 EXIT 平仓)")
-    st.caption(
-        "依据 intraday log + 当前 user interval timeframe filter. "
-        "BUY 触发开仓 (按当时价格); EXIT 触发平仓. "
-        "期权策略尝试拉实时 quote, 失败回退 underlying-price 模拟.")
-    try:
+    st.subheader(f"⚡ 今日盘中触发 ({today_sgt})")
+    _today = pd.Timestamp(today_sgt).normalize()
+    _today_log = _intra_log_asset[
+        pd.to_datetime(_intra_log_asset["date"]).dt.normalize() == _today
+    ] if len(_intra_log_asset) else _intra_log_asset
+    if len(_today_log):
+        _today_chosen = (sig_df.loc[_today, "chosen"]
+                          if _today in sig_df.index else "")
+        _is_strad_today = bool(sig_df.loc[_today, "straddle_signal"]
+                                if _today in sig_df.index else False)
+        _rows1 = []
         from core.paper_positions import (
-            load_positions as _pp_load, open_position as _pp_open,
-            close_position as _pp_close, mark_to_market as _pp_mtm,
-            infer_option_symbol as _pp_infer_opt,
-            fetch_realtime_option_price as _pp_opt_quote,
-        )
-        _pp_root = _intra_cfg["data_root"]
-        # 按当前 timeframe 过滤 log
-        _pp_log = _intra_log_asset[
-            _intra_log_asset.get("timeframe", "") == _avg_tf_match
-        ] if len(_intra_log_asset) else _intra_log_asset
-        # 每天 dedupe 后逐条同步 (BUY → 多笔独立持仓含加仓; EXIT → 平所有 OPEN)
-        if len(_pp_log):
-            from core.intraday_triggers import (
-                dedupe_intraday as _dd_pp)
-            for _d, _grp in _pp_log.groupby("date"):
-                _d_norm = pd.Timestamp(_d).normalize()
-                _chosen_today = (sig_df.loc[_d_norm, "chosen"]
-                                  if _d_norm in sig_df.index else "")
-                _base_strategy = (_chosen_today.split("+")[0].strip()
-                                   if _chosen_today else "SPOT")
-                for _side in ["BUY", "EXIT"]:
-                    _sub = _grp[_grp["side"] == _side]
-                    if not len(_sub): continue
-                    _dd = _dd_pp(_sub, side=_side, min_drop_pct=0.3)
-                    for _i_dd, (_, _r) in enumerate(_dd.iterrows()):
-                        _t_time = pd.Timestamp(_r["trigger_time"])
-                        _ul_p = float(_r["price"])
-                        if _side == "BUY":
-                            # v3.7.87: RTH (09:30-16:00 ET) → option strategy
-                            #          off-hours → futures (期权未开盘)
-                            _is_rth = (9.5 <= _t_time.hour
-                                          + _t_time.minute/60.0 <= 16.0)
-                            if _is_rth:
-                                # 加仓后缀 (区分多笔同日同策略)
-                                _suffix = (f" 加仓{_i_dd}" if _i_dd > 0
-                                            else "")
-                                _strategy = f"{_base_strategy}{_suffix}"
-                                _osym = _pp_infer_opt(asset_key,
-                                                       _base_strategy,
-                                                       _ul_p, _t_time)
-                            else:
-                                _strategy = "FUTURES_LONG"
-                                _osym = None
-                            _pp_open(_pp_root, asset_key, _strategy,
-                                     _t_time, _ul_p,
-                                     side="BUY", qty=1,
-                                     option_symbol=_osym,
-                                     option_price=None)
-                        else:  # EXIT
-                            _pp_close(_pp_root, asset_key,
-                                       _t_time, _ul_p)
-        # 日线级 STRADDLE / SHORT_VOL 信号: 09:30 ET 自动开仓
-        # (这两个不依赖 intraday BUY trigger, 是 daily strategy)
-        try:
-            for _d_sig, _row in sig_df.iterrows():
-                if not (_d_sig in viz_dates):
-                    continue
-                _t_930 = pd.Timestamp(_d_sig).normalize() \
-                    + pd.Timedelta(hours=9, minutes=30)
-                _ul_open = float(close_d.get(_d_sig, 0))
-                if _ul_open <= 0: continue
-                if _row.get("straddle_signal", False):
-                    _osym_s = _pp_infer_opt(asset_key, "STRADDLE",
-                                              _ul_open, _t_930)
-                    _pp_open(_pp_root, asset_key, "STRADDLE",
-                             _t_930, _ul_open, side="BUY", qty=1,
-                             option_symbol=_osym_s, option_price=None)
-                if _row.get("short_vol_signal", False):
-                    _pp_open(_pp_root, asset_key, "SHORT_VOL",
-                             _t_930, _ul_open, side="BUY", qty=1,
-                             option_symbol=None, option_price=None)
-        except Exception:
-            pass
-        # MTM + 显示
-        _spot_now = (gc_now / _viz_ratio
-                       if (gc_now > 0 and _viz_ratio > 0)
-                       else float(close_d.iloc[-1]))
-        _quotes = {asset_key: _spot_now}
-        _open_df = _pp_mtm(_pp_root, _quotes)
-        _all_df = _pp_load(_pp_root)
-        _asset_all = _all_df[_all_df["asset"] == asset_key] \
-            if len(_all_df) else _all_df
-        _col_o, _col_c = st.columns(2)
-        with _col_o:
-            st.markdown("**🟢 持仓中 (OPEN)**")
-            if len(_open_df) and (_open_df["asset"] == asset_key).any():
-                _show = _open_df[_open_df["asset"] == asset_key][[
-                    "open_time", "strategy", "open_ul_price",
-                    "open_option_symbol", "open_option_price",
-                    "current_ul", "unrealized_pct",
-                ]].copy()
-                _show.columns = ["开仓时间", "策略", "入场标的",
-                                  "期权代码", "入场期权价",
-                                  "现价", "未实现 %"]
-                st.dataframe(_show, use_container_width=True,
-                             hide_index=True)
+            estimate_straddle_premium as _bs_pair,
+            infer_option_symbol as _infer_sym, bs_price as _bs1)
+        for _, r in _today_log.iterrows():
+            _t = pd.Timestamp(r["trigger_time"])
+            _h = _t.hour + _t.minute/60.0
+            _is_rth = 9.5 <= _h <= 16.0
+            _ul = float(r["price"])
+            if _is_strad_today:
+                _strat = "STRADDLE"
+            elif _is_rth:
+                _strat = (_today_chosen.split("+")[0].strip()
+                           if _today_chosen else "SPOT")
             else:
-                st.caption("当前无持仓")
-        with _col_c:
-            st.markdown("**⚫ 已平仓 (CLOSED)**")
-            _closed = _asset_all[_asset_all["status"] == "CLOSED"]
-            if len(_closed):
-                _show_c = _closed.tail(10)[[
-                    "open_time", "close_time", "strategy",
-                    "open_ul_price", "close_ul_price", "realized_pnl_pct",
-                ]].copy()
-                _show_c.columns = ["开仓", "平仓", "策略",
-                                    "入场价", "出场价", "已实现 %"]
-                st.dataframe(_show_c.iloc[::-1],
-                             use_container_width=True, hide_index=True)
-            else:
-                st.caption("尚无已平仓记录")
-        # 累计统计
-        if len(_asset_all):
-            _closed_all = _asset_all[_asset_all["status"] == "CLOSED"]
-            if len(_closed_all):
-                _wr = (_closed_all["realized_pnl_pct"] > 0).mean() * 100
-                _avg = _closed_all["realized_pnl_pct"].mean()
-                _sum = _closed_all["realized_pnl_pct"].sum()
-                st.caption(f"📊 已平仓 {len(_closed_all)} 笔 | "
-                           f"胜率 {_wr:.0f}% | 单笔 {_avg:+.2f}% | "
-                           f"累计 {_sum:+.1f}%")
-    except Exception as _pp_err:
-        st.caption(f"⚠ paper_positions 异常: {_pp_err}")
-
-    # ── 持仓管理 (v3.7.35: 信号模拟持仓 — 基于 daily 回测) ──
-    st.divider()
-    st.subheader("📊 日线信号模拟持仓 (回测追踪)")
-    st.caption("基于 run_backtest + backtest_straddle/short_vol 的回测仓位 — 用于对照实盘")
-
-    tp_recs = []
-
-    # 方向性: 数据源用 run_backtest 真实交易 (含活跃持仓), 不再用 sig_df.buy_signal
-    # (后者会含被 in_trade=True 阻塞的"信号未执行"日, 误标持仓中)
-    # 显示最近 10 笔 (含已平仓 + 活跃)
-    # v3.7.17: 活跃持仓改用实时价 (gc_now / _viz_ratio) 实时判定退出触发
-    for t in trades[-10:][::-1] if trades else []:
-        buy_d = t["entry_date"]
-        ep = t["entry_price"]
-        is_active = t.get("active", False) and t.get("exit_date") is None
-
-        if is_active:
-            # 活跃持仓: 实时价 + 实时 P&L + 实时退出触发判定
-            days_since_entry = (last_date - buy_d).days
-            post = high_d[(high_d.index >= buy_d) &
-                          (high_d.index <= last_date)]
-            pk_close = post.max() if len(post) > 0 else ep
-            # 用实时价更新 peak (盘中可能创新高)
-            current_p = (gc_now / _viz_ratio if (gc_now > 0 and _viz_ratio > 0)
-                         else close_d.get(last_date, ep))
-            pk = max(pk_close, current_p)
-            gain_peak = (pk / ep - 1) * 100 if ep > 0 else 0
-            current_gain = (current_p / ep - 1) * 100 if ep > 0 else 0
-            current_gain_str = f"{current_gain:+.1f}% (实时)"
-            pb_stop = pk * (1 - PULLBACK_DD / 100) \
-                if gain_peak > PULLBACK_GAIN else 0
-
-            # 实时退出触发判定 (4 个条件)
-            sl_price = ep * (1 - 3.0 / 100)  # 3% StopLoss 价位
-            triggered = []
-            if current_p <= sl_price:
-                triggered.append(f"🚨 StopLoss (实时${current_p:.2f} ≤ ${sl_price:.2f})")
-            if pk > 0 and current_p >= eff_bp090:
-                triggered.append(f"🚨 BandExit (实时${current_p:.2f} ≥ bp090 ${eff_bp090:.2f})")
-            if pb_stop > 0 and current_p <= pb_stop:
-                triggered.append(f"🚨 Pullback 止盈 (实时${current_p:.2f} ≤ ${pb_stop:.2f})")
-            if days_since_entry >= MAX_HOLD_DAYS:
-                triggered.append(f"🚨 Timeout 安全帽 ({days_since_entry}d ≥ {MAX_HOLD_DAYS}d)")
-
-            if triggered:
-                status = "🚨 **立即平仓** — " + " | ".join(triggered)
-            else:
-                # 接近退出: 距任一阈值 < 1% 时预警
-                near_sl = (current_p / sl_price - 1) * 100
-                near_pb = ((current_p / pb_stop - 1) * 100
-                            if pb_stop > 0 else 99)
-                near_be = (eff_bp090 / current_p - 1) * 100
-                if near_sl < 1.0:
-                    status = f"⚠️ 接近 StopLoss ({near_sl:+.1f}% 距阈值)"
-                elif near_be < 1.0:
-                    status = f"⚠️ 接近 BandExit ({near_be:+.1f}% 距阈值)"
-                elif pb_stop > 0 and near_pb < 1.0:
-                    status = f"⚠️ 接近 Pullback ({near_pb:+.1f}% 距阈值)"
-                elif current_gain > 0:
-                    status = f"🟢 持仓中盈利 ({days_since_entry}d, +{current_gain:.1f}%)"
-                else:
-                    status = f"🟡 持仓中 ({days_since_entry}d, {current_gain:+.1f}%)"
-
-            exit_d_str = "—"
-            exit_reason = "持仓中" if not triggered else "**触发退出 (见状态)**"
-        else:
-            # 已平仓
-            ex_d, ex_type, ex_gain = t["exit_date"], t["exit_type"], t["gain"]
-            status = f"✓ 已平仓 ({(ex_d - buy_d).days}d)" if ex_gain > 0 \
-                    else f"✗ 已平仓 ({(ex_d - buy_d).days}d)"
-            current_gain_str = f"{ex_gain:+.1f}% (终)"
-            pb_stop = 0
-            exit_d_str = ex_d.strftime("%m/%d")
-            exit_reason = ex_type
-
-        tp_recs.append({
-            "_sort_dt": buy_d,
-            "日期": buy_d.strftime("%m/%d"),
-            "状态": status,
-            "策略": t["type"],
-            f"入场 {asset_key}": f"${ep:.2f}",
-            f"入场 {_viz_spot_label}": f"${ep * _viz_ratio:.1f}",
-            "入场源": t.get("entry_source", "—"),
-            "当前盈亏": current_gain_str,
-            "止盈位": f"${pb_stop:.1f}" if pb_stop > 0 else "—",
-            "BandExit": f"${eff_bp090:.1f}",
-            "退出日": exit_d_str,
-            "退出原因": exit_reason,
-        })
-
-    # 波动率交易: STRADDLE (做多波动率) + SHORT_VOL (Iron Condor)
-    # 显示近 30 天所有 vol 交易 (持仓中 + 已平仓), 与方向性一致
-    from core.events import (SHORT_VOL_STRIKE_SIGMA,
-                              SHORT_VOL_WING_SIGMA,
-                              SHORT_VOL_PREMIUM_RATIO,
-                              backtest_straddle as _bt_straddle,
-                              backtest_short_vol as _bt_short_vol)
-
-    # 用 close_d 实际最新日, 不依赖 bp_dates[-1] (可能滞后)
-    _real_last_date = close_d.index[-1]
-    _vol_window_start = _real_last_date - timedelta(days=30)
-    # 用 close_d.index 而非 features.index, 确保不漏天
-    _vol_dates_pm = close_d.index[close_d.index >= _vol_window_start]
-
-    _st_pm, _sv_pm = [], []
-    _vol_err = None
-    try:
-        _st_pm = _bt_straddle(close_d, high_d, low_d, rv_s, _vol_dates_pm)
-        _sv_pm = _bt_short_vol(close_d, high_d, low_d, rv_s, rv_pctile,
-                                _vol_dates_pm, regime=regime,
-                                daily_range=(high_d - low_d) / close_d * 100)
-    except Exception as _e:
-        _vol_err = repr(_e)
-
-    # 诊断: 显示后端实际返回的 vol 交易数 (帮助定位缓存/数据问题)
-    _diag = (f"📊 波动率交易后端诊断 (近 30 天, "
-             f"窗口 {_vol_window_start.date()} → {_real_last_date.date()}, "
-             f"{len(_vol_dates_pm)} 天): "
-             f"Straddle {len(_st_pm)} 笔, Iron Condor {len(_sv_pm)} 笔")
-    if _vol_err:
-        _diag += f" ⚠️ 错误: {_vol_err}"
-    st.caption(_diag)
-
-    def _vol_status_active(strategy, c, mu, md, move_since, sigma):
-        """实时 (持仓中) 状态文字 + 当前 P&L."""
-        if strategy == "STRADDLE":
-            cost = sigma
-            est_pnl = move_since - cost
-            if move_since > cost * 1.5:
-                status = "🟢 可早平 (移动>1.5σ)"
-            elif move_since > cost:
-                status = "🟢 盈利中 (移动>1σ)"
-            else:
-                status = "🟡 持仓中 (待移动>cost)"
-            return status, est_pnl, cost
-        else:  # SHORT_VOL
-            short_strike = sigma * SHORT_VOL_STRIKE_SIGMA
-            wing_strike = sigma * SHORT_VOL_WING_SIGMA
-            credit = sigma * SHORT_VOL_PREMIUM_RATIO
-            if move_since <= short_strike:
-                est_pnl = credit
-            elif move_since >= wing_strike:
-                est_pnl = credit - (wing_strike - short_strike)
-            else:
-                est_pnl = credit - (move_since - short_strike)
-            target = credit * 0.5
-            if move_since >= wing_strike:
-                status = "🔴 翼锁定亏损 (>3σ)"
-            elif move_since >= short_strike:
-                status = "🔴 突破短腿 (考虑止损)"
-            elif est_pnl >= target:
-                status = "🟢 可早平 (锁50%credit)"
-            else:
-                status = "🟡 持仓中 (待theta衰减)"
-            return status, est_pnl, target
-
-    # SHORT_VOL Iron Condor: 用 backtest_short_vol 的真实交易记录
-    for t in _sv_pm:
-        d = t["entry_date"]
-        c = t["entry_price"]
-        days_held = (_real_last_date - d).days
-        sigma = t["sigma_pct"]
-        if days_held <= 5:
-            # 持仓中: 实时 P&L (含 gc_now 实时价位)
-            post_h = high_d[(high_d.index >= d) & (high_d.index <= _real_last_date)]
-            post_l = low_d[(low_d.index >= d) & (low_d.index <= _real_last_date)]
-            current_p_rt = (gc_now / _viz_ratio if (gc_now > 0 and _viz_ratio > 0)
-                             else close_d.get(_real_last_date, c))
-            if len(post_h) > 0 and len(post_l) > 0:
-                # 实时价可能突破 close 高/低
-                rt_up = (max(post_h.max(), current_p_rt) / c - 1) * 100
-                rt_dn = (1 - min(post_l.min(), current_p_rt) / c) * 100
-                move_since = max(rt_up, rt_dn)
-            else:
-                move_since = abs((current_p_rt / c - 1) * 100)
-            status, est_pnl, target = _vol_status_active(
-                "SHORT_VOL", c, 0, 0, move_since, sigma)
-            wing = sigma * SHORT_VOL_WING_SIGMA
-            short_strike = sigma * SHORT_VOL_STRIKE_SIGMA
-            # 实时退出触发判定
-            if move_since >= wing:
-                status = f"🚨 **立即平仓** — 翼锁定 (move {move_since:.1f}% ≥ {wing:.1f}%)"
-            elif move_since >= short_strike:
-                status = f"🚨 突破短腿建议止损 (move {move_since:.1f}% ≥ {short_strike:.1f}%)"
-            elif est_pnl >= target:
-                status = f"🟢 可早平 — 锁 50% credit (est P&L +{est_pnl:.2f}%)"
-            elif days_held >= 5:
-                status = f"⏰ 已到 5d 持仓上限"
-            else:
-                status = f"🟡 持仓中 ({days_held}d, theta 衰减)"
-            current_str = f"{est_pnl:+.2f}% (实时)"
-            band_str = f">{short_strike:.1f}%短腿/{wing:.1f}%翼锁"
-            exit_d_str = "—"
-            exit_reason = "持仓中"
-        else:
-            # 已平仓: 用 backtest 终值
-            status = "✓ 已平仓" if t["win"] else "✗ 已平仓"
-            est_pnl = t["pnl_pct"]
-            current_str = f"{est_pnl:+.2f}% (终)"
-            target = t["credit_pct"] * 0.5
-            band_str = "—"
-            exit_d_str = t["exit_date"].strftime("%m/%d")
-            # IC 退出原因: 看 max_move 落在哪个区间
-            short_strike = sigma * SHORT_VOL_STRIKE_SIGMA
-            wing = sigma * SHORT_VOL_WING_SIGMA
-            if t["max_move"] >= wing:
-                exit_reason = (f"❌ 翼锁定亏损 — 价格暴动 {t['max_move']:.1f}% "
-                               f"突破长翼 {wing:.1f}% (3σ), 最大亏损封顶")
-            elif t["max_move"] >= short_strike:
-                exit_reason = (f"⚠️ 突破短腿 — 价格动 {t['max_move']:.1f}% "
-                               f"超过 {short_strike:.1f}% (1.6σ), 部分 credit 被抠回")
-            else:
-                exit_reason = (f"✅ 价格静止收 credit — max_move 仅 {t['max_move']:.1f}% "
-                               f"< {short_strike:.1f}% (1.6σ短腿), 4 腿期权全废, 留全部入场净保证金")
-        tp_recs.append({
-            "_sort_dt": d,
-            "日期": d.strftime("%m/%d"),
-            "状态": status,
-            "策略": "Iron Condor (做空波动率)",
-            f"入场 {asset_key}": f"${c:.2f}",
-            f"入场 {_viz_spot_label}": f"${c * _viz_ratio:.1f}",
-            "入场源": "收盘",
-            "当前盈亏": current_str,
-            "止盈位": f"{target:.2f}%",
-            "BandExit": band_str,
-            "退出日": exit_d_str,
-            "退出原因": exit_reason,
-        })
-
-    # STRADDLE: 用 backtest_straddle 的真实交易记录
-    for t in _st_pm:
-        d = t["entry_date"]
-        c = t["entry_price"]
-        days_held = (_real_last_date - d).days
-        sigma = t["cost_pct"]  # 1σ premium
-        if days_held <= 5:
-            post_h = high_d[(high_d.index >= d) & (high_d.index <= _real_last_date)]
-            post_l = low_d[(low_d.index >= d) & (low_d.index <= _real_last_date)]
-            current_p_rt = (gc_now / _viz_ratio if (gc_now > 0 and _viz_ratio > 0)
-                             else close_d.get(_real_last_date, c))
-            if len(post_h) > 0 and len(post_l) > 0:
-                rt_up = (max(post_h.max(), current_p_rt) / c - 1) * 100
-                rt_dn = (1 - min(post_l.min(), current_p_rt) / c) * 100
-                move_since = max(rt_up, rt_dn)
-            else:
-                move_since = abs((current_p_rt / c - 1) * 100)
-            status, est_pnl, cost = _vol_status_active(
-                "STRADDLE", c, 0, 0, move_since, sigma)
-            target = cost
-            # 实时退出触发判定
-            if move_since > cost * 1.5:
-                status = f"🟢 **可早平** — 移动 {move_since:.2f}% > 1.5σ, 锁 50%+ 利润"
-            elif move_since > cost:
-                status = f"🟢 盈利中 — 移动 {move_since:.2f}% > 1σ ({cost:.2f}%)"
-            elif days_held >= 5:
-                status = f"⏰ 已到 5d 上限 (move {move_since:.2f}% < cost {cost:.2f}%)"
-            else:
-                status = f"🟡 持仓中 ({days_held}d, 待移动 > {cost:.2f}%)"
-            current_str = f"{est_pnl:+.2f}% (实时)"
-            band_str = f"5d 到期 / 移动>{target:.2f}%"
-            exit_d_str = "—"
-            exit_reason = "持仓中"
-        else:
-            status = "✓ 已平仓" if t["pnl_pct"] > 0 else "✗ 已平仓"
-            est_pnl = t["pnl_pct"]
-            current_str = f"{est_pnl:+.2f}% (终)"
-            target = sigma
-            band_str = "—"
-            exit_d_str = t["exit_date"].strftime("%m/%d")
-            # Straddle 退出原因: 移动是否覆盖 cost
-            if t["max_move"] > sigma:
-                exit_reason = f"波动获利 (move {t['max_move']:.1f}% > 1σ {sigma:.1f}%)"
-            else:
-                exit_reason = f"5d 到期 (move {t['max_move']:.1f}% < cost {sigma:.1f}%)"
-        tp_recs.append({
-            "_sort_dt": d,
-            "日期": d.strftime("%m/%d"),
-            "状态": status,
-            "策略": "Straddle (做多波动率)",
-            f"入场 {asset_key}": f"${c:.2f}",
-            f"入场 {_viz_spot_label}": f"${c * _viz_ratio:.1f}",
-            "入场源": "收盘",
-            "当前盈亏": current_str,
-            "止盈位": f"波动>{target:.2f}%",
-            "BandExit": band_str,
-            "退出日": exit_d_str,
-            "退出原因": exit_reason,
-        })
-
-    if tp_recs:
-        # 按真实时间倒序 (跨策略统一排序, 最新在最前)
-        tp_recs.sort(key=lambda r: r["_sort_dt"], reverse=True)
-        _tp_df = pd.DataFrame(tp_recs).drop(columns=["_sort_dt"])
-        st.dataframe(_tp_df, use_container_width=True, hide_index=True)
-    else:
-        st.caption("无未平仓持仓")
-
-    # v3.7.88: STRADDLE / SHORT_VOL 日线信号 — 真实期权链 entry+current 价
-    st.markdown("**🎯 STRADDLE / SHORT_VOL 信号 (BS估算入场 × option_chain现价)**")
-    try:
-        from core.paper_positions import (
-            estimate_straddle_premium as _bs_strad,
-            find_active_expiry_near as _find_expiry,
-            fetch_chain_atm_premium as _chain_atm,
-        )
-        _strad_recs = []
-        _vol_window = sig_df.loc[sig_df.index.isin(viz_dates)]
-        for _d_sig, _row in _vol_window.iterrows():
-            _is_strad = bool(_row.get("straddle_signal", False))
-            _is_short = bool(_row.get("short_vol_signal", False))
-            if not (_is_strad or _is_short): continue
-            _entry_spot = float(close_d.get(_d_sig, 0))
-            if _entry_spot <= 0: continue
-            _strike = round(_entry_spot, 0) if _entry_spot > 50 else round(_entry_spot * 2) / 2
-            # DTE target: 14d for STRADDLE (短), 30d for SHORT_VOL (IC)
-            _dte_at_entry = 14 if _is_strad else 30
-            _target_expiry = pd.Timestamp(_d_sig) + pd.Timedelta(days=_dte_at_entry)
-            _exp_str = _find_expiry(asset_key, _target_expiry, tolerance_days=10)
-            # IV proxy: 用历史 RV (rv_pctile 已 0-1, 转粗略 IV)
-            _iv_est = max(0.18, 0.12 + float(_row.get("rv_pctile", 0.5)) * 0.20)
-            _entry_call, _entry_put = _bs_strad(
-                _entry_spot, _strike, _dte_at_entry, iv=_iv_est)
-            _entry_prem = _entry_call + _entry_put
-            # Current premium: option_chain (live, 仅未过期)
-            _today = pd.Timestamp(today_sgt)
-            _cur_call = _cur_put = None
-            if _exp_str:
-                _exp_dt = pd.Timestamp(_exp_str)
-                if _exp_dt >= _today:
-                    _cc, _cp, _atm = _chain_atm(asset_key, _exp_str, _entry_spot)
-                    _cur_call, _cur_put = _cc, _cp
-            # Fallback: BS 重估 with current spot
-            _cur_spot = float(close_d.iloc[-1])
-            if _cur_call is None or _cur_put is None:
-                _dte_now = max(1, (_target_expiry - _today).days)
-                _cc, _cp = _bs_strad(_cur_spot, _strike, _dte_now, iv=_iv_est)
-                _cur_call = _cur_call or _cc
-                _cur_put = _cur_put or _cp
-            _cur_prem = _cur_call + _cur_put
-            _is_long = _is_strad
-            _gain = ((_cur_prem / _entry_prem - 1) * 100
-                     if _is_long else (_entry_prem / _cur_prem - 1) * 100)
-            _label = "STRADDLE" if _is_strad else "SHORT_VOL"
-            _strad_recs.append({
-                "类型": _label,
-                "信号日": _d_sig.strftime("%m/%d"),
-                "到期": _exp_str or f"~+{_dte_at_entry}d",
-                "Strike": f"${_strike:.0f}",
-                "入场Spot": f"${_entry_spot:.2f}",
-                "入场Call": f"${_entry_call:.2f}",
-                "入场Put": f"${_entry_put:.2f}",
-                "入场总权": f"${_entry_prem:.2f}",
-                "现Spot": f"${_cur_spot:.2f}",
-                "现Call": f"${_cur_call:.2f}",
-                "现Put": f"${_cur_put:.2f}",
-                "现总权": f"${_cur_prem:.2f}",
-                "P&L%": f"{_gain:+.1f}%",
+                _strat = "FUTURES_LONG"
+            _strike = round(_ul) if _ul > 50 else round(_ul * 2) / 2
+            _opt_code = ""; _opt_p = "—"
+            if _strat == "BUY CALL":
+                _sym = _infer_sym(asset_key, _strat, _ul, _t, dte_target=45)
+                _c = _bs1(_ul, _strike, 45/365, 0.04, 0.20, "C")
+                _opt_code = _sym or ""; _opt_p = f"${_c:.2f}"
+            elif _strat == "SELL PUT":
+                # put credit spread: short ATM put + long -5% put
+                _short_K = _strike; _long_K = round(_strike * 0.95)
+                _ps = _bs1(_ul, _short_K, 45/365, 0.04, 0.20, "P")
+                _pl = _bs1(_ul, _long_K, 45/365, 0.04, 0.20, "P")
+                _credit = _ps - _pl
+                _opt_code = f"-P${_short_K}/+P${_long_K} 45d"
+                _opt_p = f"收${_credit:.2f}"
+            elif _strat == "STRADDLE":
+                _ic, _ip = _bs_pair(_ul, _strike, 14, iv=0.20)
+                _opt_code = f"ATM C+P 14d ${_strike:.0f}"
+                _opt_p = f"${_ic + _ip:.2f}"
+            elif _strat == "FUTURES_LONG":
+                _opt_code = f"{_futures_ticker} 多头"
+                _opt_p = f"${_ul:.2f}"
+            _rows1.append({
+                "时间(ET)": _t.strftime("%m-%d %H:%M"),
+                "信号": r["side"],
+                "策略": _strat,
+                "Underlying": f"${_ul:.2f}",
+                "期权": _opt_code,
+                "入场价": _opt_p,
+                "TF": r.get("timeframe", "?"),
             })
-        if _strad_recs:
-            st.dataframe(pd.DataFrame(_strad_recs),
-                          use_container_width=True, hide_index=True)
-            st.caption("入场价: BS 估 (IV ≈ RV%tile-derived). "
-                       "现价: option_chain.lastPrice (live, 失败回退 BS 现 spot 重估).")
-        else:
-            st.caption("无 STRADDLE/SHORT_VOL 信号在显示窗口内")
-    except Exception as _e_strad:
-        st.caption(f"⚠ STRADDLE 模拟异常: {_e_strad}")
+        st.dataframe(pd.DataFrame(_rows1).iloc[::-1],
+                      use_container_width=True, hide_index=True)
+        st.caption("RTH (09:30-16:00 ET) 触发用日线 chosen 策略; "
+                   "非 RTH 走期货多头 (期权未开盘). "
+                   "期权价 = Black-Scholes 估 (IV ≈ 20%).")
+    else:
+        st.caption(f"今日 {today_sgt} 无盘中触发")
 
-    # ── 实盘持仓 (v3.7.35 手动录入, 用于校准模型) ──
+    # ── (2) 历史未平仓信号 (按策略真实期权组合, BS 估入场 + chain 现价) ──
     st.divider()
-    st.subheader("💰 实盘持仓 (手动录入)")
-    st.caption("记录真实交易, 与系统模拟持仓对照, 用于模型校准 + IV/RV 偏差分析")
-
-    # 实盘持仓 csv 路径
-    _real_pos_path = os.path.join(_intra_cfg["data_root"],
-                                    f"real_positions_{asset_key.lower()}.csv")
-    # 加载已有
-    if os.path.exists(_real_pos_path):
-        _real_pos = pd.read_csv(_real_pos_path, parse_dates=["入场日", "出场日"])
-    else:
-        _real_pos = pd.DataFrame(columns=[
-            "入场日", "信号类型", "对应模拟信号", "工具",
-            "标的", "入场价", "Strike", "DTE",
-            "Long Call cost", "Long Put cost", "其他成本",
-            "总成本", "出场日", "Long Call exit", "Long Put exit", "出场价",
-            "实现 P&L", "备注",
-        ])
-
-    # 录入表单
-    with st.expander("➕ 录入新持仓", expanded=False):
-        with st.form("new_real_pos"):
-            cols_form = st.columns(4)
-            with cols_form[0]:
-                _entry_d = st.date_input("入场日", value=pd.Timestamp.now().date())
-                _sig_type = st.selectbox("信号类型",
-                                          ["BUY CALL", "SELL PUT", "STRADDLE",
-                                           "SHORT_VOL (IC)", "FUTURES_LONG", "其他"])
-                _underlying = st.text_input("标的代码", value=asset_key)
-            with cols_form[1]:
-                _instrument = st.selectbox("工具",
-                                            ["期权 (Long Straddle)",
-                                             "期权 (Short Strangle/IC)",
-                                             "期权 (Long Call)",
-                                             "期权 (Long Put)",
-                                             "期权 (Short Put)",
-                                             "期货 (Long)",
-                                             "ETF (现货)"])
-                _entry_price = st.number_input("入场价", value=0.0, step=0.01,
-                                                  format="%.2f")
-                _strike = st.number_input("Strike (期权)", value=0.0, step=0.5,
-                                            format="%.2f")
-            with cols_form[2]:
-                _dte = st.number_input("DTE (天)", value=0, step=1, min_value=0)
-                _call_cost = st.number_input("Long Call cost",
-                                                value=0.0, step=0.01,
-                                                format="%.2f")
-                _put_cost = st.number_input("Long Put cost",
-                                              value=0.0, step=0.01,
-                                              format="%.2f")
-            with cols_form[3]:
-                _other_cost = st.number_input("其他成本",
-                                                value=0.0, step=0.01,
-                                                format="%.2f")
-                _matched_sig = st.text_input("对应模拟信号 (可选)",
-                                              placeholder="e.g. 4/29 STRADDLE")
-                _notes = st.text_input("备注", placeholder="如 NFP 5/2")
-            _submit = st.form_submit_button("✅ 添加持仓")
-            if _submit and _entry_price > 0:
-                _total = _call_cost + _put_cost + _other_cost
-                _new_row = {
-                    "入场日": pd.Timestamp(_entry_d),
-                    "信号类型": _sig_type,
-                    "对应模拟信号": _matched_sig,
-                    "工具": _instrument,
-                    "标的": _underlying,
-                    "入场价": _entry_price,
-                    "Strike": _strike,
-                    "DTE": _dte,
-                    "Long Call cost": _call_cost,
-                    "Long Put cost": _put_cost,
-                    "其他成本": _other_cost,
-                    "总成本": _total,
-                    "出场日": pd.NaT,
-                    "Long Call exit": np.nan,
-                    "Long Put exit": np.nan,
-                    "出场价": np.nan,
-                    "实现 P&L": np.nan,
-                    "备注": _notes,
-                }
-                _real_pos = pd.concat([_real_pos, pd.DataFrame([_new_row])],
-                                        ignore_index=True)
-                _real_pos.to_csv(_real_pos_path, index=False)
-                st.success("已添加, 刷新页面查看")
-
-    # 平仓录入
-    if len(_real_pos) > 0:
-        _open_pos = _real_pos[_real_pos["出场日"].isna()]
-        if len(_open_pos) > 0:
-            with st.expander(f"🔚 平仓录入 ({len(_open_pos)} 个未平仓)",
-                              expanded=False):
-                _close_idx = st.selectbox(
-                    "选择持仓",
-                    _open_pos.index,
-                    format_func=lambda i: f"{_real_pos.loc[i, '入场日'].date()} "
-                                            f"{_real_pos.loc[i, '信号类型']} "
-                                            f"{_real_pos.loc[i, '工具']}")
-                with st.form("close_real_pos"):
-                    cc1, cc2, cc3 = st.columns(3)
-                    with cc1:
-                        _exit_d = st.date_input("出场日",
-                                                  value=pd.Timestamp.now().date())
-                        _exit_call = st.number_input(
-                            "Long Call exit", value=0.0, step=0.01, format="%.2f")
-                    with cc2:
-                        _exit_put = st.number_input(
-                            "Long Put exit", value=0.0, step=0.01, format="%.2f")
-                        _exit_price = st.number_input(
-                            "出场价 (标的)", value=0.0, step=0.01, format="%.2f")
-                    with cc3:
-                        _exit_other = st.number_input(
-                            "其他出场金额", value=0.0, step=0.01, format="%.2f")
-                        _close_notes = st.text_input("平仓备注")
-                    _submit_close = st.form_submit_button("✅ 平仓")
-                    if _submit_close:
-                        _entry = _real_pos.loc[_close_idx]
-                        _exit_total = _exit_call + _exit_put + _exit_other
-                        _pnl = _exit_total - _entry["总成本"]
-                        _real_pos.loc[_close_idx, "出场日"] = pd.Timestamp(_exit_d)
-                        _real_pos.loc[_close_idx, "Long Call exit"] = _exit_call
-                        _real_pos.loc[_close_idx, "Long Put exit"] = _exit_put
-                        _real_pos.loc[_close_idx, "出场价"] = _exit_price
-                        _real_pos.loc[_close_idx, "实现 P&L"] = _pnl
-                        if _close_notes:
-                            _real_pos.loc[_close_idx, "备注"] = (
-                                str(_real_pos.loc[_close_idx, "备注"]) +
-                                " | 平仓: " + _close_notes)
-                        _real_pos.to_csv(_real_pos_path, index=False)
-                        st.success(f"平仓 P&L = ${_pnl:+.2f}, 刷新查看")
-
-    # 显示
-    # ── 真实期权信号校准 (v3.7.37) ──
-    with st.expander("🔬 真实期权回测校准 (yfinance 历史 K 线)", expanded=False):
-        st.caption("用真实历史期权价格回测信号, 验证 RV-based 模型偏差")
-        cc1, cc2, cc3, cc4 = st.columns(4)
-        with cc1:
-            _cal_d = st.date_input("信号日",
-                                     value=pd.Timestamp.now().date()
-                                       - timedelta(days=30))
-        with cc2:
-            _cal_strike = st.number_input("Strike (ATM)",
-                                            value=0.0, step=0.5,
-                                            format="%.2f", key="cal_strike")
-        with cc3:
-            _cal_expiry = st.date_input("到期日",
-                                         value=pd.Timestamp.now().date()
-                                           + timedelta(days=30),
-                                         key="cal_expiry")
-        with cc4:
-            _cal_hold = st.number_input("持仓天数",
-                                          value=5, min_value=1, max_value=60,
-                                          step=1, key="cal_hold")
-        if st.button("🚀 拉真实期权 + 算 P&L"):
-            from core.options_history import real_pnl_for_signal
-            _strike_arg = _cal_strike if _cal_strike > 0 else None
-            with st.spinner("从 yfinance 拉历史 K 线..."):
-                _cal_res = real_pnl_for_signal(
-                    underlying=asset_key,
-                    signal_date=_cal_d.strftime("%Y-%m-%d"),
-                    expiry=_cal_expiry.strftime("%Y-%m-%d"),
-                    strike=_strike_arg,
-                    hold_days=_cal_hold,
-                )
-            if "error" in _cal_res:
-                st.error(f"❌ {_cal_res['error']}")
-            else:
-                st.success(f"✅ 找到期权: {_cal_res['call_sym']} + {_cal_res['put_sym']}")
-                cm1, cm2, cm3 = st.columns(3)
-                with cm1:
-                    st.metric("入场 Long Straddle",
-                                f"${_cal_res['entry_total']:.2f}",
-                                delta=f"Call ${_cal_res['entry_call']:.2f} + Put ${_cal_res['entry_put']:.2f}")
-                with cm2:
-                    st.metric(f"末日平仓 ({_cal_res['exit_date']})",
-                                f"${_cal_res['exit_total']:.2f}",
-                                delta=f"{_cal_res['pnl_close_pct']:+.1f}%")
-                with cm3:
-                    st.metric("持仓期最大 (上帝视角)",
-                                f"${_cal_res['max_straddle_close']:.2f}",
-                                delta=f"{_cal_res['max_pnl_close_pct']:+.1f}%")
-                st.caption(f"持仓 {_cal_res['actual_hold_days']}d "
-                            f"(目标 {_cal_hold}d) | 期权代码上方所示")
-
-    if len(_real_pos) > 0:
-        # 按入场日倒序
-        _real_disp = _real_pos.sort_values("入场日", ascending=False).copy()
-        _real_disp["入场日"] = _real_disp["入场日"].dt.strftime("%m/%d")
-        _real_disp["出场日"] = _real_disp["出场日"].apply(
-            lambda x: x.strftime("%m/%d") if pd.notna(x) else "持仓中")
-        st.dataframe(_real_disp, use_container_width=True, hide_index=True)
-
-        # 汇总 + 模型对比
-        _closed_real = _real_pos[_real_pos["出场日"].notna()]
-        if len(_closed_real) > 0:
-            _wins = (_closed_real["实现 P&L"] > 0).sum()
-            _total_pnl = _closed_real["实现 P&L"].sum()
-            cs1, cs2, cs3 = st.columns(3)
-            with cs1:
-                st.metric("已平仓", f"{len(_closed_real)}",
-                          delta=f"胜 {_wins}/{len(_closed_real)} ({_wins/len(_closed_real):.0%})")
-            with cs2:
-                st.metric("累计实现 P&L", f"${_total_pnl:+.2f}")
-            with cs3:
-                _avg = _total_pnl / len(_closed_real)
-                st.metric("平均/笔", f"${_avg:+.2f}")
-        st.caption(f"实盘记录文件: {_real_pos_path}")
-    else:
-        st.info("尚无实盘记录, 用上方表单录入实际开仓信息")
-
+    st.subheader("📊 历史未平仓信号 (期权组合 entry/current)")
+    try:
+        from core.paper_positions import (
+            load_positions as _pp_load2,
+            estimate_straddle_premium as _bs_sp2,
+            find_active_expiry_near as _find_exp2,
+            fetch_chain_atm_premium as _chain_atm2,
+            bs_price as _bs2,
+        )
+        _all_pos2 = _pp_load2(_intra_cfg["data_root"])
+        _open_pos2 = (_all_pos2[(_all_pos2["asset"] == asset_key) &
+                                  (_all_pos2["status"] == "OPEN")]
+                       if len(_all_pos2) else _all_pos2)
+        if len(_open_pos2):
+            _today_dt2 = pd.Timestamp(today_sgt).normalize()
+            _cur_spot2 = float(close_d.iloc[-1])
+            _rows2 = []
+            for _, p in _open_pos2.iterrows():
+                _strat_p = p["strategy"]
+                _entry_t = pd.Timestamp(p["open_time"])
+                _entry_spot = float(p["open_ul_price"])
+                _strike = (round(_entry_spot, 0) if _entry_spot > 50
+                            else round(_entry_spot * 2) / 2)
+                if "STRADDLE" in _strat_p: _dte = 14
+                elif "SHORT_VOL" in _strat_p: _dte = 30
+                elif "SELL PUT" in _strat_p or "加仓" in _strat_p: _dte = 45
+                elif "BUY CALL" in _strat_p: _dte = 45
+                else: _dte = 0
+                _entry_str = "—"; _cur_str = "—"; _gain = 0.0
+                _iv = 0.20
+                if _dte > 0:
+                    _target_exp = _entry_t + pd.Timedelta(days=_dte)
+                    _exp_str = _find_exp2(asset_key, _target_exp,
+                                            tolerance_days=10)
+                    _T_e = _dte / 365.0
+                    _T_now = max(1, (_target_exp - _today_dt2).days) / 365.0
+                if "STRADDLE" in _strat_p:
+                    _ec, _ep = _bs_sp2(_entry_spot, _strike, _dte, iv=_iv)
+                    _entry_prem = _ec + _ep
+                    _entry_str = f"C${_ec:.2f}+P${_ep:.2f}=${_entry_prem:.2f}"
+                    _cc = _cp = None
+                    if _exp_str and pd.Timestamp(_exp_str) >= _today_dt2:
+                        _cc, _cp, _ = _chain_atm2(asset_key, _exp_str,
+                                                    _cur_spot2)
+                    if _cc is None or _cp is None:
+                        _cc2, _cp2 = _bs_sp2(_cur_spot2, _strike,
+                                              max(1, (_target_exp - _today_dt2).days),
+                                              iv=_iv)
+                        _cc = _cc or _cc2; _cp = _cp or _cp2
+                    _cur_prem = _cc + _cp
+                    _cur_str = f"C${_cc:.2f}+P${_cp:.2f}=${_cur_prem:.2f}"
+                    _gain = (_cur_prem / _entry_prem - 1) * 100
+                elif "SELL PUT" in _strat_p or "加仓" in _strat_p:
+                    _short_K = _strike; _long_K = round(_strike * 0.95)
+                    _ps = _bs2(_entry_spot, _short_K, _T_e, 0.04, _iv, "P")
+                    _pl = _bs2(_entry_spot, _long_K, _T_e, 0.04, _iv, "P")
+                    _e_credit = _ps - _pl
+                    _entry_str = f"-P${_ps:.2f}/+P${_pl:.2f}=收${_e_credit:.2f}"
+                    _ps2 = _bs2(_cur_spot2, _short_K, _T_now, 0.04, _iv, "P")
+                    _pl2 = _bs2(_cur_spot2, _long_K, _T_now, 0.04, _iv, "P")
+                    _c_credit = _ps2 - _pl2
+                    _cur_str = f"-P${_ps2:.2f}/+P${_pl2:.2f}=平${_c_credit:.2f}"
+                    _gain = (((_e_credit - _c_credit) / _e_credit * 100)
+                              if _e_credit > 0 else 0)
+                elif "BUY CALL" in _strat_p:
+                    _ec1 = _bs2(_entry_spot, _strike, _T_e, 0.04, _iv, "C")
+                    _entry_str = f"C${_ec1:.2f}"
+                    _cc1 = _bs2(_cur_spot2, _strike, _T_now, 0.04, _iv, "C")
+                    _cur_str = f"C${_cc1:.2f}"
+                    _gain = (_cc1 / _ec1 - 1) * 100
+                elif "FUTURES" in _strat_p:
+                    _entry_str = f"${_entry_spot:.2f}"
+                    _cur_str = f"${_cur_spot2:.2f}"
+                    _gain = (_cur_spot2 / _entry_spot - 1) * 100
+                _rows2.append({
+                    "信号时间": _entry_t.strftime("%m-%d %H:%M"),
+                    "策略": _strat_p,
+                    "入场Spot": f"${_entry_spot:.2f}",
+                    "现Spot": f"${_cur_spot2:.2f}",
+                    "Strike": f"${_strike:.0f}" if _dte > 0 else "—",
+                    "入场期权": _entry_str,
+                    "现期权": _cur_str,
+                    "P&L%": f"{_gain:+.1f}%",
+                })
+            st.dataframe(pd.DataFrame(_rows2).iloc[::-1],
+                          use_container_width=True, hide_index=True)
+            st.caption("⚠️ yfinance 不提供历史 intraday 期权报价 (Ticker.history 全 404). "
+                       "入场价 = Black-Scholes 估算 (IV 20%); "
+                       "STRADDLE 现价 = option_chain.lastPrice (live, 未过期合约); "
+                       "其他现价 = BS 用现 spot 重估. "
+                       "真实历史 intraday 需 IBKR/Polygon/Tradier 付费源.")
+        else:
+            st.caption("当前无未平仓信号")
+    except Exception as _e2:
+        st.caption(f"⚠ 持仓显示异常: {_e2}")
     # ── 统一策略回测 ──
     st.divider()
     st.subheader("统一策略回测 (方向性 + 做多波动率 + 做空波动率 + 退出)")
