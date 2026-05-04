@@ -263,7 +263,9 @@ class TriggerConfig:
 def detect_triggers(kline: pd.DataFrame,
                     daily_thresholds: pd.DataFrame,
                     config: TriggerConfig,
-                    asset: str = "GLD") -> pd.DataFrame:
+                    asset: str = "GLD",
+                    daily_low: pd.Series = None,
+                    daily_high: pd.Series = None) -> pd.DataFrame:
     """扫描 kline, 在 (价格突破阈值) + (规则确认) + (时段过滤) 时记录触发.
 
     Args:
@@ -298,18 +300,50 @@ def detect_triggers(kline: pd.DataFrame,
         bp090 = row.get("bp090_price", np.nan)
 
         c = kline["Close"].iloc[i]
+        lo = kline["Low"].iloc[i] if "Low" in kline.columns else c
+        hi = kline["High"].iloc[i] if "High" in kline.columns else c
         if pd.isna(c):
             continue
+        # v3.7.61 yfinance prepost 脏数据过滤 (双层):
+        # (a) 1h Low < daily Low → 视为脏 (1h 不应突破 daily); 用 daily Low 兜底
+        # (b) 1h Low 比 min(Open, Close) 低 > 3% → 异常 wick
+        op = kline["Open"].iloc[i] if "Open" in kline.columns else c
+        # (a) daily sanity bound
+        if daily_low is not None and not pd.isna(lo):
+            d_lo = daily_low.get(d, None)
+            if d_lo is not None and not pd.isna(d_lo) and lo < d_lo * 0.99:
+                lo = float(d_lo)
+        if daily_high is not None and not pd.isna(hi):
+            d_hi = daily_high.get(d, None)
+            if d_hi is not None and not pd.isna(d_hi) and hi > d_hi * 1.01:
+                hi = float(d_hi)
+        # (b) intra-bar wick
+        if not pd.isna(lo) and not pd.isna(c) and not pd.isna(op):
+            ref_min = min(op, c)
+            if lo < ref_min * 0.97:
+                lo = ref_min
+        if not pd.isna(hi) and not pd.isna(c) and not pd.isna(op):
+            ref_max = max(op, c)
+            if hi > ref_max * 1.03:
+                hi = ref_max
 
-        # 价格突破阈值
+        # 价格突破阈值 — v3.7.61 改用 Low (盘中最低), 抓深谷
         if config.side == "BUY":
-            if pd.isna(bp030) or c >= bp030:
+            if pd.isna(bp030) or pd.isna(bp090) or lo >= bp030:
                 continue
             threshold = bp030
+            # v3.7.61 深谷直接触发 — 价格深破 bp020 时跳过技术确认
+            # bp020 = lower + 0.20 × band_range (从 bp030/bp090 反推)
+            band_range = (bp090 - bp030) / 0.60
+            bp020 = bp030 - 0.10 * band_range  # 比 bp030 低 10% 范围
+            deep_trigger = lo < bp020
         else:
-            if pd.isna(bp090) or c <= bp090:
+            if pd.isna(bp090) or pd.isna(bp030) or hi <= bp090:
                 continue
             threshold = bp090
+            band_range = (bp090 - bp030) / 0.60
+            bp095 = bp090 + 0.05 * band_range
+            deep_trigger = hi > bp095
 
         # 评估规则
         passed = [r for r in rule_set
@@ -328,13 +362,21 @@ def detect_triggers(kline: pd.DataFrame,
         else:
             ok = n_pass >= 1
 
+        # v3.7.61 深谷自动触发 (覆盖技术确认要求)
+        if deep_trigger:
+            ok = True
+            if not passed:
+                passed = ["deep_zone_auto"]
+
         if not ok:
             continue
+        # 触发价 = 低点 (BUY) / 高点 (SELL), 模拟限价单成交价
+        trigger_price = lo if config.side == "BUY" else hi
 
         out.append({
             "date": d,
             "trigger_time": ts,
-            "price": float(c),
+            "price": float(trigger_price),  # v3.7.61: Low/High 而非 Close (限价单价)
             "side": config.side,
             "asset": asset,
             "timeframe": f"{config.timeframe_minutes}m",
