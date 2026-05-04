@@ -1908,7 +1908,21 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                     edgecolors="black", lw=0.7,
                     label=_legend_labels[_key])
     _legend_added = set()
-    # v3.7.70: 混合信号不合并 + 即使 chosen 不含也画 STRADDLE/SHORT_VOL markers
+
+    # v3.7.72: helper — 找当日 US 开盘 09:30 EDT 对应的 1h bar 位置
+    def _xi_open(d):
+        """STRADDLE/SHORT_VOL 用此, 标在美股开盘瞬间 (= 北京 21:30)."""
+        d_norm = pd.Timestamp(d).normalize()
+        # 找当日 09:30 EDT 或最接近的 (yfinance 1h 经常是 09:30 一个 bar)
+        cands = [(i, ts) for i, ts in enumerate(plot_ts)
+                 if ts.normalize() == d_norm
+                 and 9 <= (ts.hour + ts.minute/60.0) <= 11]
+        if cands:
+            # 取最早的 9-10 EDT bar
+            return min(cands, key=lambda x: x[1])[0]
+        return xi(d)  # fallback
+
+    # v3.7.70/72: 混合信号不合并; STRADDLE/SHORT_VOL 标在美股开盘时间点
     for d, r in _unified_viz.iterrows():
         if xi(d) is None:
             continue
@@ -1927,8 +1941,14 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                     else (160 if is_add else 120))
             edge = "purple" if is_add and part in ("BUY CALL", "SELL PUT") \
                    else "black"
+            # 方向性 markers 按 dedupe entry_p (= 平均价); STRADDLE/SHORT_VOL
+            # x 用美股开盘时间点 (而非每日首 bar)
+            _xi_target = (_xi_open(d)
+                          if part in ("STRADDLE", "SHORT_VOL") else xi(d))
+            if _xi_target is None:
+                continue
             y_offset = j * (entry_p * 0.003)
-            ax.scatter([xi(d)], [(entry_p + y_offset) * _r],
+            ax.scatter([_xi_target], [(entry_p + y_offset) * _r],
                         marker=marker, s=size, color=color,
                         edgecolors=edge, lw=1.0, zorder=6)
     # 始终显示全部 5 类 + MIXED 边框说明 (即使当前窗口没有该类信号)
@@ -2398,45 +2418,29 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                            (_trigs["trigger_time"] <= _w_end)]
             if len(_disp) == 0:
                 continue
-            for _idx_in_disp, _r2 in enumerate(_disp.itertuples()):
-                _xx = _proj_to_idx([_r2.trigger_time])[0]
+            # v3.7.72: 真实时间点标记 (无 y 偏移). 期权 vs 期货 marker 区分:
+            # 美股盘中 (US 09:30-16:00 EDT = SGT 21:30~05:00): 期权可行 ⇒ ▲/v 实心
+            # 非盘中 (亚欧时段 = SGT 05:00~21:30 不含): 仅期货 ⇒ ▲/v 空心+黑边
+            for _, _r2 in _disp.iterrows():
+                _t = pd.Timestamp(_r2["trigger_time"])
+                _xx = _proj_to_idx([_t])[0]
                 _color, _marker = _trig_palette(
-                    {"trigger_time": _r2.trigger_time}, _side)
-                # v3.7.71: 多笔同日 markers y 偏移避免视觉重叠
-                _y_offset = _idx_in_disp * (_r2.price * 0.0008) * _r
-                ax_price.scatter([_xx], [_r2.price * _r + _y_offset],
-                                 marker=_marker,
-                                 s=110, color=_color, edgecolors="black",
-                                 lw=0.8, zorder=8)
-
-        # v3.7.71: 在 1h chart 加 STRADDLE/SHORT_VOL 日级信号 marker
-        # (这些是日级信号, 标在当日 09:30 EDT bar 位置, y= daily close)
-        try:
-            for _d, _row in _unified_viz.iterrows():
-                _ch_d = str(_row.get("chosen", ""))
-                _has_str = (_row.get("straddle_signal", False)
-                             or "STRADDLE" in _ch_d)
-                _has_sv = (_row.get("short_vol_signal", False)
-                             or "SHORT_VOL" in _ch_d)
-                if not _has_str and not _has_sv:
-                    continue
-                # 找当日 1h 第一个 bar (~ 北京 16:00 / US 04:00 pre-market 起)
-                _day_bars = _idx_1h[(_idx_1h.normalize()
-                                      == pd.Timestamp(_d).normalize())]
-                if len(_day_bars) == 0:
-                    continue
-                _xx_d = _proj_to_idx([_day_bars[0]])[0]
-                _yy = _row["entry_p"] * _r
-                if _has_str:
-                    ax_price.scatter([_xx_d], [_yy * 1.005],
-                                      marker="*", s=200, color="#FFD700",
-                                      edgecolors="black", lw=1.0, zorder=9)
-                if _has_sv:
-                    ax_price.scatter([_xx_d], [_yy * 1.010],
-                                      marker="P", s=200, color="#FF6F00",
-                                      edgecolors="black", lw=1.0, zorder=9)
-        except Exception:
-            pass
+                    {"trigger_time": _t}, _side)
+                # 美股盘中判断: EDT 09:30 ≤ hour < 16 (容差含 09:30)
+                # yfinance 1h 时间假设 EDT, 9-15 整点 = 盘中
+                _h = _t.hour + _t.minute / 60.0
+                _in_us = 9.5 <= _h < 16.0
+                if _in_us:
+                    # 期权 (实心)
+                    ax_price.scatter([_xx], [_r2["price"] * _r],
+                                     marker=_marker, s=110, color=_color,
+                                     edgecolors="black", lw=0.8, zorder=8)
+                else:
+                    # 期货 (空心 + 粗边, 区分期权)
+                    ax_price.scatter([_xx], [_r2["price"] * _r],
+                                     marker=_marker, s=110,
+                                     facecolors="none",
+                                     edgecolors=_color, lw=2.0, zorder=8)
 
         # (v3.7.23: Stoch RSI 子图已移到主图下方, 此 K线 panel 仅保留 K线 + Squeeze)
 
