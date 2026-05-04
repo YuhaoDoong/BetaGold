@@ -199,7 +199,8 @@ def generate_chart(close, high, dates_all, upper_band, lower_band,
                    oi_adj_bp030=0, oi_adj_bp090=0,
                    asset_key="GLD",
                    spot_ratio=1.0, spot_label=None,
-                   straddle_dates=None):
+                   straddle_dates=None,
+                   unified_markers=None):
     """主图.
 
     Args:
@@ -576,6 +577,38 @@ def generate_chart(close, high, dates_all, upper_band, lower_band,
         ax.text(0.99, 0.02, summary, transform=ax.transAxes, fontsize=9,
                 fontweight="bold", ha="right", va="bottom",
                 bbox=dict(fc="lightyellow", ec="gray", alpha=0.85))
+
+    # v3.7.60: 加 dedupe 后 unified markers (含加仓 is_add) — 跟盘中信号 chart 一致
+    # 解决: 4-29 谷底 build_trades 因 in_trade 不画新 entry, 此处补全
+    if unified_markers is not None and len(unified_markers) > 0:
+        _sig_color_map = {"BUY CALL": "#2196F3", "SELL PUT": "#FF9800",
+                           "EXIT": "#F44336", "STRADDLE": "#FFD700",
+                           "SHORT_VOL": "#FF6F00"}
+        for d, row in unified_markers.iterrows():
+            ch = row.get("chosen", "")
+            if not ch or ch == "EXIT":
+                continue
+            entry_p = row.get("entry_p", 0)
+            is_add = row.get("is_add", False)
+            xi_d = xi(d)
+            if xi_d is None or entry_p <= 0:
+                continue
+            base = ch.split(" + ")[0] if "+" in ch else ch
+            color = _sig_color_map.get(base, "gray")
+            marker = "*" if "STRADDLE" in ch else (
+                "P" if "SHORT_VOL" in ch else "^")
+            # 加仓用紫边突出, 普通用黑边
+            edge = "purple" if is_add else "black"
+            size = 200 if "STRADDLE" in ch or "SHORT_VOL" in ch else (
+                160 if is_add else 120)
+            ax.scatter([xi_d], [entry_p * spot_ratio], marker=marker,
+                       s=size, color=color, edgecolors=edge,
+                       lw=1.5 if is_add else 0.8, zorder=7)
+            if is_add:
+                ax.annotate("加仓", xy=(xi_d, entry_p * spot_ratio),
+                            xytext=(0, -15), textcoords="offset points",
+                            fontsize=7, ha="center", color="purple",
+                            fontweight="bold")
 
     plt.tight_layout()
     return fig, trades
@@ -3960,6 +3993,18 @@ def main():
     except Exception:
         _straddle_for_chart = None
 
+    # v3.7.60: 用 v2 + dedupe 生成 unified_markers (跟盘中信号 chart 一致)
+    # 这样今日预测 chart 也能显示加仓 (4-29 谷底等)
+    _unified_markers_chart = None
+    try:
+        _uni_dd_for_chart = locals().get("_uni_dd_chart")
+        if _uni_dd_for_chart is not None and len(_uni_dd_for_chart) > 0:
+            _viz_set = set(viz_dates)
+            _unified_markers_chart = _uni_dd_for_chart[
+                _uni_dd_for_chart.index.isin(_viz_set)]
+    except Exception:
+        pass
+
     fig, trades = generate_chart(
         close, high, viz_dates, upper_band, lower_band,
         _bc, _sp, _ex,
@@ -3975,7 +4020,8 @@ def main():
         asset_key=asset_key,
         spot_ratio=_spot_ratio_chart,
         spot_label=_spot_label_chart,
-        straddle_dates=_straddle_for_chart)
+        straddle_dates=_straddle_for_chart,
+        unified_markers=_unified_markers_chart)
 
     st.pyplot(fig, use_container_width=True)
 
