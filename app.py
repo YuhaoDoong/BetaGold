@@ -4010,14 +4010,23 @@ def main():
         _rv_chart = _feat_chart["rv_10d"] \
             if "rv_10d" in _feat_chart.columns else None
         if _rv_chart is not None:
-            _str_df = _dst_chart(_rv_chart, viz_dates)
-            # 构造日线 sig_df (用于 build_unified)
+            # v3.7.69: 今日预测 chart 跟盘中信号 chart 用相同参数
+            # (asset 切点 + tech-score + close/high/low + short_vol_df)
+            from core.events import detect_short_vol_signal as _dsv_chart
+            _str_df = _dst_chart(_rv_chart, viz_dates,
+                                  rv_pctile=rv_pctile,
+                                  close=close, high=high, low=low,
+                                  asset=asset_key)
+            _short_vol_chart = _dsv_chart(_rv_chart, rv_pctile, viz_dates,
+                                            regime=regime,
+                                            close=close, high=high, low=low,
+                                            asset=asset_key)
             _sig_chart = _gds_chart(close, high, low,
                                      upper_band, lower_band,
-                                     regime, rv_pctile)
-            # 取 OOS 范围内的 close/high/low 用于胜率
+                                     regime, rv_pctile, asset=asset_key)
             _uni_raw_chart = _bus_chart(_sig_chart, _str_df,
-                                         close, high, low)
+                                         close, high, low,
+                                         short_vol_df=_short_vol_chart)
             # 加载 log 以便取真实触发价做去重判断
             _log_chart = _il_load_chart(os.path.join(
                 load_config()["data_root"],
