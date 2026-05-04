@@ -1781,15 +1781,14 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                     return i
             return None
         def xi_arr(dates): return [xi(d) for d in dates if xi(d) is not None]
-        # v3.7.35: 天数多时只显示日期, 天数少时显示日期+时间
+        # v3.7.74: 时间显示 = 美国东部时间 (EDT/EST, yfinance 1h 原 TZ)
         _show_hours = _intraday_days <= 5
         def _fmt_tick(x, pos):
             idx = int(round(x))
             if 0 <= idx < len(plot_ts):
                 ts = plot_ts[idx]
                 if _show_hours:
-                    return ts.strftime("%m/%d %H:%M")
-                # 天数多: 仅日期; 跨日时仅在日变化的第一根标日期
+                    return ts.strftime("%m/%d %H:%M") + " ET"
                 if idx == 0 or plot_ts[idx-1].date() != ts.date():
                     return ts.strftime("%m/%d")
                 return ""
@@ -2423,16 +2422,50 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
 
         # 截到显示窗口画散点
         _w_start, _w_end = _idx_1h[0], _idx_1h[-1]
-        # v3.7.73: 调试输出 — 让用户看到 dedupe 实际保留的 markers
+
+        # v3.7.74: 直接从 intraday_signal_log 读触发 + 当场 dedupe (而非依赖
+        # _live_buys, 后者有时丢数据). log 已确认含 4-29 09:30 EDT \$414.16.
+        from core.intraday_triggers import dedupe_intraday as _dd_chart
+        if len(_intra_log_asset) > 0:
+            _log_buys = _intra_log_asset[_intra_log_asset["side"] == "BUY"]
+            _log_exits = _intra_log_asset[_intra_log_asset["side"] == "EXIT"]
+            # dedupe 每天独立, 用 daily Low 做 sanity 截 dirty 价位
+            def _dedupe_per_day(log_df, side):
+                if not len(log_df):
+                    return log_df
+                rows = []
+                for d, grp in log_df.groupby("date"):
+                    # 截 dirty trigger price (1h log 可能含 prepost 异常如 \$401)
+                    d_norm = pd.Timestamp(d).normalize()
+                    d_lo = float(low_d.get(d_norm, 0)) if d_norm in low_d.index else 0
+                    d_hi = float(high_d.get(d_norm, 0)) if d_norm in high_d.index else 1e9
+                    grp_clean = grp.copy()
+                    if d_lo > 0:
+                        grp_clean["price"] = grp_clean["price"].clip(
+                            lower=d_lo * 0.997)
+                    if d_hi > 0:
+                        grp_clean["price"] = grp_clean["price"].clip(
+                            upper=d_hi * 1.003)
+                    dd = _dd_chart(grp_clean, side=side, min_drop_pct=0.5)
+                    if len(dd):
+                        rows.append(dd)
+                if not rows:
+                    return log_df.iloc[0:0]
+                return pd.concat(rows, ignore_index=True)
+            _live_buys = _dedupe_per_day(_log_buys, "BUY")
+            _live_exits = _dedupe_per_day(_log_exits, "EXIT")
+
+        # debug expander — 让用户验证 dedupe 数据
         if len(_live_buys) > 0:
             _dbg = _live_buys[
                 (_live_buys["trigger_time"] >= _w_start) &
                 (_live_buys["trigger_time"] <= _w_end)].copy()
-            with st.expander(f"🔍 1h chart 标注的 BUY triggers ({len(_dbg)} 笔, dedupe 后)",
+            with st.expander(f"🔍 1h chart BUY triggers ({len(_dbg)} 笔, dedupe 后)",
                               expanded=False):
                 if len(_dbg):
                     _dbg_show = _dbg[["trigger_time","price","rules"]].copy()
-                    _dbg_show["futures_price"] = (_dbg_show["price"] * _r).round(2)
+                    _dbg_show["futures_price"] = (
+                        _dbg_show["price"] * _r).round(2)
                     st.dataframe(_dbg_show, use_container_width=True)
                 else:
                     st.caption("窗口内无触发")
@@ -2462,29 +2495,33 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                            (_trigs["trigger_time"] <= _w_end)]
             if len(_disp) == 0:
                 continue
-            # v3.7.72: 真实时间点标记 (无 y 偏移). 期权 vs 期货 marker 区分:
-            # 美股盘中 (US 09:30-16:00 EDT = SGT 21:30~05:00): 期权可行 ⇒ ▲/v 实心
-            # 非盘中 (亚欧时段 = SGT 05:00~21:30 不含): 仅期货 ⇒ ▲/v 空心+黑边
+            # v3.7.74: 大尺寸 markers + zorder=10 (压在 candle 上层)
+            # 期权 (盘中 9:30-16 EDT): 实心 ▲/v
+            # 期货 (非盘中): 空心 + 粗边
             for _, _r2 in _disp.iterrows():
                 _t = pd.Timestamp(_r2["trigger_time"])
                 _xx = _proj_to_idx([_t])[0]
                 _color, _marker = _trig_palette(
                     {"trigger_time": _t}, _side)
-                # 美股盘中判断: EDT 09:30 ≤ hour < 16 (容差含 09:30)
-                # yfinance 1h 时间假设 EDT, 9-15 整点 = 盘中
                 _h = _t.hour + _t.minute / 60.0
                 _in_us = 9.5 <= _h < 16.0
+                _y = _r2["price"] * _r
                 if _in_us:
-                    # 期权 (实心)
-                    ax_price.scatter([_xx], [_r2["price"] * _r],
-                                     marker=_marker, s=110, color=_color,
-                                     edgecolors="black", lw=0.8, zorder=8)
+                    ax_price.scatter([_xx], [_y],
+                                     marker=_marker, s=180, color=_color,
+                                     edgecolors="black", lw=1.2, zorder=10)
                 else:
-                    # 期货 (空心 + 粗边, 区分期权)
-                    ax_price.scatter([_xx], [_r2["price"] * _r],
-                                     marker=_marker, s=110,
+                    ax_price.scatter([_xx], [_y],
+                                     marker=_marker, s=180,
                                      facecolors="none",
-                                     edgecolors=_color, lw=2.0, zorder=8)
+                                     edgecolors=_color, lw=2.5, zorder=10)
+                # 价位标注 (期货价)
+                ax_price.annotate(f"${_y:.0f}",
+                                   xy=(_xx, _y),
+                                   xytext=(8, -3),
+                                   textcoords="offset points",
+                                   fontsize=7, color=_color,
+                                   fontweight="bold")
 
         # (v3.7.23: Stoch RSI 子图已移到主图下方, 此 K线 panel 仅保留 K线 + Squeeze)
 
