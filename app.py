@@ -3068,6 +3068,7 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     from core.paper_positions import (
         price_strategy_at as _price_uni,
         _load_kline_db as _kdb_uni,
+        simulate_option_exit as _sim_exit,
     )
     _kdb_u = _kdb_uni()
     _today_dt_u = pd.Timestamp(today_sgt).normalize()
@@ -3116,79 +3117,29 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         if not _ent_pricing["legs"]:
             continue  # kline_db 无该日期权数据
         _ent_prem = _ent_pricing["entry_price"]
-        # 平仓判定
-        _exit_t_u = None; _exit_d_u = None; _exit_label = ""
-        _exit_spot_u = _cur_spot_u
-        _is_closed = False
-        if _strat == "STRADDLE":
-            _later = close_d.index[close_d.index > _du]
-            if len(_later) >= 14:
-                _exit_d_u = _later[13]
-                if _exit_d_u <= _today_dt_u:
-                    _is_closed = True
-                    _exit_t_u = _exit_d_u + pd.Timedelta(hours=15, minutes=55)
-                    _exit_spot_u = float(close_d.get(_exit_d_u, _cur_spot_u))
-                    _exit_label = _exit_d_u.strftime("%m-%d") + " (14d 定时)"
-        elif _strat == "SHORT_VOL":
-            _later = close_d.index[close_d.index > _du]
-            if len(_later) >= 30:
-                _exit_d_u = _later[29]
-                if _exit_d_u <= _today_dt_u:
-                    _is_closed = True
-                    _exit_t_u = _exit_d_u + pd.Timedelta(hours=15, minutes=55)
-                    _exit_spot_u = float(close_d.get(_exit_d_u, _cur_spot_u))
-                    _exit_label = _exit_d_u.strftime("%m-%d") + " (30d 定时)"
-        else:  # 方向性 — 找 EXIT trigger
-            if len(_log_u):
-                _ex_after = _log_u[(_log_u["side"] == "EXIT")
-                                       & (_log_u["date"] > _du)]
-                if len(_ex_after):
-                    _ex_after = _ex_after.sort_values("trigger_time")
-                    _exit_t_u = pd.Timestamp(_ex_after.iloc[0]["trigger_time"])
-                    _exit_d_u = _exit_t_u.normalize()
-                    _exit_spot_u = float(_ex_after.iloc[0]["price"])
-                    if _exit_d_u <= _today_dt_u:
-                        _is_closed = True
-                        _exit_label = _exit_t_u.strftime("%m-%d %H:%M")
-        # 计算平仓/当前期权价
-        _exit_pricing_total = 0.0; _ok_x = True
-        if _is_closed and _exit_d_u in _gld_csv_u.index:
-            _xO = float(_gld_csv_u.loc[_exit_d_u, "Open"])
-            _xC = float(_gld_csv_u.loc[_exit_d_u, "Close"])
-            _xR = ((_exit_spot_u - _xO) / (_xC - _xO)
-                    if abs(_xC - _xO) > 1e-6 else 0.5)
-            _xR = max(0.0, min(1.0, _xR))
-            for _lab, _code, _K, _qty in _ent_pricing["legs"]:
-                _kr = _kdb_u[(_kdb_u["code"] == _code)
-                                & (_kdb_u["date"] == _exit_d_u)] if _kdb_u is not None else None
-                if _kr is None or not len(_kr):
-                    _ok_x = False; break
-                _r0 = _kr.iloc[0]
-                _leg_x = (float(_r0["open"]) + _xR
-                            * (float(_r0["close"]) - float(_r0["open"])))
-                _exit_pricing_total += _qty * _leg_x
+        # v3.7.96: 真实期权退出规则 (50% profit / stop / expiry / 时间)
+        _sim = _sim_exit(_ent_pricing, _du, _strat, _today_dt_u)
+        _is_closed = _sim.get("is_closed", False)
+        _gain_u = _sim.get("pnl_pct", 0.0)
+        _exit_label = "未触发"
+        _exit_value_str = "—"
+        if _is_closed:
+            _exit_d_u = _sim["exit_date"]
+            _ex_val = _sim["exit_value"]
+            _exit_label = f'{_exit_d_u.strftime("%m-%d")} ({_sim["exit_reason"]})'
+            _exit_value_str = (f"平收${_ex_val:.2f}" if "SELL PUT" in _strat
+                                 else f"平${_ex_val:.2f}")
+            _exit_spot_u = float(close_d.get(_exit_d_u, _cur_spot_u))
         else:
-            # 未平仓 → 用 latest close per leg 算 mark-to-market
-            for _lab, _code, _K, _qty in _ent_pricing["legs"]:
-                _kr = _kdb_u[_kdb_u["code"] == _code] if _kdb_u is not None else None
-                if _kr is None or not len(_kr):
-                    _ok_x = False; break
-                _exit_pricing_total += _qty * float(_kr.iloc[-1]["close"])
-        if not _ok_x: continue
-        # P&L
+            _ex_val = _sim.get("current_value", 0)
+            _exit_label = f'OPEN ({_sim.get("hold_days", 0)}d)'
+            _exit_value_str = (f"现收${_ex_val:.2f}" if "SELL PUT" in _strat
+                                 else f"现${_ex_val:.2f}")
+            _exit_spot_u = _cur_spot_u
         if "SELL PUT" in _strat:
             _ent_str = f"收${_ent_prem:.2f}"
-            _cur_credit = -_exit_pricing_total
-            _exit_str = (f"平${_cur_credit:.2f}" if _is_closed
-                          else f"现${_cur_credit:.2f}")
-            _gain_u = (((_ent_prem - _cur_credit) / _ent_prem * 100)
-                        if _ent_prem > 0 else 0)
         else:
             _ent_str = f"${_ent_prem:.2f}"
-            _exit_str = (f"平${_exit_pricing_total:.2f}" if _is_closed
-                          else f"现${_exit_pricing_total:.2f}")
-            _gain_u = ((_exit_pricing_total / _ent_prem - 1) * 100
-                        if _ent_prem > 0 else 0)
         _rec = {
             "信号日": _du.strftime("%m-%d"),
             "策略": _strat,
@@ -3196,9 +3147,9 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             "入场Spot": f"${_entry_spot_u:.2f}",
             "入场期权": _ent_str,
             "平/现Spot": f"${_exit_spot_u:.2f}",
-            "平/现期权": _exit_str,
+            "平/现期权": _exit_value_str,
             "P&L%": f"{_gain_u:+.1f}%",
-            "平仓时间": _exit_label or "未到/未触发",
+            "出场原因": _exit_label,
         }
         if _is_closed:
             _closed_recs.append(_rec)

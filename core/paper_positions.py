@@ -338,10 +338,14 @@ def _load_kline_db() -> Optional[pd.DataFrame]:
 
 def pick_liquid_monthly_option(asset: str, signal_date: pd.Timestamp,
                                   ul_price: float, right: str,
-                                  dte_target: int = 45) -> Optional[dict]:
-    """从 kline_db 挑月度 opex (第三周五) ATM 附近成交量最大期权.
-    right: 'C' / 'P'
-    返回 {code, strike, expiry, open, close, dte_at_date, volume} or None.
+                                  dte_target: int = 45,
+                                  strike_tolerance: float = 8.0) -> Optional[dict]:
+    """从 kline_db 挑期权: strike 接近 ul_price 优先 (覆盖 ATM), 月度 opex 偏好,
+    DTE 接近 target, 成交量降序.
+
+    v3.7.96: 重排优先级避开 strike-out-of-coverage bug. 之前 expiry 优先时
+    可能选到 strikes 不覆盖 ATM 的 expiry (e.g. 3-5 GLD spot \$466 选 4-17
+    expiry 但 strikes 只到 \$320 → 实际应选 5-15 expiry 的 \$465 strike).
     """
     db = _load_kline_db()
     if db is None: return None
@@ -350,29 +354,35 @@ def pick_liquid_monthly_option(asset: str, signal_date: pd.Timestamp,
     if not len(day_data): return None
     asset_data = day_data[day_data["code"].str.contains(asset, na=False)]
     if not len(asset_data): return None
-    # 月度 opex 过滤 (第三周五)
-    monthly = asset_data[asset_data["expiry"].apply(
-        lambda d: d.weekday() == 4 and 15 <= d.day <= 21)]
-    # 退而求其次 - 任意 expiry
-    pool = monthly if len(monthly) else asset_data
-    # right 过滤
     type_str = "CALL" if right.upper() == "C" else "PUT"
-    pool = pool[pool["option_type"] == type_str]
+    pool = asset_data[asset_data["option_type"] == type_str].copy()
     if not len(pool): return None
-    # DTE 接近 target
-    pool = pool.copy()
-    pool["dte_diff"] = (pool["dte_at_date"] - dte_target).abs()
-    target_dte = pool["dte_diff"].min()
-    # tolerance ±15d
-    pool = pool[pool["dte_diff"] <= max(15, target_dte)]
-    # ATM strike
+    # 1. Strike 必须接近 ul_price (核心硬过滤)
     pool["strike_diff"] = (pool["strike"] - ul_price).abs()
-    # 综合: ATM ±5 strike + 成交量降序
-    near_atm = pool[pool["strike_diff"] <= 5]
-    if not len(near_atm):
-        near_atm = pool.nsmallest(3, "strike_diff")
-    near_atm = near_atm.sort_values("volume", ascending=False)
-    row = near_atm.iloc[0]
+    near = pool[pool["strike_diff"] <= strike_tolerance]
+    if not len(near):
+        # 扩到最接近 5 个 strike
+        near = pool.nsmallest(5, "strike_diff")
+    if not len(near): return None
+    near = near.copy()
+    # 2. 月度 opex 优先 (第三周五)
+    near["is_monthly"] = near["expiry"].apply(
+        lambda d: 1 if (d.weekday() == 4 and 15 <= d.day <= 21) else 0)
+    monthly = near[near["is_monthly"] == 1]
+    if len(monthly):
+        near = monthly
+    # 3. DTE 接近 target
+    near["dte_diff"] = (near["dte_at_date"] - dte_target).abs()
+    near = near[near["dte_diff"] <= 20]
+    if not len(near):
+        near = monthly if len(monthly) else pool[pool["strike_diff"] <= strike_tolerance]
+        if not len(near): return None
+        near = near.copy()
+        near["dte_diff"] = (near["dte_at_date"] - dte_target).abs()
+    # 4. 综合排序: strike_diff 升序, dte_diff 升序, volume 降序
+    near = near.sort_values(["strike_diff", "dte_diff", "volume"],
+                              ascending=[True, True, False])
+    row = near.iloc[0]
     return {
         "code": row["code"],
         "strike": float(row["strike"]),
@@ -507,6 +517,116 @@ def price_strategy_at(asset: str, strategy: str,
                         kline_codes=[c["code"], p["code"]],
                         source=f"kline_db {c['code']} + {p['code']}")
     return out
+
+
+def simulate_option_exit(entry_pricing: dict, signal_date: pd.Timestamp,
+                            strategy: str,
+                            today_dt: pd.Timestamp) -> dict:
+    """逐日扫 kline_db 真实期权 OHLC, 应用真实退出规则.
+
+    SELL PUT credit spread:
+      +50% (cur_credit <= entry × 0.5) — 早平
+      -100% (cur_credit >= entry × 2) — 止损 (full credit lost)
+      expiry — 强平
+    BUY CALL:
+      +100% / -50% / expiry
+    STRADDLE:
+      +100% / 持仓 14d / expiry
+    SHORT_VOL:
+      +50% / -50% / 30d / expiry
+
+    返回 {is_closed, exit_date, exit_value, exit_reason, pnl_pct}
+    """
+    db = _load_kline_db()
+    if db is None or not entry_pricing.get("legs"):
+        return {"is_closed": False}
+    entry_value = entry_pricing["entry_price"]
+    legs = entry_pricing["legs"]  # [(label, code, K, qty), ...]
+    is_credit = "SELL PUT" in strategy or "SHORT_VOL" in strategy
+    is_long_vol = "STRADDLE" in strategy
+    is_long_dir = "BUY CALL" in strategy
+    # 取首 leg 的 expiry (假设所有 legs 同 expiry)
+    first_code = legs[0][1]
+    first_kdb = db[db["code"] == first_code]
+    if not len(first_kdb): return {"is_closed": False}
+    expiry_dt = pd.Timestamp(first_kdb.iloc[0]["expiry"])
+    # 退出规则
+    if is_credit:
+        profit_target = entry_value * 0.5  # cur_credit ≤ 0.5 × entry → +50%
+        stop_loss = entry_value * 2.0       # cur_credit ≥ 2 × entry → -100%
+    elif is_long_vol:
+        profit_target = entry_value * 2.0   # cur_value ≥ 2 × entry → +100%
+        stop_loss = None                      # 长 vol 不主动止损, 等 14d
+    elif is_long_dir:
+        profit_target = entry_value * 2.0   # +100%
+        stop_loss = entry_value * 0.5        # -50%
+    else:
+        profit_target = stop_loss = None
+    # 逐日 MTM
+    sig_d = pd.Timestamp(signal_date).normalize()
+    days = sorted(set(db[db["code"].isin([l[1] for l in legs])]["date"].unique()))
+    days_after = [d for d in days if pd.Timestamp(d) > sig_d]
+    hold_days = 0
+    for d in days_after:
+        d_ts = pd.Timestamp(d)
+        if d_ts > today_dt: break
+        # 每 leg close 算 cur_value
+        cur_total = 0.0; ok = True
+        for _lab, _code, _K, _qty in legs:
+            r = db[(db["code"] == _code) & (db["date"] == d_ts)]
+            if not len(r): ok = False; break
+            cur_total += _qty * float(r.iloc[0]["close"])
+        if not ok: continue
+        cur_value = -cur_total if is_credit else cur_total
+        hold_days += 1
+        # 检查退出
+        if profit_target is not None and (
+            (is_credit and cur_value <= profit_target) or
+            (is_long_vol and cur_value >= profit_target) or
+            (is_long_dir and cur_value >= profit_target)):
+            return {"is_closed": True, "exit_date": d_ts,
+                     "exit_value": cur_value, "exit_reason": "+50% profit"
+                     if is_credit else "+100% profit",
+                     "pnl_pct": ((entry_value - cur_value) / entry_value * 100
+                                  if is_credit
+                                  else (cur_value / entry_value - 1) * 100)}
+        if stop_loss is not None and (
+            (is_credit and cur_value >= stop_loss) or
+            (is_long_dir and cur_value <= stop_loss)):
+            return {"is_closed": True, "exit_date": d_ts,
+                     "exit_value": cur_value,
+                     "exit_reason": "stop loss",
+                     "pnl_pct": ((entry_value - cur_value) / entry_value * 100
+                                  if is_credit
+                                  else (cur_value / entry_value - 1) * 100)}
+        # STRADDLE 持仓 14d
+        if is_long_vol and hold_days >= 14:
+            return {"is_closed": True, "exit_date": d_ts,
+                     "exit_value": cur_value,
+                     "exit_reason": "14d 定时",
+                     "pnl_pct": (cur_value / entry_value - 1) * 100}
+        # SHORT_VOL 30d
+        if is_credit and "SHORT_VOL" in strategy and hold_days >= 30:
+            return {"is_closed": True, "exit_date": d_ts,
+                     "exit_value": cur_value,
+                     "exit_reason": "30d 定时",
+                     "pnl_pct": (entry_value - cur_value) / entry_value * 100}
+        # expiry
+        if d_ts >= expiry_dt:
+            return {"is_closed": True, "exit_date": d_ts,
+                     "exit_value": cur_value,
+                     "exit_reason": "expiry",
+                     "pnl_pct": ((entry_value - cur_value) / entry_value * 100
+                                  if is_credit
+                                  else (cur_value / entry_value - 1) * 100)}
+    # 未触发退出 → OPEN (用最新 close 算 mark-to-market)
+    if hold_days > 0 and ok:
+        return {"is_closed": False, "current_value": cur_value,
+                 "hold_days": hold_days,
+                 "pnl_pct": ((entry_value - cur_value) / entry_value * 100
+                              if is_credit
+                              else (cur_value / entry_value - 1) * 100)}
+    return {"is_closed": False}
 
 
 def lookup_gld_intraday_price(trigger_time: pd.Timestamp,
