@@ -22,7 +22,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from matplotlib.lines import Line2D
-from matplotlib.ticker import FuncFormatter, MaxNLocator
+from matplotlib.ticker import FuncFormatter, MaxNLocator, FixedLocator
 
 warnings.filterwarnings("ignore")
 
@@ -1197,9 +1197,16 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                                            dedup_first=True, min_drop_pct=0.3) \
         if len(_intra_log_asset) else pd.DataFrame()
     # v3.7.73: 计算每日 BUY/EXIT trigger 平均时间 (用于主图 marker x 位置)
+    # v3.7.85: 按当前 user-selected interval 的 timeframe 过滤, 避免 1h+5m 混合
+    _avg_tf_match = (f"{_interval_code.replace('m','')}m"
+                       if _is_1h_view and _interval_code != "1h" else "60m") \
+        if _is_1h_view else "60m"
     def _avg_trigger_time(side):
         if not len(_intra_log_asset): return {}
-        sub = _intra_log_asset[_intra_log_asset["side"] == side].copy()
+        sub = _intra_log_asset[
+            (_intra_log_asset["side"] == side) &
+            (_intra_log_asset.get("timeframe", "") == _avg_tf_match)
+        ].copy()
         out = {}
         for d, grp in sub.groupby("date"):
             dd = _ig_dedupe_g(grp, side=side, min_drop_pct=0.3)
@@ -2037,11 +2044,16 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                 _xi_target = _xi_open(d)
                 _yp = float(close_d.get(d, entry_p))  # daily close
             elif part in ("BUY CALL", "SELL PUT"):
+                # v3.7.85: 只有 active timeframe 有 trigger 时显示, 跟副图一致
                 _avg_t = _avg_buy_time.get(pd.Timestamp(d))
+                if _avg_t is None and _is_1h_view:
+                    continue  # 当前 interval 当天没触发, 跳过 marker
                 _xi_target = _xi_at(_avg_t) if _avg_t else xi(d)
                 _yp = entry_p
             elif part == "EXIT":
                 _avg_t = _avg_exit_time.get(pd.Timestamp(d))
+                if _avg_t is None and _is_1h_view:
+                    continue
                 _xi_target = _xi_at(_avg_t) if _avg_t else xi(d)
                 _yp = entry_p
             else:
@@ -2120,7 +2132,13 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     ax.grid(True, alpha=0.3)
     # v3.7.28: 主图也显示 datetime 时间刻度 (顶部 + 底部都标)
     ax.xaxis.set_major_formatter(FuncFormatter(_fmt_tick))
-    ax.xaxis.set_major_locator(MaxNLocator(integer=True, nbins=15))
+    # v3.7.85: 强制每天起点都是刻度 (不论 zoom level)
+    if _is_1h_view and len(plot_ts) > 1:
+        _day_start_idx = [i for i, t in enumerate(plot_ts)
+                            if i == 0 or plot_ts[i-1].date() != t.date()]
+        ax.xaxis.set_major_locator(FixedLocator(_day_start_idx))
+    else:
+        ax.xaxis.set_major_locator(MaxNLocator(integer=True, nbins=15))
     ax.tick_params(axis="x", labelbottom=True, labeltop=False, rotation=0)
     plt.setp(ax.get_xticklabels(), fontsize=8)
     # v3.7.84: 日界线竖线 (强调 overnight gap, RTH-only 拼接的真实切换)
@@ -2278,7 +2296,7 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     # v3.7.80: 用 user-selected interval (默认 15m)
     _kline_interval = locals().get("_interval_code", "1h") if _is_1h_view else "1h"
     _kline_data = gld_1h if gld_1h is not None else _fetch_futures_kline(_futures_ticker, "1h")
-    _kline_label = f"{_futures_name} 1h"
+    _kline_label = f"{_futures_name} {_kline_interval}"  # v3.7.85: 跟实际 interval
 
     if _kline_data is not None and len(_kline_data) > 0 and _is_1h_view:
         # v3.7.25: 强制与主图同窗口 (plot_dates), 共享整数 x
@@ -2468,16 +2486,12 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                     ax_price.axvspan(i - 0.5, i + 0.5, alpha=0.08,
                                       color="#4CAF50", zorder=1)
 
-        ax_price.set_ylabel(f"{_kline_label} ($/oz)")
-        # v3.7.75: 标题明示美东时区, 末时刻加 ET 后缀
+        # v3.7.85: 标题信息合并到 ylabel, 主图和副图间不插独立 title
         _last_price = _c1h.iloc[-1] * _r
-        _signal_tag = f" | {_signal_type_today} → 深绿=入场(反转+BB下轨) 浅绿=准备" \
-            if _has_buy_signal else ""
-        ax_price.set_title(
-            f"{_kline_label} (美东 ET) ${_last_price:.1f} | "
-            f"{_1h.index[-1].strftime('%m/%d %H:%M')} ET"
-            f"{_signal_tag}",
-            fontsize=11, fontweight="bold")
+        ax_price.set_ylabel(
+            f"{_kline_label} ${_last_price:.1f} "
+            f"({_1h.index[-1].strftime('%m/%d %H:%M')} ET)",
+            fontsize=9)
         ax_price.grid(True, alpha=0.3)
         # v3.7.80: K 线 chart 图例 — 期权/期货 marker 区别 (Line2D 已 module-import)
         _kline_legend = [
