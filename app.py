@@ -1466,17 +1466,25 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             st.metric(f"看空/止盈 >{oi_tag}", f"${_exit_spot:{_price_fmt}}",
                       delta=f"{_etf_label} > ${eff_bp090:.2f} | {_shfe_label} > ¥{_exit_shfe:.1f}")
         with c3:
-            # v3.7.53 — 盘中信号页面只显当日有效信号 (历史信号去持仓管理 / chart 看)
-            # 工具映射 (实证回测最优工具):
-            #   BUY CALL 类信号 → 期货多头 + 3% 止损 (96% wr vs 期权 73%)
-            #   SELL PUT 类信号 → 期权 Sell Put (100% wr vs 期货 68%)
-            _sig_map = {
-                "BUY CALL": "期货多头 (推荐 96%) / Buy Call",
-                "SELL PUT": "Sell Put (推荐 100%)",
-                "EXIT": "平仓 / 做空",
-                "BUY CALL + EXIT": "期货多头 (有退出)",
-                "SELL PUT + EXIT": "Sell Put (有退出)",
-            }
+            # v3.7.62: session-aware 工具路由 — 期权 vs 期货独立
+            # US 期权 regular session: SGT 21:30 ~ 04:00 (= US 9:30-16:00 EDT)
+            # 之外: 期权流动性差 / 不可下单, 必须用期货 (GC=F 23h 交易)
+            if _is_us_session:
+                _sig_map = {
+                    "BUY CALL": "🎯 期权 Buy Call (US session 中)",
+                    "SELL PUT": "🎯 期权 Sell Put (推 100%)",
+                    "EXIT": "平仓 / 做空",
+                    "BUY CALL + EXIT": "Buy Call (有退出)",
+                    "SELL PUT + EXIT": "Sell Put (有退出)",
+                }
+            else:
+                _sig_map = {
+                    "BUY CALL": "📈 期货多头 GC=F (期权关闭, 推 96%)",
+                    "SELL PUT": "📈 期货多头 GC=F (期权关闭, sell put 替代不可)",
+                    "EXIT": "📉 期货空头 GC=F (期权关闭)",
+                    "BUY CALL + EXIT": "期货多头 (有退出)",
+                    "SELL PUT + EXIT": "期货多头 (有退出)",
+                }
             # 数据过期检测: last_date 距今 > 1 个交易日 视为过期
             _ld = pd.Timestamp(last_date)
             _data_age = (pd.Timestamp(today_sgt) - _ld.normalize()).days
