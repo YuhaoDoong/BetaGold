@@ -1212,9 +1212,22 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             avg_ns = ts_list.astype("int64").mean()
             out[pd.Timestamp(d)] = pd.Timestamp(int(avg_ns))
         return out
-    # 占位; 真正赋值在下方读完 _interval_code 之后
-    _avg_buy_time: dict = {}
-    _avg_exit_time: dict = {}
+    # v3.7.86: 同步算每日 trigger 平均价 (用于主图 EXIT marker y 位置)
+    def _avg_trigger_price(side, tf_match):
+        if not len(_intra_log_asset): return {}
+        sub = _intra_log_asset[
+            (_intra_log_asset["side"] == side) &
+            (_intra_log_asset.get("timeframe", "") == tf_match)
+        ].copy()
+        out = {}
+        for d, grp in sub.groupby("date"):
+            dd = _ig_dedupe_g(grp, side=side, min_drop_pct=0.3)
+            if len(dd) == 0: continue
+            out[pd.Timestamp(d)] = float(pd.to_numeric(
+                dd["price"], errors="coerce").mean())
+        return out
+    _avg_buy_time: dict = {}; _avg_buy_price: dict = {}
+    _avg_exit_time: dict = {}; _avg_exit_price: dict = {}
 
     # 真实策略回测 — 入场/退出价用 log 代表价 + 3% 止损 + 连续熔断
     trades = run_backtest(
@@ -1765,6 +1778,9 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                        if _is_1h_view else "60m")
     _avg_buy_time = _avg_trigger_time("BUY", _avg_tf_match)
     _avg_exit_time = _avg_trigger_time("EXIT", _avg_tf_match)
+    # v3.7.86: 同步算价
+    _avg_buy_price = _avg_trigger_price("BUY", _avg_tf_match)
+    _avg_exit_price = _avg_trigger_price("EXIT", _avg_tf_match)
     # v3.7.84: 主图数据源改 COMEX 期货 (GC=F/SI=F) — 23h 全球夜盘, 真伦敦金价
     # ETF (GLD/SLV) 只 US session 6.5h, 缺亚欧夜盘 — 用户诉求显示 24h
     # 实现: 拉 GC=F (gold scale $3800) → 除以 _viz_ratio → ETF-等价 scale ($400)
@@ -2059,6 +2075,8 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                 if _avg_t is None and _is_1h_view:
                     continue
                 _xi_target = _xi_at(_avg_t) if _avg_t else xi(d)
+                # v3.7.86: y 用真实出场触发价 (而非 entry_p = 入场价)
+                _yp = _avg_exit_price.get(pd.Timestamp(d), entry_p)
                 _yp = entry_p
             else:
                 _xi_target = xi(d)
@@ -2985,9 +3003,112 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         st.caption(f"今日 {_td_dt.date()} 尚无盘中触发. "
                    "(规则可在 core/intraday_triggers.py 调整)")
 
-    # ── 持仓管理 (v3.7.35: 信号模拟持仓) ──
+    # ── v3.7.86: 盘中触发 → paper 持仓自动同步 ──
     st.divider()
-    st.subheader("📊 信号模拟持仓 (系统自动追踪)")
+    st.subheader("🔴 盘中触发实盘模拟 (每次触发记一笔, 等待 EXIT 平仓)")
+    st.caption(
+        "依据 intraday log + 当前 user interval timeframe filter. "
+        "BUY 触发开仓 (按当时价格); EXIT 触发平仓. "
+        "期权策略尝试拉实时 quote, 失败回退 underlying-price 模拟.")
+    try:
+        from core.paper_positions import (
+            load_positions as _pp_load, open_position as _pp_open,
+            close_position as _pp_close, mark_to_market as _pp_mtm,
+            infer_option_symbol as _pp_infer_opt,
+            fetch_realtime_option_price as _pp_opt_quote,
+        )
+        _pp_root = _intra_cfg["data_root"]
+        # 按当前 timeframe 过滤 log
+        _pp_log = _intra_log_asset[
+            _intra_log_asset.get("timeframe", "") == _avg_tf_match
+        ] if len(_intra_log_asset) else _intra_log_asset
+        # 每天 dedupe 后逐条同步
+        if len(_pp_log):
+            from core.intraday_triggers import (
+                dedupe_intraday as _dd_pp)
+            for _d, _grp in _pp_log.groupby("date"):
+                for _side in ["BUY", "EXIT"]:
+                    _sub = _grp[_grp["side"] == _side]
+                    if not len(_sub): continue
+                    _dd = _dd_pp(_sub, side=_side, min_drop_pct=0.3)
+                    for _, _r in _dd.iterrows():
+                        _t_time = pd.Timestamp(_r["trigger_time"])
+                        _ul_p = float(_r["price"])
+                        # 推策略 (来自 sig_df.chosen 当日)
+                        _d_norm = pd.Timestamp(_d).normalize()
+                        _chosen_today = (sig_df.loc[_d_norm, "chosen"]
+                                          if _d_norm in sig_df.index else "")
+                        _strategy = (_chosen_today.split("+")[0].strip()
+                                      if _chosen_today else "SPOT")
+                        if _side == "BUY":
+                            # 推 option ticker + 试拉实时 quote
+                            _osym = _pp_infer_opt(asset_key, _strategy,
+                                                    _ul_p, _t_time)
+                            _oprice = (_pp_opt_quote(_osym)
+                                       if _osym else None)
+                            _pp_open(_pp_root, asset_key, _strategy,
+                                     _t_time, _ul_p,
+                                     side="BUY", qty=1,
+                                     option_symbol=_osym,
+                                     option_price=_oprice)
+                        else:  # EXIT
+                            _pp_close(_pp_root, asset_key,
+                                       _t_time, _ul_p)
+        # MTM + 显示
+        _spot_now = (gc_now / _viz_ratio
+                       if (gc_now > 0 and _viz_ratio > 0)
+                       else float(close_d.iloc[-1]))
+        _quotes = {asset_key: _spot_now}
+        _open_df = _pp_mtm(_pp_root, _quotes)
+        _all_df = _pp_load(_pp_root)
+        _asset_all = _all_df[_all_df["asset"] == asset_key] \
+            if len(_all_df) else _all_df
+        _col_o, _col_c = st.columns(2)
+        with _col_o:
+            st.markdown("**🟢 持仓中 (OPEN)**")
+            if len(_open_df) and (_open_df["asset"] == asset_key).any():
+                _show = _open_df[_open_df["asset"] == asset_key][[
+                    "open_time", "strategy", "open_ul_price",
+                    "open_option_symbol", "open_option_price",
+                    "current_ul", "unrealized_pct",
+                ]].copy()
+                _show.columns = ["开仓时间", "策略", "入场标的",
+                                  "期权代码", "入场期权价",
+                                  "现价", "未实现 %"]
+                st.dataframe(_show, use_container_width=True,
+                             hide_index=True)
+            else:
+                st.caption("当前无持仓")
+        with _col_c:
+            st.markdown("**⚫ 已平仓 (CLOSED)**")
+            _closed = _asset_all[_asset_all["status"] == "CLOSED"]
+            if len(_closed):
+                _show_c = _closed.tail(10)[[
+                    "open_time", "close_time", "strategy",
+                    "open_ul_price", "close_ul_price", "realized_pnl_pct",
+                ]].copy()
+                _show_c.columns = ["开仓", "平仓", "策略",
+                                    "入场价", "出场价", "已实现 %"]
+                st.dataframe(_show_c.iloc[::-1],
+                             use_container_width=True, hide_index=True)
+            else:
+                st.caption("尚无已平仓记录")
+        # 累计统计
+        if len(_asset_all):
+            _closed_all = _asset_all[_asset_all["status"] == "CLOSED"]
+            if len(_closed_all):
+                _wr = (_closed_all["realized_pnl_pct"] > 0).mean() * 100
+                _avg = _closed_all["realized_pnl_pct"].mean()
+                _sum = _closed_all["realized_pnl_pct"].sum()
+                st.caption(f"📊 已平仓 {len(_closed_all)} 笔 | "
+                           f"胜率 {_wr:.0f}% | 单笔 {_avg:+.2f}% | "
+                           f"累计 {_sum:+.1f}%")
+    except Exception as _pp_err:
+        st.caption(f"⚠ paper_positions 异常: {_pp_err}")
+
+    # ── 持仓管理 (v3.7.35: 信号模拟持仓 — 基于 daily 回测) ──
+    st.divider()
+    st.subheader("📊 日线信号模拟持仓 (回测追踪)")
     st.caption("基于 run_backtest + backtest_straddle/short_vol 的回测仓位 — 用于对照实盘")
 
     tp_recs = []
