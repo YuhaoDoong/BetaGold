@@ -3522,43 +3522,42 @@ def main():
     asset = st.sidebar.selectbox("资产", ["GLD (黄金)", "SLV (白银)"], index=0)
     asset_key = "GLD" if "GLD" in asset else "SLV"
 
-    if asset_key == "GLD":
-        with st.spinner("加载黄金数据..."):
-            (gld, range_df, regime, rv_pctile, gc_gld_ratio, usdcny_rate,
-             si_slv_ratio) = load_all()
-    else:
-        with st.spinner("加载白银数据..."):
-            # 复用黄金的 Regime (宏观环境对金银都适用)
-            (gld_for_regime, _, regime, rv_pctile_gld, _, usdcny_rate,
-             si_slv_ratio) = load_all()
-            # 加载白银数据
-            _slv_path = os.path.join(cfg_refresh["data_root"], "raw", "market", "slv.csv")
-            _slv_oos_path = os.path.join(cfg_refresh["data_root"], "models", "dl_range_slv_oos.parquet")
-            if os.path.exists(_slv_path) and os.path.exists(_slv_oos_path):
-                gld = pd.read_csv(_slv_path, index_col=0, parse_dates=True)
-                range_df = pd.read_parquet(_slv_oos_path)
-                # 白银 RV
-                _slv_feat_path = os.path.join(cfg_refresh["data_root"], "processed", "features_slv.parquet")
-                if os.path.exists(_slv_feat_path):
-                    _slv_feat = pd.read_parquet(_slv_feat_path)
-                    rv_pctile = _slv_feat["rv_10d"].rolling(252, min_periods=60).rank(pct=True) \
-                        if "rv_10d" in _slv_feat.columns else rv_pctile_gld
-                else:
-                    rv_pctile = rv_pctile_gld
-                # 银期货/SLV 比例 (用于跨市场换算; 不能复用 gold ratio)
-                gc_gld_ratio = None
-                _si_path = os.path.join(cfg_refresh["data_root"],
-                                        "raw", "market", "silver.csv")
-                if os.path.exists(_si_path):
-                    _si_df = pd.read_csv(_si_path, index_col=0, parse_dates=True)
-                    _common_si = gld.index.intersection(_si_df.index)
-                    if len(_common_si) > 20:
-                        _r = _si_df.loc[_common_si[-60:], "Close"] / \
-                             gld.loc[_common_si[-60:], "Close"]
-                        gc_gld_ratio = float(_r.mean())
-            else:
-                st.error("白银数据未找到。请先运行白银模型训练。")
-                return
+    # v3.7.63: 模块化 — GLD/SLV 共用 pipeline, 仅参数不同
+    def _load_asset_pipeline(asset_key: str):
+        """统一加载 GLD/SLV: (df, oos, regime, rv_pctile, futures_ratio, usdcny)
+        regime 复用黄金 (宏观对两资产都适用).
+        """
+        # 共享: regime + usdcny + (GLD 自己) + ratios
+        (gld_df, gld_oos, regime_, rv_pct_gld,
+         gc_gld_r, usdcny_r, si_slv_r) = load_all()
+        if asset_key == "GLD":
+            return (gld_df, gld_oos, regime_, rv_pct_gld,
+                    gc_gld_r, usdcny_r, si_slv_r)
+        # SLV: 切数据源
+        _slv = os.path.join(cfg_refresh["data_root"], "raw/market/slv.csv")
+        _slv_oos = os.path.join(cfg_refresh["data_root"],
+                                  "models/dl_range_slv_oos.parquet")
+        _slv_feat = os.path.join(cfg_refresh["data_root"],
+                                   "processed/features_slv.parquet")
+        if not (os.path.exists(_slv) and os.path.exists(_slv_oos)):
+            st.error("白银数据未找到 — 请先训练白银模型")
+            st.stop()
+        slv_df = pd.read_csv(_slv, index_col=0, parse_dates=True)
+        slv_oos = pd.read_parquet(_slv_oos)
+        if os.path.exists(_slv_feat):
+            _f = pd.read_parquet(_slv_feat)
+            rv_pct_slv = (_f["rv_10d"].rolling(252, min_periods=60)
+                          .rank(pct=True) if "rv_10d" in _f.columns
+                          else rv_pct_gld)
+        else:
+            rv_pct_slv = rv_pct_gld
+        # SLV 用 si_slv_ratio (而非 gc_gld)
+        return (slv_df, slv_oos, regime_, rv_pct_slv,
+                si_slv_r, usdcny_r, si_slv_r)
+
+    with st.spinner(f"加载{asset_key}数据..."):
+        (gld, range_df, regime, rv_pctile, gc_gld_ratio, usdcny_rate,
+         si_slv_ratio) = _load_asset_pipeline(asset_key)
 
     close, high, low = gld["Close"], gld["High"], gld["Low"]
 
