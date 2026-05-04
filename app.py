@@ -3165,6 +3165,9 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             price_strategy_at as _price_strat3,
             _load_kline_db as _kdb_load3,
         )
+        # v3.7.93: STRADDLE/SHORT_VOL 在 sig_df 里没有列, 走 events.detect 函数
+        from core.events import (detect_straddle_signal as _det_strad,
+                                   detect_short_vol_signal as _det_sv)
         _bt_30_start = pd.Timestamp(today_sgt) - timedelta(days=30)
         _bt_30_dates = sig_df.index[sig_df.index >= _bt_30_start]
         _today_dt3 = pd.Timestamp(today_sgt).normalize()
@@ -3173,17 +3176,32 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         _gld_csv3 = pd.read_csv(
             f"/Users/yhdong/Gold/data/raw/market/{asset_key.lower()}.csv",
             index_col=0, parse_dates=True)
+        # 单独 detect STRADDLE / SHORT_VOL (events.py 函数, sig_df 里没)
+        _rv_s_30 = features.loc[close_d.index, "rv_10d"] if "rv_10d" in features.columns else pd.Series(dtype=float)
+        try:
+            _strad_30 = _det_strad(_rv_s_30, _bt_30_dates, rv_pctile=rv_pctile,
+                                      close=close_d, high=high_d, low=low_d,
+                                      asset=asset_key)
+            _sv_30 = _det_sv(_rv_s_30, rv_pctile, _bt_30_dates,
+                                close=close_d, high=high_d, low=low_d,
+                                asset=asset_key)
+        except Exception:
+            _strad_30 = pd.DataFrame(); _sv_30 = pd.DataFrame()
         _opt_recs = []
-        # v3.7.92: 加载 intraday log 找匹配的 EXIT 触发, 用 EXIT 时点平仓
+        # 加载 intraday log 找匹配的 EXIT 触发
         _log_for_opt = _intra_log_asset.copy() if len(_intra_log_asset) else _intra_log_asset
         if len(_log_for_opt):
             _log_for_opt["date"] = pd.to_datetime(_log_for_opt["date"])
             _log_for_opt["trigger_time"] = pd.to_datetime(_log_for_opt["trigger_time"])
         for _d_o, _r_o in sig_df.loc[_bt_30_dates].iterrows():
-            # v3.7.92: 三类信号都纳入 — 方向性 + STRADDLE + SHORT_VOL
-            if _r_o.get("straddle_signal", False):
+            # 三类信号: 方向性 (sig_df.buy_signal) + STRADDLE (_strad_30) + SHORT_VOL (_sv_30)
+            _is_strad = (len(_strad_30) > 0 and _d_o in _strad_30.index
+                          and bool(_strad_30.loc[_d_o, "straddle_signal"]))
+            _is_sv = (len(_sv_30) > 0 and _d_o in _sv_30.index
+                       and bool(_sv_30.loc[_d_o, "short_vol_signal"]))
+            if _is_strad:
                 _strategy_o = "STRADDLE"
-            elif _r_o.get("short_vol_signal", False):
+            elif _is_sv:
                 _strategy_o = "SHORT_VOL"
             elif _r_o.get("buy_signal", False):
                 _strategy_o = _r_o.get("buy_type", "") or ""
@@ -3208,7 +3226,7 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             _entry_str_o = "—"; _exit_str_o = "—"; _gain_o = 0.0
             _exit_label = "OPEN"
             _exit_spot_o = _cur_spot3
-            # 找首个 EXIT 触发 (信号日之后)
+            # v3.7.93: 找首个 EXIT 触发 (信号日之后) — 没有 → 跳过, 不显示 OPEN
             _exit_t = None
             if len(_log_for_opt):
                 _later_exits = _log_for_opt[
@@ -3220,6 +3238,9 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                     _exit_d = _exit_t.normalize()
                     _exit_spot_o = float(_later_exits.iloc[0]["price"])
                     _exit_label = _exit_t.strftime("%m-%d %H:%M")
+            if _exit_t is None:
+                # 未平仓 → 不出现在期权模拟表 (放历史未平仓表)
+                continue
             if _entry_pricing_o["legs"]:
                 if "SELL PUT" in _strategy_o:
                     _entry_str_o = f"收${_entry_pricing_o['entry_price']:.2f}"
