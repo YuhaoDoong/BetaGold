@@ -1191,10 +1191,10 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     _intra_log_asset = _intra_log_full[_intra_log_full["asset"] == asset_key] \
         if len(_intra_log_full) else _intra_log_full
     _worst_buy_lookup = _ig_avg_global(_intra_log_asset, "BUY",
-                                          dedup_first=True, min_drop_pct=0.5) \
+                                          dedup_first=True, min_drop_pct=1.5) \
         if len(_intra_log_asset) else pd.DataFrame()
     _worst_exit_lookup = _ig_avg_global(_intra_log_asset, "EXIT",
-                                           dedup_first=True, min_drop_pct=0.5) \
+                                           dedup_first=True, min_drop_pct=1.5) \
         if len(_intra_log_asset) else pd.DataFrame()
     # v3.7.73: 计算每日 BUY/EXIT trigger 平均时间 (用于主图 marker x 位置)
     def _avg_trigger_time(side):
@@ -1202,7 +1202,7 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         sub = _intra_log_asset[_intra_log_asset["side"] == side].copy()
         out = {}
         for d, grp in sub.groupby("date"):
-            dd = _ig_dedupe_g(grp, side=side, min_drop_pct=0.5)
+            dd = _ig_dedupe_g(grp, side=side, min_drop_pct=1.5)
             if len(dd) == 0: continue
             ts_list = pd.to_datetime(dd["trigger_time"])
             avg_ns = ts_list.astype("int64").mean()
@@ -1735,12 +1735,12 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                               index=0)
     _is_1h_view = _gran.startswith("盘中")
     if _is_1h_view:
-        # K 线精度: 默认 15m (兼顾精度和数据范围)
+        # K 线精度: 默认 5m (v3.7.81 回测 EU=38 vs 15m=27, 触发更准)
         _intraday_interval = st.sidebar.selectbox(
             "K 线精度",
-            ["1m (近 7 天)", "5m (近 60 天)", "15m (近 60 天, 默认)",
+            ["1m (近 7 天)", "5m (近 60 天, 默认)", "15m (近 60 天)",
              "30m (近 60 天)", "1h (近 730 天)"],
-            index=2,  # 15m 默认
+            index=1,  # 5m 默认
             help="yfinance 限制. 未来实盘可扩 1s (IBKR/Polygon 付费)")
         # 解析 interval code
         _interval_code = _intraday_interval.split()[0]  # '1m','5m','15m','30m','1h'
@@ -2453,8 +2453,7 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             f"{_signal_tag}",
             fontsize=11, fontweight="bold")
         ax_price.grid(True, alpha=0.3)
-        # v3.7.80: K 线 chart 图例 — 期权/期货 marker 区别
-        from matplotlib.lines import Line2D
+        # v3.7.80: K 线 chart 图例 — 期权/期货 marker 区别 (Line2D 已 module-import)
         _kline_legend = [
             Line2D([0],[0], marker="^", color="w", markerfacecolor="#2196F3",
                     markeredgecolor="black", markersize=10,
@@ -2511,8 +2510,8 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                     rule_set=_IG_EXIT, confirm_mode="any"),
             asset=asset_key, daily_low=low_d, daily_high=high_d)
         # v3.7.67: 日内去重 — 同日多触发只保留显著加仓点 (≥0.5% 跌幅)
-        _live_buys = _ig_dedupe(_live_buys_raw, side="BUY", min_drop_pct=0.5)
-        _live_exits = _ig_dedupe(_live_exits_raw, side="EXIT", min_drop_pct=0.5)
+        _live_buys = _ig_dedupe(_live_buys_raw, side="BUY", min_drop_pct=1.5)
+        _live_exits = _ig_dedupe(_live_exits_raw, side="EXIT", min_drop_pct=1.5)
 
         # 写入持久 log (去重交给 upsert)
         try:
@@ -2556,7 +2555,7 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                     if d_hi > 0:
                         grp_clean["price"] = grp_clean["price"].clip(
                             upper=d_hi * 1.003)
-                    dd = _dd_chart(grp_clean, side=side, min_drop_pct=0.5)
+                    dd = _dd_chart(grp_clean, side=side, min_drop_pct=1.5)
                     if len(dd):
                         rows.append(dd)
                 if not rows:

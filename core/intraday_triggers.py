@@ -440,8 +440,10 @@ def worst_of_day(triggers: pd.DataFrame, side: str = "BUY") -> pd.DataFrame:
 
 
 def dedupe_intraday(triggers: pd.DataFrame, side: str = "BUY",
-                       min_drop_pct: float = 0.5) -> pd.DataFrame:
+                       min_drop_pct: float = 1.5) -> pd.DataFrame:
     """日内连续触发去重 (v3.7.67) — 类似日线 dedupe 加仓机制.
+
+    v3.7.81: 默认 0.5 → 1.5 (5m × 60d 网格回测 EU/单笔效率最优).
 
     规则:
       - 第一笔触发保留
