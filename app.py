@@ -1451,29 +1451,33 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
 
         # ── 信号时效面板 + 关键事件倒计时 (v3.7.19) ──
         # US 期权时段 SGT: 21:30 ~ 04:00 (次日)
+        # v3.7.75: 全部用美东时间 (yfinance 数据 TZ + dashboard 一致)
         from datetime import datetime, timezone, timedelta as _td
-        _now_sgt_ts = pd.Timestamp.now(tz="Asia/Singapore")
-        _now_h = _now_sgt_ts.hour + _now_sgt_ts.minute / 60.0
-        _now_naive = _now_sgt_ts.tz_localize(None)
+        _now_et = pd.Timestamp.now(tz="America/New_York")
+        _now_h = _now_et.hour + _now_et.minute / 60.0
+        _now_naive = _now_et.tz_localize(None)
 
-        _us_open = 21.5
-        _is_us_session = (_now_h >= _us_open) or (_now_h < 4.0)
+        _us_open = 9.5  # 09:30 ET
+        _us_close = 16.0  # 16:00 ET
+        _is_us_session = _us_open <= _now_h < _us_close
         if _is_us_session:
             _session_state = "🟢 US 期权时段中 (可交易)"
         elif _now_h < _us_open:
             _hours_to_next = _us_open - _now_h
             _h, _m = int(_hours_to_next), int((_hours_to_next % 1) * 60)
-            _session_state = f"⏳ 距 US 开盘 {_h}h{_m}m (SGT 21:30)"
+            _session_state = f"⏳ 距 US 开盘 {_h}h{_m}m (ET 09:30)"
         else:
             _hours_to_next = (24 + _us_open) - _now_h
             _h, _m = int(_hours_to_next), int((_hours_to_next % 1) * 60)
             _session_state = f"⏳ 距 US 开盘 {_h}h{_m}m"
 
-        # 信号生成时间: last_date (tz-naive) 当日 04:00 SGT 后约 5min
-        _signal_gen_time = pd.Timestamp(last_date).tz_localize(None) + _td(hours=4, minutes=5)
+        # v3.7.75: 信号时效 — 全部美东时间; last_date 是 US 交易日
+        # US close = 16:00 ET, 信号约 16:05 ET 生成
+        _signal_gen_time = pd.Timestamp(last_date).tz_localize(None) \
+            + _td(hours=16, minutes=5)
         _signal_age_h = (_now_naive - _signal_gen_time).total_seconds() / 3600
         _signal_label = (
-            f"⏰ **信号时效**: 基于 **{last_date.date()} US close** 数据生成 "
+            f"⏰ **信号时效** (全部美东时间 ET): 基于 **{last_date.date()} US close** "
             f"(约 {_signal_age_h:.0f}h 前) | "
             f"{_session_state} | "
             f"**适用于下一个 US 盘中** | "
@@ -2362,14 +2366,15 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                                       color="#4CAF50", zorder=1)
 
         ax_price.set_ylabel(f"{_kline_label} ($/oz)")
-        # v3.7.64: 标题价位也 × _r 跟坐标轴一致
+        # v3.7.75: 标题明示美东时区, 末时刻加 ET 后缀
         _last_price = _c1h.iloc[-1] * _r
         _signal_tag = f" | {_signal_type_today} → 深绿=入场(反转+BB下轨) 浅绿=准备" \
             if _has_buy_signal else ""
-        ax_price.set_title(f"{_kline_label} ${_last_price:.1f} | "
-                           f"{_1h.index[-1].strftime('%m/%d %H:%M')}"
-                           f"{_signal_tag}",
-                           fontsize=11, fontweight="bold")
+        ax_price.set_title(
+            f"{_kline_label} (美东 ET) ${_last_price:.1f} | "
+            f"{_1h.index[-1].strftime('%m/%d %H:%M')} ET"
+            f"{_signal_tag}",
+            fontsize=11, fontweight="bold")
         ax_price.grid(True, alpha=0.3)
 
         # ── 把 1h/15m 时间戳投影到 K线索引 x (与 price/squeeze 对齐) ──
