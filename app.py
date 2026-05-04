@@ -1754,18 +1754,31 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     else:
         lookback_days = st.sidebar.slider("回看天数", 30, 180, 65)
         lookback = last_date - timedelta(days=lookback_days)
-    # v3.7.79: 根据用户选的 interval 切换数据源 (覆盖默认 gld_1h)
+    # v3.7.84: 主图数据源改 COMEX 期货 (GC=F/SI=F) — 23h 全球夜盘, 真伦敦金价
+    # ETF (GLD/SLV) 只 US session 6.5h, 缺亚欧夜盘 — 用户诉求显示 24h
+    # 实现: 拉 GC=F (gold scale $3800) → 除以 _viz_ratio → ETF-等价 scale ($400)
+    #      下游 × _r 逻辑不变, 仅新增 overnight bars
+    _kline_is_futures = False  # v3.7.84: 控制 dirty filter 跳过
     if _is_1h_view and _interval_code != "1h":
-        _yf_ticker_for_chart = "GLD" if asset_key == "GLD" else "SLV"
+        _yf_ticker_for_chart = "GC=F" if asset_key == "GLD" else "SI=F"
         _intraday_data = _fetch_intraday(_yf_ticker_for_chart,
                                             _interval_code,
                                             _intraday_days)
         if _intraday_data is not None and len(_intraday_data) > 0:
-            gld_1h = _intraday_data  # 复用变量名, 不破坏下游
+            # 计算 ratio: 用最近 close 推算 (避免 _viz_ratio 还没初始化)
+            _ratio_probe = (_intraday_data["Close"].iloc[-1]
+                              / last_close if last_close > 0 else 1.0)
+            _intraday_data = _intraday_data.copy()
+            for _col in ["Open", "High", "Low", "Close"]:
+                _intraday_data[_col] = _intraday_data[_col] / _ratio_probe
+            gld_1h = _intraday_data
+            _kline_is_futures = True
             st.sidebar.caption(
-                f"✓ {_interval_code} 数据: {len(gld_1h)} 行")
+                f"✓ {_yf_ticker_for_chart} {_interval_code}: "
+                f"{len(gld_1h)} 行 (23h 全球, ratio {_ratio_probe:.2f})")
         else:
-            st.sidebar.caption(f"⚠ {_interval_code} 拉取失败, 退回 1h")
+            st.sidebar.caption(
+                f"⚠ {_yf_ticker_for_chart} 拉取失败, 退回 ETF (US-only)")
 
     if _is_1h_view:
         viz_dates = close_d.index[
@@ -1801,27 +1814,24 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         _1h = gld_1h[gld_1h.index >= _cutoff].copy()
         if len(_1h) == 0:
             _1h = gld_1h.iloc[-_intraday_days*24:].copy()
-        # v3.7.65: 过滤 yfinance prepost 脏 1h bar
-        # 双层: (a) 1h Low/High 截到 daily Low/High (1h 不应超 daily 极值)
-        #        (b) 异常 wick 截到 ±3% Open/Close 范围
-        _dates_n = _1h.index.normalize()
-        _daily_lo_map = low_d.reindex(_dates_n.unique())
-        _daily_hi_map = high_d.reindex(_dates_n.unique())
-        _1h_dlow = _1h.index.to_series().apply(
-            lambda t: _daily_lo_map.get(t.normalize(), float("nan")))
-        _1h_dhigh = _1h.index.to_series().apply(
-            lambda t: _daily_hi_map.get(t.normalize(), float("nan")))
-        # 去掉 NaN: 用 close 兜底
-        _1h_dlow = _1h_dlow.fillna(_1h["Close"])
-        _1h_dhigh = _1h_dhigh.fillna(_1h["Close"])
-        # 容许 1h 略低于 daily Low (因 prepost 合理波动) ±0.3%
-        _1h["Low"] = _1h["Low"].clip(lower=_1h_dlow * 0.997)
-        _1h["High"] = _1h["High"].clip(upper=_1h_dhigh * 1.003)
-        # close 也可能脏 (e.g. 17:00 close=$404 vs daily $417), 同样 clip
-        _1h["Close"] = _1h["Close"].clip(
-            lower=_1h_dlow * 0.997, upper=_1h_dhigh * 1.003)
-        _1h["Open"] = _1h["Open"].clip(
-            lower=_1h_dlow * 0.997, upper=_1h_dhigh * 1.003)
+        # v3.7.65: 过滤 yfinance prepost 脏 1h bar (仅 ETF 源, 期货数据干净)
+        # v3.7.84: 期货源跳过 — overnight 价格合法超 ETF daily L/H (亚欧夜盘真行情)
+        if not _kline_is_futures:
+            _dates_n = _1h.index.normalize()
+            _daily_lo_map = low_d.reindex(_dates_n.unique())
+            _daily_hi_map = high_d.reindex(_dates_n.unique())
+            _1h_dlow = _1h.index.to_series().apply(
+                lambda t: _daily_lo_map.get(t.normalize(), float("nan")))
+            _1h_dhigh = _1h.index.to_series().apply(
+                lambda t: _daily_hi_map.get(t.normalize(), float("nan")))
+            _1h_dlow = _1h_dlow.fillna(_1h["Close"])
+            _1h_dhigh = _1h_dhigh.fillna(_1h["Close"])
+            _1h["Low"] = _1h["Low"].clip(lower=_1h_dlow * 0.997)
+            _1h["High"] = _1h["High"].clip(upper=_1h_dhigh * 1.003)
+            _1h["Close"] = _1h["Close"].clip(
+                lower=_1h_dlow * 0.997, upper=_1h_dhigh * 1.003)
+            _1h["Open"] = _1h["Open"].clip(
+                lower=_1h_dlow * 0.997, upper=_1h_dhigh * 1.003)
         plot_ts = list(_1h.index)
         ts2i = {ts: i for i, ts in enumerate(plot_ts)}
         # xi() 接受 daily 日期, 找到当日第一个 1h timestamp
@@ -1840,8 +1850,14 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                 ts = plot_ts[idx]
                 if _show_hours:
                     return ts.strftime("%m/%d %H:%M") + " ET"
+                # v3.7.84: 日界线 label 加时间, 防误读为 0 点
+                # (RTH only: 每天起点是 09:30, 不是 midnight)
                 if idx == 0 or plot_ts[idx-1].date() != ts.date():
-                    return ts.strftime("%m/%d")
+                    return ts.strftime("%m/%d") + f"\n{ts.strftime('%H:%M')} ET"
+                # 收盘前最后一根加 close 时间标记
+                if (idx + 1 < len(plot_ts)
+                        and plot_ts[idx+1].date() != ts.date()):
+                    return ts.strftime("%H:%M") + " ET"
                 return ""
             return ""
         # 兼容旧 plot_dates 引用 (后续部分用 plot_dates 算 xlim 等)
@@ -2107,6 +2123,15 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     ax.xaxis.set_major_locator(MaxNLocator(integer=True, nbins=15))
     ax.tick_params(axis="x", labelbottom=True, labeltop=False, rotation=0)
     plt.setp(ax.get_xticklabels(), fontsize=8)
+    # v3.7.84: 日界线竖线 (强调 overnight gap, RTH-only 拼接的真实切换)
+    if _is_1h_view and len(plot_ts) > 1:
+        for _i, _t in enumerate(plot_ts[1:], start=1):
+            if plot_ts[_i-1].date() != _t.date():
+                for _ax_sep in [ax, ax_kline, ax_stoch_1h,
+                                  ax_stoch_15m, ax_sq_main]:
+                    _ax_sep.axvline(_i - 0.5, color="gray",
+                                     linestyle=":", alpha=0.5,
+                                     linewidth=0.8, zorder=1)
 
     # v3.7.25: st.pyplot(fig) 推迟到 5 子图全部绘制完毕之后
 
@@ -2264,7 +2289,10 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         _1h_full = _kline_data[_kl_full_mask].copy()
         # v3.7.78: dirty bar 直接 drop (而非 clip 到边界, 避免假低谷)
         # 判定: Close 偏离 daily Low/High 超 1.5% = bar 整体异常 (yfinance prepost 偶发)
+        # v3.7.84: 期货源跳过 — overnight legitimately 超 ETF daily L/H
         def _drop_dirty(df):
+            if _kline_is_futures:
+                return df
             d_norms = df.index.normalize()
             d_lo = pd.Series(low_d.reindex(d_norms.unique()),
                               index=low_d.reindex(d_norms.unique()).index)
@@ -2275,12 +2303,10 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             hi_map = df.index.to_series().apply(
                 lambda t: d_hi.get(t.normalize(), float("nan")))
             df = df.copy()
-            # bar 整体脏 (Close 偏离 > 1.5%) → drop
             close_dirty = (((df["Close"] < lo_map * 0.985)
                               | (df["Close"] > hi_map * 1.015))
                             & lo_map.notna())
             df = df[~close_dirty]
-            # bar 部分脏 (仅 Low/High wick 异常) → clip 到 daily 边界
             df["Low"] = df["Low"].clip(lower=lo_map * 0.997)
             df["High"] = df["High"].clip(upper=hi_map * 1.003)
             return df
