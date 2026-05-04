@@ -1198,33 +1198,35 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         if len(_intra_log_asset) else pd.DataFrame()
     # v3.7.73: 计算每日 BUY/EXIT trigger 平均时间 (用于主图 marker x 位置)
     # v3.7.85: timeframe filter 在 user 选完 interval 后再算 (见 _avg_buy_time =).
+    # v3.7.88: 优先 active tf; 该 tf 该日无数据 → fallback 任意 tf
     def _avg_trigger_time(side, tf_match):
         if not len(_intra_log_asset): return {}
-        sub = _intra_log_asset[
+        active = _intra_log_asset[
             (_intra_log_asset["side"] == side) &
-            (_intra_log_asset.get("timeframe", "") == tf_match)
-        ].copy()
+            (_intra_log_asset.get("timeframe", "") == tf_match)]
+        any_tf = _intra_log_asset[_intra_log_asset["side"] == side]
         out = {}
-        for d, grp in sub.groupby("date"):
-            dd = _ig_dedupe_g(grp, side=side, min_drop_pct=0.3)
-            if len(dd) == 0: continue
-            ts_list = pd.to_datetime(dd["trigger_time"])
-            avg_ns = ts_list.astype("int64").mean()
-            out[pd.Timestamp(d)] = pd.Timestamp(int(avg_ns))
+        for src in (active, any_tf):
+            for d, grp in src.groupby("date"):
+                if pd.Timestamp(d) in out: continue
+                dd = _ig_dedupe_g(grp, side=side, min_drop_pct=0.3)
+                if len(dd) == 0: continue
+                ts_list = pd.to_datetime(dd["trigger_time"])
+                out[pd.Timestamp(d)] = pd.Timestamp(int(ts_list.astype("int64").mean()))
         return out
-    # v3.7.86: 同步算每日 trigger 平均价 (用于主图 EXIT marker y 位置)
     def _avg_trigger_price(side, tf_match):
         if not len(_intra_log_asset): return {}
-        sub = _intra_log_asset[
+        active = _intra_log_asset[
             (_intra_log_asset["side"] == side) &
-            (_intra_log_asset.get("timeframe", "") == tf_match)
-        ].copy()
+            (_intra_log_asset.get("timeframe", "") == tf_match)]
+        any_tf = _intra_log_asset[_intra_log_asset["side"] == side]
         out = {}
-        for d, grp in sub.groupby("date"):
-            dd = _ig_dedupe_g(grp, side=side, min_drop_pct=0.3)
-            if len(dd) == 0: continue
-            out[pd.Timestamp(d)] = float(pd.to_numeric(
-                dd["price"], errors="coerce").mean())
+        for src in (active, any_tf):
+            for d, grp in src.groupby("date"):
+                if pd.Timestamp(d) in out: continue
+                dd = _ig_dedupe_g(grp, side=side, min_drop_pct=0.3)
+                if len(dd) == 0: continue
+                out[pd.Timestamp(d)] = float(pd.to_numeric(dd["price"], errors="coerce").mean())
         return out
     _avg_buy_time: dict = {}; _avg_buy_price: dict = {}
     _avg_exit_time: dict = {}; _avg_exit_price: dict = {}
@@ -3432,6 +3434,77 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         st.dataframe(_tp_df, use_container_width=True, hide_index=True)
     else:
         st.caption("无未平仓持仓")
+
+    # v3.7.88: STRADDLE / SHORT_VOL 日线信号 — 真实期权链 entry+current 价
+    st.markdown("**🎯 STRADDLE / SHORT_VOL 信号 (BS估算入场 × option_chain现价)**")
+    try:
+        from core.paper_positions import (
+            estimate_straddle_premium as _bs_strad,
+            find_active_expiry_near as _find_expiry,
+            fetch_chain_atm_premium as _chain_atm,
+        )
+        _strad_recs = []
+        _vol_window = sig_df.loc[sig_df.index.isin(viz_dates)]
+        for _d_sig, _row in _vol_window.iterrows():
+            _is_strad = bool(_row.get("straddle_signal", False))
+            _is_short = bool(_row.get("short_vol_signal", False))
+            if not (_is_strad or _is_short): continue
+            _entry_spot = float(close_d.get(_d_sig, 0))
+            if _entry_spot <= 0: continue
+            _strike = round(_entry_spot, 0) if _entry_spot > 50 else round(_entry_spot * 2) / 2
+            # DTE target: 14d for STRADDLE (短), 30d for SHORT_VOL (IC)
+            _dte_at_entry = 14 if _is_strad else 30
+            _target_expiry = pd.Timestamp(_d_sig) + pd.Timedelta(days=_dte_at_entry)
+            _exp_str = _find_expiry(asset_key, _target_expiry, tolerance_days=10)
+            # IV proxy: 用历史 RV (rv_pctile 已 0-1, 转粗略 IV)
+            _iv_est = max(0.18, 0.12 + float(_row.get("rv_pctile", 0.5)) * 0.20)
+            _entry_call, _entry_put = _bs_strad(
+                _entry_spot, _strike, _dte_at_entry, iv=_iv_est)
+            _entry_prem = _entry_call + _entry_put
+            # Current premium: option_chain (live, 仅未过期)
+            _today = pd.Timestamp(today_sgt)
+            _cur_call = _cur_put = None
+            if _exp_str:
+                _exp_dt = pd.Timestamp(_exp_str)
+                if _exp_dt >= _today:
+                    _cc, _cp, _atm = _chain_atm(asset_key, _exp_str, _entry_spot)
+                    _cur_call, _cur_put = _cc, _cp
+            # Fallback: BS 重估 with current spot
+            _cur_spot = float(close_d.iloc[-1])
+            if _cur_call is None or _cur_put is None:
+                _dte_now = max(1, (_target_expiry - _today).days)
+                _cc, _cp = _bs_strad(_cur_spot, _strike, _dte_now, iv=_iv_est)
+                _cur_call = _cur_call or _cc
+                _cur_put = _cur_put or _cp
+            _cur_prem = _cur_call + _cur_put
+            _is_long = _is_strad
+            _gain = ((_cur_prem / _entry_prem - 1) * 100
+                     if _is_long else (_entry_prem / _cur_prem - 1) * 100)
+            _label = "STRADDLE" if _is_strad else "SHORT_VOL"
+            _strad_recs.append({
+                "类型": _label,
+                "信号日": _d_sig.strftime("%m/%d"),
+                "到期": _exp_str or f"~+{_dte_at_entry}d",
+                "Strike": f"${_strike:.0f}",
+                "入场Spot": f"${_entry_spot:.2f}",
+                "入场Call": f"${_entry_call:.2f}",
+                "入场Put": f"${_entry_put:.2f}",
+                "入场总权": f"${_entry_prem:.2f}",
+                "现Spot": f"${_cur_spot:.2f}",
+                "现Call": f"${_cur_call:.2f}",
+                "现Put": f"${_cur_put:.2f}",
+                "现总权": f"${_cur_prem:.2f}",
+                "P&L%": f"{_gain:+.1f}%",
+            })
+        if _strad_recs:
+            st.dataframe(pd.DataFrame(_strad_recs),
+                          use_container_width=True, hide_index=True)
+            st.caption("入场价: BS 估 (IV ≈ RV%tile-derived). "
+                       "现价: option_chain.lastPrice (live, 失败回退 BS 现 spot 重估).")
+        else:
+            st.caption("无 STRADDLE/SHORT_VOL 信号在显示窗口内")
+    except Exception as _e_strad:
+        st.caption(f"⚠ STRADDLE 模拟异常: {_e_strad}")
 
     # ── 实盘持仓 (v3.7.35 手动录入, 用于校准模型) ──
     st.divider()

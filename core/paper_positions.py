@@ -237,6 +237,80 @@ def mark_to_market(data_root: str, current_quotes: dict) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def bs_price(spot: float, strike: float, T_years: float,
+              r: float, sigma: float, right: str) -> float:
+    """Black-Scholes 期权定价 (美式 ETF 视为欧式估算).
+    right: 'C' / 'P'
+    """
+    import math
+    from scipy.stats import norm
+    if T_years <= 0 or sigma <= 0 or spot <= 0 or strike <= 0:
+        intrinsic = (max(spot - strike, 0)
+                       if right.upper() == "C" else max(strike - spot, 0))
+        return float(intrinsic)
+    d1 = ((math.log(spot / strike) + (r + 0.5 * sigma**2) * T_years)
+            / (sigma * math.sqrt(T_years)))
+    d2 = d1 - sigma * math.sqrt(T_years)
+    if right.upper() == "C":
+        return float(spot * norm.cdf(d1)
+                      - strike * math.exp(-r * T_years) * norm.cdf(d2))
+    return float(strike * math.exp(-r * T_years) * norm.cdf(-d2)
+                  - spot * norm.cdf(-d1))
+
+
+def estimate_straddle_premium(spot: float, strike: float,
+                                 dte_days: int, iv: float = 0.20,
+                                 r: float = 0.04) -> tuple[float, float]:
+    """估 ATM straddle (call + put) 入场总权利金.
+    返回 (call_price, put_price).
+    """
+    T = max(dte_days, 1) / 365.0
+    return (bs_price(spot, strike, T, r, iv, "C"),
+            bs_price(spot, strike, T, r, iv, "P"))
+
+
+def find_active_expiry_near(asset: str, target_date: pd.Timestamp,
+                              tolerance_days: int = 7) -> Optional[str]:
+    """从 yfinance 当前 expiry 列表找最接近 target_date 的 (YYYY-MM-DD).
+    """
+    try:
+        import yfinance as yf
+        opts = yf.Ticker(asset).options
+        if not opts: return None
+        target = pd.Timestamp(target_date).normalize()
+        best = None; best_d = 999
+        for o in opts:
+            d = abs((pd.Timestamp(o) - target).days)
+            if d < best_d:
+                best_d = d; best = o
+        if best_d > tolerance_days: return None
+        return best
+    except Exception:
+        return None
+
+
+def fetch_chain_atm_premium(asset: str, expiry_str: str,
+                              spot: float) -> tuple[Optional[float], Optional[float], Optional[float]]:
+    """拉 option_chain ATM call + put lastPrice. 返回 (call, put, strike).
+    """
+    try:
+        import yfinance as yf
+        chain = yf.Ticker(asset).option_chain(expiry_str)
+        # ATM strike = closest to spot
+        for df, _name in [(chain.calls, "calls"), (chain.puts, "puts")]:
+            df["_dist"] = (df["strike"] - spot).abs()
+        atm_strike = chain.calls.loc[chain.calls["_dist"].idxmin(), "strike"]
+        call_row = chain.calls[chain.calls["strike"] == atm_strike]
+        put_row = chain.puts[chain.puts["strike"] == atm_strike]
+        c_p = (float(call_row.iloc[0]["lastPrice"])
+                if len(call_row) and call_row.iloc[0]["lastPrice"] > 0 else None)
+        p_p = (float(put_row.iloc[0]["lastPrice"])
+                if len(put_row) and put_row.iloc[0]["lastPrice"] > 0 else None)
+        return (c_p, p_p, float(atm_strike))
+    except Exception:
+        return (None, None, None)
+
+
 def fetch_realtime_option_chain_quote(asset: str, expiry_str: str,
                                          strike: float, right: str) -> Optional[float]:
     """从 yfinance option_chain 拉当前 lastPrice (历史时点拿不到, 仅 live).
