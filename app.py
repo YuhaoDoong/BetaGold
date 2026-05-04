@@ -1967,22 +1967,27 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                     else (160 if is_add else 120))
             edge = "purple" if is_add and part in ("BUY CALL", "SELL PUT") \
                    else "black"
-            # v3.7.73: x 位置精准 — STRADDLE/SHORT_VOL 美股开盘 (09:30 EDT);
-            # 方向性 BC/SP 用 trigger 平均时间 (反映加仓的时间分布)
+            # v3.7.73/77: x 位置精准
+            # y: 方向性 用 entry_p (= dedupe 平均价)
+            #    STRADDLE/SHORT_VOL 用 daily close (不该跟 entry_p 一致)
             if part in ("STRADDLE", "SHORT_VOL"):
                 _xi_target = _xi_open(d)
+                _yp = float(close_d.get(d, entry_p))  # daily close
             elif part in ("BUY CALL", "SELL PUT"):
                 _avg_t = _avg_buy_time.get(pd.Timestamp(d))
                 _xi_target = _xi_at(_avg_t) if _avg_t else xi(d)
+                _yp = entry_p
             elif part == "EXIT":
                 _avg_t = _avg_exit_time.get(pd.Timestamp(d))
                 _xi_target = _xi_at(_avg_t) if _avg_t else xi(d)
+                _yp = entry_p
             else:
                 _xi_target = xi(d)
+                _yp = entry_p
             if _xi_target is None:
                 continue
-            y_offset = j * (entry_p * 0.003)
-            ax.scatter([_xi_target], [(entry_p + y_offset) * _r],
+            y_offset = j * (_yp * 0.003)
+            ax.scatter([_xi_target], [(_yp + y_offset) * _r],
                         marker=marker, s=size, color=color,
                         edgecolors=edge, lw=1.0, zorder=6)
     # 始终显示全部 5 类 + MIXED 边框说明 (即使当前窗口没有该类信号)
@@ -2209,13 +2214,35 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         _warmup_extra = timedelta(days=10)  # 算 BB/Keltner 需要 60 bars warmup
         _kl_full_mask = _kline_data.index >= (plot_dates[0] - _warmup_extra)
         _1h_full = _kline_data[_kl_full_mask].copy()
+        # v3.7.77: 应用 dirty 过滤到 _1h_full + reindex 后的 _1h
+        # (修复 v3.7.65 的 _1h 被 reindex 覆盖 bug)
+        def _clip_dirty(df):
+            d_norms = df.index.normalize()
+            d_lo = pd.Series(low_d.reindex(d_norms.unique()),
+                              index=low_d.reindex(d_norms.unique()).index)
+            d_hi = pd.Series(high_d.reindex(d_norms.unique()),
+                              index=high_d.reindex(d_norms.unique()).index)
+            lo_map = df.index.to_series().apply(
+                lambda t: d_lo.get(t.normalize(), float("nan")))
+            hi_map = df.index.to_series().apply(
+                lambda t: d_hi.get(t.normalize(), float("nan")))
+            lo_map = lo_map.fillna(df["Close"])
+            hi_map = hi_map.fillna(df["Close"])
+            df = df.copy()
+            df["Low"] = df["Low"].clip(lower=lo_map * 0.997)
+            df["High"] = df["High"].clip(upper=hi_map * 1.003)
+            df["Close"] = df["Close"].clip(lower=lo_map * 0.997, upper=hi_map * 1.003)
+            df["Open"] = df["Open"].clip(lower=lo_map * 0.997, upper=hi_map * 1.003)
+            return df
+        _1h_full = _clip_dirty(_1h_full)
         _c1h_full = _1h_full["Close"]
         _h1h_full = _1h_full["High"]
         _l1h_full = _1h_full["Low"]
         _o1h_full = _1h_full["Open"]
 
-        # 显示范围 = 主图相同 plot_dates
+        # 显示范围 = 主图相同 plot_dates, 同样 clip
         _1h = _kline_data.reindex(plot_dates)
+        _1h = _clip_dirty(_1h)
         _c1h, _h1h, _l1h, _o1h = _1h["Close"], _1h["High"], _1h["Low"], _1h["Open"]
 
         # ── 用 full 数据计算指标, 然后截取显示范围 ──
@@ -2500,33 +2527,39 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                            (_trigs["trigger_time"] <= _w_end)]
             if len(_disp) == 0:
                 continue
-            # v3.7.74: 大尺寸 markers + zorder=10 (压在 candle 上层)
-            # 期权 (盘中 9:30-16 EDT): 实心 ▲/v
-            # 期货 (非盘中): 空心 + 粗边
+            # v3.7.77: 期权 vs 期货 marker 形状区分
+            # 期权 (盘中 9:30-16 ET): 实心 ▲/v (BUY/EXIT)
+            # 期货 (非盘中): ◇ 菱形 (BUY) / ◆ 实心菱形 + 灰色 (期货 EXIT)
+            #   形状不同避免跟期权 ▲ 混淆 (颜色仍按 BC/SP 区分)
             for _, _r2 in _disp.iterrows():
                 _t = pd.Timestamp(_r2["trigger_time"])
                 _xx = _proj_to_idx([_t])[0]
-                _color, _marker = _trig_palette(
+                _color, _marker_opt = _trig_palette(
                     {"trigger_time": _t}, _side)
                 _h = _t.hour + _t.minute / 60.0
                 _in_us = 9.5 <= _h < 16.0
                 _y = _r2["price"] * _r
                 if _in_us:
+                    # 期权: 实心 ▲/v + 黑边
                     ax_price.scatter([_xx], [_y],
-                                     marker=_marker, s=180, color=_color,
+                                     marker=_marker_opt, s=180, color=_color,
                                      edgecolors="black", lw=1.2, zorder=10)
+                    _label_tag = ""
                 else:
+                    # 期货: ◇ 菱形, 颜色仍按 BC/SP, 加 "F" 文字标
+                    _fut_marker = "D" if _side == "BUY" else "d"  # D 实心菱形
                     ax_price.scatter([_xx], [_y],
-                                     marker=_marker, s=180,
-                                     facecolors="none",
-                                     edgecolors=_color, lw=2.5, zorder=10)
-                # 价位标注 (期货价)
-                ax_price.annotate(f"${_y:.0f}",
-                                   xy=(_xx, _y),
-                                   xytext=(8, -3),
-                                   textcoords="offset points",
-                                   fontsize=7, color=_color,
-                                   fontweight="bold")
+                                     marker=_fut_marker, s=180, color=_color,
+                                     edgecolors="black", lw=1.2, zorder=10)
+                    _label_tag = " (期货)"
+                # 价位 + 时间 + 工具类型 标注
+                ax_price.annotate(
+                    f"${_y:.0f}{_label_tag}",
+                    xy=(_xx, _y),
+                    xytext=(8, -3),
+                    textcoords="offset points",
+                    fontsize=7, color=_color,
+                    fontweight="bold")
 
         # (v3.7.23: Stoch RSI 子图已移到主图下方, 此 K线 panel 仅保留 K线 + Squeeze)
 
