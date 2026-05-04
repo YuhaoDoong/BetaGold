@@ -3176,15 +3176,16 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         _gld_csv3 = pd.read_csv(
             f"/Users/yhdong/Gold/data/raw/market/{asset_key.lower()}.csv",
             index_col=0, parse_dates=True)
-        # 单独 detect STRADDLE / SHORT_VOL (events.py 函数, sig_df 里没)
+        # v3.7.94: STRADDLE/SHORT_VOL 用 event-mode (跟主图 line 1986/1987 一致)
+        # 不传 close/high/low → 走 event-driven (FOMC/NFP/OPEX 临近触发)
+        # 传 close/high/low → 走 tech-score 模式 (BBW/ATR/Donchian, 阈值 score≥6)
+        # 主图用 event-mode, 回测/模拟统一同源
         _rv_s_30 = features.loc[close_d.index, "rv_10d"] if "rv_10d" in features.columns else pd.Series(dtype=float)
         try:
             _strad_30 = _det_strad(_rv_s_30, _bt_30_dates, rv_pctile=rv_pctile,
-                                      close=close_d, high=high_d, low=low_d,
                                       asset=asset_key)
             _sv_30 = _det_sv(_rv_s_30, rv_pctile, _bt_30_dates,
-                                close=close_d, high=high_d, low=low_d,
-                                asset=asset_key)
+                                regime=regime)
         except Exception:
             _strad_30 = pd.DataFrame(); _sv_30 = pd.DataFrame()
         _opt_recs = []
@@ -3226,21 +3227,44 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             _entry_str_o = "—"; _exit_str_o = "—"; _gain_o = 0.0
             _exit_label = "OPEN"
             _exit_spot_o = _cur_spot3
-            # v3.7.93: 找首个 EXIT 触发 (信号日之后) — 没有 → 跳过, 不显示 OPEN
-            _exit_t = None
-            if len(_log_for_opt):
-                _later_exits = _log_for_opt[
-                    (_log_for_opt["side"] == "EXIT") &
-                    (_log_for_opt["date"] > _d_o)]
-                if len(_later_exits):
-                    _later_exits = _later_exits.sort_values("trigger_time")
-                    _exit_t = pd.Timestamp(_later_exits.iloc[0]["trigger_time"])
-                    _exit_d = _exit_t.normalize()
-                    _exit_spot_o = float(_later_exits.iloc[0]["price"])
-                    _exit_label = _exit_t.strftime("%m-%d %H:%M")
-            if _exit_t is None:
-                # 未平仓 → 不出现在期权模拟表 (放历史未平仓表)
-                continue
+            # v3.7.94: 平仓策略
+            #   方向性 (BUY CALL/SELL PUT): 用 intraday log EXIT trigger
+            #     没 EXIT → continue (放未平仓表)
+            #   STRADDLE: 14d 后定时平仓 (vol 衰减期)
+            #   SHORT_VOL: 30d 后定时平仓 (theta 收满)
+            _exit_t = None; _exit_d = None
+            if _strategy_o == "STRADDLE":
+                _hold_days = 14
+            elif _strategy_o == "SHORT_VOL":
+                _hold_days = 30
+            else:
+                _hold_days = None
+            if _hold_days is not None:
+                # 入场后 hold_days 个交易日的 close 作为平仓
+                _later = close_d.index[close_d.index > _d_o]
+                if len(_later) >= _hold_days:
+                    _exit_d = _later[_hold_days - 1]
+                elif len(_later):
+                    _exit_d = _later[-1]  # 还没到, 用最近
+                if _exit_d is not None:
+                    _exit_t = _exit_d + pd.Timedelta(hours=15, minutes=55)
+                    _exit_spot_o = float(close_d.get(_exit_d, _cur_spot3))
+                    _is_open_still = (_exit_d > _today_dt3)
+                    _exit_label = (f"{_exit_d.strftime('%m-%d')} {'(预计)' if _is_open_still else ''}").strip()
+            else:
+                if len(_log_for_opt):
+                    _later_exits = _log_for_opt[
+                        (_log_for_opt["side"] == "EXIT") &
+                        (_log_for_opt["date"] > _d_o)]
+                    if len(_later_exits):
+                        _later_exits = _later_exits.sort_values("trigger_time")
+                        _exit_t = pd.Timestamp(_later_exits.iloc[0]["trigger_time"])
+                        _exit_d = _exit_t.normalize()
+                        _exit_spot_o = float(_later_exits.iloc[0]["price"])
+                        _exit_label = _exit_t.strftime("%m-%d %H:%M")
+                if _exit_t is None:
+                    # 方向性无 EXIT → 跳过 (归未平仓表)
+                    continue
             if _entry_pricing_o["legs"]:
                 if "SELL PUT" in _strategy_o:
                     _entry_str_o = f"收${_entry_pricing_o['entry_price']:.2f}"
@@ -3319,16 +3343,29 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     _bt_180_start = pd.Timestamp(today_sgt) - timedelta(days=180)
     _bt_180_dates = sig_df.index[sig_df.index >= _bt_180_start]
     _bt_180_sig = sig_df.loc[_bt_180_dates]
-    # 入场 = chosen 是 BUY CALL/SELL PUT/STRADDLE/SHORT_VOL 的日子
-    # 退出 = trades 里对应 exit_date, 没匹配则用入场后 5 天 close
+    # v3.7.94: STRADDLE/SHORT_VOL 单独 detect (event-mode 跟主图一致)
+    from core.events import (detect_straddle_signal as _det_strad_180,
+                              detect_short_vol_signal as _det_sv_180)
+    _rv_s_180 = features.loc[close_d.index, "rv_10d"] if "rv_10d" in features.columns else pd.Series(dtype=float)
+    try:
+        _strad_180 = _det_strad_180(_rv_s_180, _bt_180_dates,
+                                       rv_pctile=rv_pctile, asset=asset_key)
+        _sv_180 = _det_sv_180(_rv_s_180, rv_pctile, _bt_180_dates,
+                                 regime=regime)
+    except Exception:
+        _strad_180 = pd.DataFrame(); _sv_180 = pd.DataFrame()
     _bt_recs = []
     _trades_idx = {t["entry_date"]: t for t in (trades or [])
                     if t.get("entry_date") is not None}
     for _d_b, _r_b in _bt_180_sig.iterrows():
-        # v3.7.92: sig_df 用 buy_type/straddle_signal/short_vol_signal, 不是 chosen
-        if _r_b.get("straddle_signal", False):
+        # v3.7.94: STRADDLE/SHORT_VOL 来自 _strad_180/_sv_180 (event-mode)
+        _is_strad_b = (len(_strad_180) > 0 and _d_b in _strad_180.index
+                        and bool(_strad_180.loc[_d_b, "straddle_signal"]))
+        _is_sv_b = (len(_sv_180) > 0 and _d_b in _sv_180.index
+                     and bool(_sv_180.loc[_d_b, "short_vol_signal"]))
+        if _is_strad_b:
             _ch = "STRADDLE"
-        elif _r_b.get("short_vol_signal", False):
+        elif _is_sv_b:
             _ch = "SHORT_VOL"
         elif _r_b.get("buy_signal", False):
             _ch = _r_b.get("buy_type", "") or ""
