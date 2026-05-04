@@ -1729,11 +1729,12 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         viz_dates = close_d.index[(close_d.index >= lookback) & (close_d.index <= last_date)]
     sig_viz = sig_df.reindex(viz_dates).dropna(subset=["close"])
 
-    # v3.7.25: 5 子图 sharex 合并 — 主图 / 1h Stoch / 15m Stoch / 1h K线 / Squeeze
-    # 整数 x (0..N-1 = plot_ts 1h 时间戳), 全部时间对齐统一
-    fig, (ax, ax_stoch_1h, ax_stoch_15m, ax_kline, ax_sq_main) = plt.subplots(
+    # v3.7.78: 重排 subplot 顺序 — 主图 / 1h K线 / 1h Stoch / 15m Stoch / Squeeze
+    # (原 v3.7.25: 主图 / 1h Stoch / 15m Stoch / 1h K线 / Squeeze)
+    # K 线紧接主图后, stoch 子图集中放后段 (用户偏好)
+    fig, (ax, ax_kline, ax_stoch_1h, ax_stoch_15m, ax_sq_main) = plt.subplots(
         5, 1, figsize=(18, 18), sharex=True,
-        gridspec_kw={"height_ratios": [3, 1, 1, 2, 1], "hspace": 0.08})
+        gridspec_kw={"height_ratios": [3, 2, 1, 1, 1], "hspace": 0.08})
 
     # ── 价位换算: 主图用伦敦金/伦敦银 (现货/期货), 不再用 ETF 价位 ──
     _viz_ticker = "GC=F" if asset_key == "GLD" else "SI=F"
@@ -2214,9 +2215,9 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         _warmup_extra = timedelta(days=10)  # 算 BB/Keltner 需要 60 bars warmup
         _kl_full_mask = _kline_data.index >= (plot_dates[0] - _warmup_extra)
         _1h_full = _kline_data[_kl_full_mask].copy()
-        # v3.7.77: 应用 dirty 过滤到 _1h_full + reindex 后的 _1h
-        # (修复 v3.7.65 的 _1h 被 reindex 覆盖 bug)
-        def _clip_dirty(df):
+        # v3.7.78: dirty bar 直接 drop (而非 clip 到边界, 避免假低谷)
+        # 判定: Close 偏离 daily Low/High 超 1.5% = bar 整体异常 (yfinance prepost 偶发)
+        def _drop_dirty(df):
             d_norms = df.index.normalize()
             d_lo = pd.Series(low_d.reindex(d_norms.unique()),
                               index=low_d.reindex(d_norms.unique()).index)
@@ -2226,23 +2227,25 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                 lambda t: d_lo.get(t.normalize(), float("nan")))
             hi_map = df.index.to_series().apply(
                 lambda t: d_hi.get(t.normalize(), float("nan")))
-            lo_map = lo_map.fillna(df["Close"])
-            hi_map = hi_map.fillna(df["Close"])
             df = df.copy()
+            # bar 整体脏 (Close 偏离 > 1.5%) → drop
+            close_dirty = (((df["Close"] < lo_map * 0.985)
+                              | (df["Close"] > hi_map * 1.015))
+                            & lo_map.notna())
+            df = df[~close_dirty]
+            # bar 部分脏 (仅 Low/High wick 异常) → clip 到 daily 边界
             df["Low"] = df["Low"].clip(lower=lo_map * 0.997)
             df["High"] = df["High"].clip(upper=hi_map * 1.003)
-            df["Close"] = df["Close"].clip(lower=lo_map * 0.997, upper=hi_map * 1.003)
-            df["Open"] = df["Open"].clip(lower=lo_map * 0.997, upper=hi_map * 1.003)
             return df
-        _1h_full = _clip_dirty(_1h_full)
+        _1h_full = _drop_dirty(_1h_full)
         _c1h_full = _1h_full["Close"]
         _h1h_full = _1h_full["High"]
         _l1h_full = _1h_full["Low"]
         _o1h_full = _1h_full["Open"]
 
-        # 显示范围 = 主图相同 plot_dates, 同样 clip
+        # 显示范围 = 主图相同 plot_dates, 同样 drop dirty
         _1h = _kline_data.reindex(plot_dates)
-        _1h = _clip_dirty(_1h)
+        _1h = _drop_dirty(_1h)
         _c1h, _h1h, _l1h, _o1h = _1h["Close"], _1h["High"], _1h["Low"], _1h["Open"]
 
         # ── 用 full 数据计算指标, 然后截取显示范围 ──
