@@ -1340,8 +1340,10 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             if next_upper > next_lower else 0
         # 判断当前信号
         # v3.7.53: 数据过期时, _raw_sig 强制清空, 不显示历史信号
+        # v3.7.99: 用交易日判 stale (周末不算)
         _ld_raw = pd.Timestamp(last_date)
-        _stale_raw = (pd.Timestamp(today_sgt) - _ld_raw.normalize()).days > 1
+        _stale_raw = (len(pd.bdate_range(_ld_raw.normalize(),
+                                            pd.Timestamp(today_sgt).normalize())) - 1) > 1
         if last_date in sig_df.index and not _stale_raw:
             _raw_sig = sig_df.loc[last_date]["signal_text"]
         else:
@@ -2816,8 +2818,11 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
 
     # v3.7.53/54: 数据过期 OR 当前 bp_est ≥ 0.30 时, 屏蔽方向性"激活"
     # (今日已触过但已反弹的情况不应继续显"激活")
+    # v3.7.99: stale 判定改用交易日 (周末/节假日不算 stale)
     _ld2 = pd.Timestamp(last_date)
-    _stale_today = (pd.Timestamp(today_sgt) - _ld2.normalize()).days > 1
+    _bdays_gap = len(pd.bdate_range(_ld2.normalize(),
+                                       pd.Timestamp(today_sgt).normalize())) - 1
+    _stale_today = _bdays_gap > 1
     _live_actionable = bp_est is not None and bp_est < 0.30
 
     # 当日各策略激活状态
@@ -2985,10 +2990,23 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         pd.to_datetime(_intra_log_asset["date"]).dt.normalize() == _today
     ] if len(_intra_log_asset) else _intra_log_asset
     if len(_today_log):
-        _today_chosen = (sig_df.loc[_today, "chosen"]
-                          if _today in sig_df.index else "")
-        _is_strad_today = bool(sig_df.loc[_today, "straddle_signal"]
-                                if _today in sig_df.index else False)
+        # v3.7.99: sig_df 没 chosen 列, 用 buy_type; straddle_signal 走 events.detect
+        _today_buy_type = ((sig_df.loc[_today, "buy_type"] or "")
+                            if (_today in sig_df.index
+                                  and sig_df.loc[_today].get("buy_signal", False))
+                            else "")
+        # 4-29 STRADDLE 等 vol 信号: 不在 sig_df 列, 走 events.detect_straddle_signal
+        # 简化: 这里假设 sig_df 没 vol 列, 不查 (避免 KeyError)
+        _is_strad_today = False
+        try:
+            from core.events import detect_straddle_signal as _det_strad_today
+            _strad_today_df = _det_strad_today(
+                features.loc[close_d.index, "rv_10d"],
+                pd.DatetimeIndex([_today]), rv_pctile=rv_pctile, asset=asset_key)
+            if len(_strad_today_df):
+                _is_strad_today = bool(_strad_today_df["straddle_signal"].iloc[0])
+        except Exception:
+            pass
         _rows1 = []
         from core.paper_positions import price_strategy_at as _price_strat
         # buy_type 是日线策略, 不是 chosen
