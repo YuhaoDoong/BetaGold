@@ -579,7 +579,12 @@ def generate_chart(close, high, dates_all, upper_band, lower_band,
                                 label="Put Wall"))
     if straddle_dates is not None and len(straddle_dates) > 0:
         legend_el.append(Line2D([0], [0], marker="*", color="#FFD700",
-                                markersize=12, lw=0, label="Straddle"))
+                                markersize=12, lw=0, label="★ Straddle (做多 vol)"))
+    # v3.7.70: 加 SHORT_VOL legend (✚ 十字)
+    if unified_markers is not None and len(unified_markers) > 0:
+        legend_el.append(Line2D([0], [0], marker="P", color="#FF6F00",
+                                markersize=10, lw=0,
+                                label="✚ SHORT_VOL (做空 vol IC)"))
     ax.legend(handles=legend_el, loc="upper left", fontsize=7, ncol=4,
               framealpha=0.9)
 
@@ -598,31 +603,44 @@ def generate_chart(close, high, dates_all, upper_band, lower_band,
 
     # v3.7.60: 加 dedupe 后 unified markers (含加仓 is_add) — 跟盘中信号 chart 一致
     # 解决: 4-29 谷底 build_trades 因 in_trade 不画新 entry, 此处补全
+    # v3.7.70: 混合信号不合并 — 每种 part 画独立 marker
     if unified_markers is not None and len(unified_markers) > 0:
-        _sig_color_map = {"BUY CALL": "#2196F3", "SELL PUT": "#FF9800",
-                           "EXIT": "#F44336", "STRADDLE": "#FFD700",
-                           "SHORT_VOL": "#FF6F00"}
+        _SIG_PAL = {"BUY CALL": ("#2196F3", "^"),
+                     "SELL PUT": ("#FF9800", "^"),
+                     "EXIT": ("#F44336", "v"),
+                     "STRADDLE": ("#FFD700", "*"),
+                     "SHORT_VOL": ("#FF6F00", "P")}
         for d, row in unified_markers.iterrows():
             ch = row.get("chosen", "")
-            if not ch or ch == "EXIT":
+            if not ch:
                 continue
             entry_p = row.get("entry_p", 0)
             is_add = row.get("is_add", False)
             xi_d = xi(d)
             if xi_d is None or entry_p <= 0:
                 continue
-            base = ch.split(" + ")[0] if "+" in ch else ch
-            color = _sig_color_map.get(base, "gray")
-            marker = "*" if "STRADDLE" in ch else (
-                "P" if "SHORT_VOL" in ch else "^")
-            # 加仓用紫边突出, 普通用黑边
-            edge = "purple" if is_add else "black"
-            size = 200 if "STRADDLE" in ch or "SHORT_VOL" in ch else (
-                160 if is_add else 120)
-            ax.scatter([xi_d], [entry_p * spot_ratio], marker=marker,
-                       s=size, color=color, edgecolors=edge,
-                       lw=1.5 if is_add else 0.8, zorder=7)
-            if is_add:
+            # 拆分混合信号 ("BUY CALL + STRADDLE" → ["BUY CALL", "STRADDLE"])
+            parts = [p.strip() for p in ch.split("+") if p.strip()]
+            # v3.7.70: chosen 可能因 vega 矛盾选了 dir 单独, 但 straddle/short_vol
+            # 也触发了 — 额外加 marker (e.g. 4-27 chosen=SELL PUT 但 STRADDLE 也 True)
+            if row.get("straddle_signal", False) and "STRADDLE" not in parts:
+                parts.append("STRADDLE")
+            if row.get("short_vol_signal", False) and "SHORT_VOL" not in parts:
+                parts.append("SHORT_VOL")
+            for j, part in enumerate(parts):
+                color, marker = _SIG_PAL.get(part, ("gray", "o"))
+                edge = "purple" if is_add and "STRADDLE" not in part \
+                       and "SHORT_VOL" not in part else "black"
+                size = (200 if "STRADDLE" in part or "SHORT_VOL" in part
+                        else (160 if is_add else 120))
+                # 多 part 时 y 偏移避免重叠
+                y_offset = j * (entry_p * 0.003)
+                ax.scatter([xi_d], [(entry_p + y_offset) * spot_ratio],
+                           marker=marker, s=size, color=color,
+                           edgecolors=edge,
+                           lw=1.5 if is_add else 0.8, zorder=7)
+            if is_add and "BUY CALL" in ch.split("+")[0] \
+                    or (is_add and "SELL PUT" in ch.split("+")[0]):
                 ax.annotate("加仓", xy=(xi_d, entry_p * spot_ratio),
                             xytext=(0, -15), textcoords="offset points",
                             fontsize=7, ha="center", color="purple",
@@ -1890,25 +1908,29 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                     edgecolors="black", lw=0.7,
                     label=_legend_labels[_key])
     _legend_added = set()
+    # v3.7.70: 混合信号不合并 + 即使 chosen 不含也画 STRADDLE/SHORT_VOL markers
     for d, r in _unified_viz.iterrows():
         if xi(d) is None:
             continue
         chosen = r["chosen"]
         entry_p = r["entry_p"]
-        if "+" in chosen:
-            base = chosen.split(" + ")[0]
-            color, marker = _sig_colors.get(base, ("gray", "o"))
-            size = 160
-            label_key = chosen
-        else:
-            color, marker = _sig_colors.get(chosen, ("gray", "o"))
-            size = (200 if "STRADDLE" in chosen or "SHORT_VOL" in chosen
-                    else (120 if chosen != "EXIT" else 100))
-            label_key = chosen
-        edge = "purple" if "+" in chosen else "black"
-        # 实际信号 marker — 不再加 label (dummy scatter 已占位)
-        ax.scatter([xi(d)], [entry_p * _r], marker=marker, s=size,
-                    color=color, edgecolors=edge, lw=1.0, zorder=6)
+        # 拆分 + 加未被 chosen 但触发的 vol 信号
+        parts = [p.strip() for p in chosen.split("+") if p.strip()]
+        if r.get("straddle_signal", False) and "STRADDLE" not in parts:
+            parts.append("STRADDLE")
+        if r.get("short_vol_signal", False) and "SHORT_VOL" not in parts:
+            parts.append("SHORT_VOL")
+        is_add = bool(r.get("is_add", False))
+        for j, part in enumerate(parts):
+            color, marker = _sig_colors.get(part, ("gray", "o"))
+            size = (200 if part in ("STRADDLE", "SHORT_VOL")
+                    else (160 if is_add else 120))
+            edge = "purple" if is_add and part in ("BUY CALL", "SELL PUT") \
+                   else "black"
+            y_offset = j * (entry_p * 0.003)
+            ax.scatter([xi(d)], [(entry_p + y_offset) * _r],
+                        marker=marker, s=size, color=color,
+                        edgecolors=edge, lw=1.0, zorder=6)
     # 始终显示全部 5 类 + MIXED 边框说明 (即使当前窗口没有该类信号)
     ax.legend(loc="upper left", fontsize=8, framealpha=0.85, ncol=2,
                title="信号类型 (紫色边框 = MIXED 组合)")
@@ -2350,21 +2372,38 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
 
         # 截到显示窗口画散点
         _w_start, _w_end = _idx_1h[0], _idx_1h[-1]
-        for _trigs, _color, _marker in [
-            (_live_buys, "#4CAF50", "^"),
-            (_live_exits, "#F44336", "v"),
-        ]:
+        # v3.7.70: 1h marker 用跟主图同样的图例 (BUY CALL/SELL PUT/EXIT 颜色)
+        # 颜色根据当日 chosen 决定 (BC=蓝 ▲ / SP=橙 ▲ / EXIT=红 ▼)
+        # 如有 STRADDLE/SHORT_VOL 同时触发, 单独画 ★/P
+        _SIG_PAL = {"BUY CALL": ("#2196F3", "^"), "SELL PUT": ("#FF9800", "^"),
+                     "EXIT": ("#F44336", "v"), "STRADDLE": ("#FFD700", "*"),
+                     "SHORT_VOL": ("#FF6F00", "P")}
+
+        def _trig_palette(trig_row, side):
+            # 用当日 sig_df 的 buy_type 决定 BUY 颜色
+            d = pd.Timestamp(trig_row["trigger_time"]).normalize()
+            if side == "BUY" and d in sig_df.index:
+                bt = sig_df.loc[d].get("buy_type")
+                if bt in ("BUY CALL", "SELL PUT"):
+                    return _SIG_PAL[bt]
+                return _SIG_PAL["BUY CALL"]  # default
+            if side == "EXIT":
+                return _SIG_PAL["EXIT"]
+            return ("#888", "o")
+
+        for _trigs, _side in [(_live_buys, "BUY"), (_live_exits, "EXIT")]:
             if len(_trigs) == 0:
                 continue
             _disp = _trigs[(_trigs["trigger_time"] >= _w_start) &
                            (_trigs["trigger_time"] <= _w_end)]
             if len(_disp) == 0:
                 continue
-            _xx = _proj_to_idx(list(_disp["trigger_time"]))
-            # v3.7.66: marker price × _r 转期货坐标 (跟 candle 一致)
-            ax_price.scatter(_xx, _disp["price"].values * _r, marker=_marker,
-                             s=70, color=_color, edgecolors="black",
-                             lw=0.7, zorder=8)
+            for _, _r2 in _disp.iterrows():
+                _xx = _proj_to_idx([_r2["trigger_time"]])[0]
+                _color, _marker = _trig_palette(_r2, _side)
+                ax_price.scatter([_xx], [_r2["price"] * _r], marker=_marker,
+                                 s=110, color=_color, edgecolors="black",
+                                 lw=0.8, zorder=8)
 
         # (v3.7.23: Stoch RSI 子图已移到主图下方, 此 K线 panel 仅保留 K线 + Squeeze)
 
