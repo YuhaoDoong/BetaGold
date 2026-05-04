@@ -2312,6 +2312,7 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             DEFAULT_EXIT_RULES as _IG_EXIT,
             upsert_log as _ig_upsert,
             worst_of_day as _ig_worst,
+            dedupe_intraday as _ig_dedupe,  # v3.7.67
         )
         _interval_min = {"1h": 60, "30m": 30, "15m": 15, "5m": 5}.get(
             _kline_interval, 60)
@@ -2319,16 +2320,19 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                                         "intraday_signal_log.parquet")
         _thresholds_intra = sig_df[["bp030_price", "bp090_price"]]
 
-        _live_buys = _ig_detect(
+        _live_buys_raw = _ig_detect(
             _kline_data, _thresholds_intra,
             _IG_Cfg(timeframe_minutes=_interval_min, side="BUY",
                     rule_set=_IG_BUY, confirm_mode="any"),
-            asset=asset_key)
-        _live_exits = _ig_detect(
+            asset=asset_key, daily_low=low_d, daily_high=high_d)
+        _live_exits_raw = _ig_detect(
             _kline_data, _thresholds_intra,
             _IG_Cfg(timeframe_minutes=_interval_min, side="EXIT",
                     rule_set=_IG_EXIT, confirm_mode="any"),
-            asset=asset_key)
+            asset=asset_key, daily_low=low_d, daily_high=high_d)
+        # v3.7.67: 日内去重 — 同日多触发只保留显著加仓点 (≥0.5% 跌幅)
+        _live_buys = _ig_dedupe(_live_buys_raw, side="BUY", min_drop_pct=0.5)
+        _live_exits = _ig_dedupe(_live_exits_raw, side="EXIT", min_drop_pct=0.5)
 
         # 写入持久 log (去重交给 upsert)
         try:

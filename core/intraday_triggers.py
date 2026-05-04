@@ -439,6 +439,61 @@ def worst_of_day(triggers: pd.DataFrame, side: str = "BUY") -> pd.DataFrame:
     return _agg_of_day(triggers, side, "worst")
 
 
+def dedupe_intraday(triggers: pd.DataFrame, side: str = "BUY",
+                       min_drop_pct: float = 0.5) -> pd.DataFrame:
+    """日内连续触发去重 (v3.7.67) — 类似日线 dedupe 加仓机制.
+
+    规则:
+      - 第一笔触发保留
+      - 后续触发: BUY 须比上次保留的 entry 价低 ≥ min_drop_pct%
+                  SELL 须比上次保留的 entry 价高 ≥ min_drop_pct%
+      - 中间反弹超 1% 后再回撤的, 视为新 wave (重置 prev)
+
+    用于:
+      - 实盘加仓 (避免每个 1h bar 都加仓)
+      - chart 显示 (只标显著入场点)
+
+    Returns: 保留行的 DataFrame (子集)
+    """
+    if triggers is None or len(triggers) == 0:
+        return triggers
+    sub = triggers[triggers["side"] == side].copy()
+    if not len(sub):
+        return sub
+    sub = sub.sort_values("trigger_time").reset_index(drop=True)
+    keep = []
+    prev_kept_price = None
+    last_seen_price = None  # 跟踪是否中间反弹了
+    for _, r in sub.iterrows():
+        p = float(r["price"])
+        if prev_kept_price is None:
+            keep.append(r); prev_kept_price = p; last_seen_price = p
+            continue
+        # 中间反弹检测: 比上次 kept 价反向超 1% 后再回到 buy/sell zone
+        # → 视为 wave 重置 (类似日线 gap-reset)
+        if side == "BUY":
+            if last_seen_price is not None and last_seen_price > prev_kept_price * 1.01:
+                # 反弹后再触发 → 新 wave
+                keep.append(r); prev_kept_price = p; last_seen_price = p
+                continue
+            # 否则: 必须比上次 kept 跌 > min_drop_pct%
+            drop = (prev_kept_price - p) / prev_kept_price * 100
+            if drop >= min_drop_pct:
+                keep.append(r); prev_kept_price = p
+            last_seen_price = p
+        else:  # SELL/EXIT
+            if last_seen_price is not None and last_seen_price < prev_kept_price * 0.99:
+                keep.append(r); prev_kept_price = p; last_seen_price = p
+                continue
+            rise = (p - prev_kept_price) / prev_kept_price * 100
+            if rise >= min_drop_pct:
+                keep.append(r); prev_kept_price = p
+            last_seen_price = p
+    if not keep:
+        return sub.iloc[0:0]
+    return pd.DataFrame(keep).reset_index(drop=True)
+
+
 def best_of_day(triggers: pd.DataFrame, side: str = "BUY") -> pd.DataFrame:
     """每日多触发取最优价 (买:最低 / 卖:最高)."""
     return _agg_of_day(triggers, side, "best")
