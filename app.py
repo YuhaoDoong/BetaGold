@@ -2183,36 +2183,42 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         # 真实 K线 (红绿蜡烛图)
         _body_w = 0.6
         _wick_w = 0.15
+        # v3.7.64: candle 数据 (ETF 价) × _r 转期货坐标 (跟 y 轴一致)
         for dt in _1h.index:
             ix = _xi1h(dt)
             if ix is None:
                 continue
-            o, h, l, c = _o1h.get(dt, 0), _h1h.get(dt, 0), _l1h.get(dt, 0), _c1h.get(dt, 0)
-            if o == 0 or c == 0:
+            o_raw, h_raw, l_raw, c_raw = (_o1h.get(dt, 0), _h1h.get(dt, 0),
+                                            _l1h.get(dt, 0), _c1h.get(dt, 0))
+            if o_raw == 0 or c_raw == 0:
                 continue
+            o, h, l, c = o_raw * _r, h_raw * _r, l_raw * _r, c_raw * _r
             color = "#4CAF50" if c >= o else "#F44336"
             # 影线
             ax_price.plot([ix, ix], [l, h], color=color, lw=_wick_w * 2, zorder=2)
             # 实体
             body_bottom = min(o, c)
-            body_height = abs(c - o) if abs(c - o) > 0.01 else 0.5
+            body_height = abs(c - o) if abs(c - o) > 0.5 else 0.5 * _r
             ax_price.bar(ix, body_height, bottom=body_bottom, width=_body_w,
                          color=color, edgecolor=color, zorder=3)
-        # BB
+        # v3.7.64: BB/Keltner 也 × _r 转期货坐标 (与 candle 一致)
         _bb_u_clean = _bb_upper.dropna()
         _bb_l_clean = _bb_lower.dropna()
         if len(_bb_u_clean) > 0:
-            ax_price.plot(_xi1h_arr(_bb_u_clean.index), _bb_u_clean.values,
+            ax_price.plot(_xi1h_arr(_bb_u_clean.index),
+                          _bb_u_clean.values * _r,
                           color="blue", lw=0.6, alpha=0.4)
-            ax_price.plot(_xi1h_arr(_bb_l_clean.index), _bb_l_clean.values,
+            ax_price.plot(_xi1h_arr(_bb_l_clean.index),
+                          _bb_l_clean.values * _r,
                           color="blue", lw=0.6, alpha=0.4)
-        # Keltner
         _kc_u_clean = _kc_upper.dropna()
         _kc_l_clean = _kc_lower.dropna()
         if len(_kc_u_clean) > 0:
-            ax_price.plot(_xi1h_arr(_kc_u_clean.index), _kc_u_clean.values,
+            ax_price.plot(_xi1h_arr(_kc_u_clean.index),
+                          _kc_u_clean.values * _r,
                           color="orange", lw=0.6, ls="--", alpha=0.4)
-            ax_price.plot(_xi1h_arr(_kc_l_clean.index), _kc_l_clean.values,
+            ax_price.plot(_xi1h_arr(_kc_l_clean.index),
+                          _kc_l_clean.values * _r,
                           color="orange", lw=0.6, ls="--", alpha=0.4)
 
         # Squeeze 背景色
@@ -2258,7 +2264,8 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                                       color="#4CAF50", zorder=1)
 
         ax_price.set_ylabel(f"{_kline_label} ($/oz)")
-        _last_price = _c1h.iloc[-1]
+        # v3.7.64: 标题价位也 × _r 跟坐标轴一致
+        _last_price = _c1h.iloc[-1] * _r
         _signal_tag = f" | {_signal_type_today} → 深绿=入场(反转+BB下轨) 浅绿=准备" \
             if _has_buy_signal else ""
         ax_price.set_title(f"{_kline_label} ${_last_price:.1f} | "
