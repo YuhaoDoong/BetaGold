@@ -1096,16 +1096,32 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
 
     # 数据陈旧检查 + yfinance 兜底
     @st.cache_data(ttl=600)
-    def _refresh_1h_yfinance(ticker, period="60d"):
+    def _refresh_1h_yfinance(ticker, period="60d", interval="1h"):
+        """v3.7.79: 加 interval 参数. 支持 1m/5m/15m/30m/1h.
+        yfinance 限制: 1m=7d, 5m/15m/30m=60d, 1h=730d.
+        """
         try:
             import yfinance as yf
-            df = yf.Ticker(ticker).history(period=period, interval="1h")
+            df = yf.Ticker(ticker).history(period=period, interval=interval)
             if df is not None and len(df) > 0:
                 df.index = pd.to_datetime(df.index).tz_localize(None)
                 return df[["Open", "High", "Low", "Close", "Volume"]]
         except Exception:
             pass
         return None
+
+    @st.cache_data(ttl=300)
+    def _fetch_intraday(ticker, interval, period_days):
+        """通用 intraday 数据拉取, 5 min 缓存.
+        Args:
+            ticker: GLD / SLV
+            interval: '1m','5m','15m','30m','1h'
+            period_days: 回看天数 (受 yfinance 限制)
+        """
+        # yfinance period 字符串
+        max_p = {"1m": 7, "5m": 60, "15m": 60, "30m": 60, "1h": 730}.get(interval, 60)
+        p_days = min(period_days, max_p)
+        return _refresh_1h_yfinance(ticker, period=f"{p_days}d", interval=interval)
 
     _today_check = pd.Timestamp.now().normalize()
     _stale_threshold = timedelta(days=7)
@@ -1712,15 +1728,44 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
 
     # ── 信号历史图 ──
     st.divider()
-    # v3.7.20: 加粒度选项 (1h 主导当日交易, 日线看趋势)
-    _gran = st.sidebar.radio("主图粒度", ["1h (近 3 天)", "日线 (历史)"],
+    # v3.7.79: K 线精度选项 (yfinance 限制: 1m=7d, 5m/15m=60d, 1h=730d)
+    # 未来实盘可扩展到 1s (IBKR/Polygon 付费 API)
+    _gran = st.sidebar.radio("主图粒度",
+                              ["盘中 (1-14 天 高精度)", "日线 (历史)"],
                               index=0)
-    _is_1h_view = _gran.startswith("1h")
+    _is_1h_view = _gran.startswith("盘中")
     if _is_1h_view:
-        _intraday_days = st.sidebar.slider("1h 回看天数", 1, 60, 14)
+        # K 线精度: 默认 15m (兼顾精度和数据范围)
+        _intraday_interval = st.sidebar.selectbox(
+            "K 线精度",
+            ["1m (近 7 天)", "5m (近 60 天)", "15m (近 60 天, 默认)",
+             "30m (近 60 天)", "1h (近 730 天)"],
+            index=2,  # 15m 默认
+            help="yfinance 限制. 未来实盘可扩 1s (IBKR/Polygon 付费)")
+        # 解析 interval code
+        _interval_code = _intraday_interval.split()[0]  # '1m','5m','15m','30m','1h'
+        # 默认范围: 14 天 (用户偏好两周内)
+        _max_days = {"1m": 7, "5m": 60, "15m": 60,
+                      "30m": 60, "1h": 730}.get(_interval_code, 60)
+        _intraday_days = st.sidebar.slider(
+            f"{_interval_code} 回看天数", 1,
+            min(60, _max_days), min(14, _max_days))
     else:
         lookback_days = st.sidebar.slider("回看天数", 30, 180, 65)
         lookback = last_date - timedelta(days=lookback_days)
+    # v3.7.79: 根据用户选的 interval 切换数据源 (覆盖默认 gld_1h)
+    if _is_1h_view and _interval_code != "1h":
+        _yf_ticker_for_chart = "GLD" if asset_key == "GLD" else "SLV"
+        _intraday_data = _fetch_intraday(_yf_ticker_for_chart,
+                                            _interval_code,
+                                            _intraday_days)
+        if _intraday_data is not None and len(_intraday_data) > 0:
+            gld_1h = _intraday_data  # 复用变量名, 不破坏下游
+            st.sidebar.caption(
+                f"✓ {_interval_code} 数据: {len(gld_1h)} 行")
+        else:
+            st.sidebar.caption(f"⚠ {_interval_code} 拉取失败, 退回 1h")
+
     if _is_1h_view:
         viz_dates = close_d.index[
             (close_d.index >= last_date - timedelta(days=_intraday_days+5))
