@@ -1589,35 +1589,28 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                     "BUY CALL + EXIT": f"期货多头 {_fut_label} (有退出)",
                     "SELL PUT + EXIT": f"期货多头 {_fut_label} (有退出)",
                 }
-            # 数据过期检测: last_date 距今 > 1 个交易日 视为过期
+            # v3.7.99: 简化 — 直接展示日线推荐策略 (sig_df.buy_type), 不再判触发状态
+            # 第一栏盘中实时已有触发状态; 此栏只回答 "今日适合什么方向性策略"
             _ld = pd.Timestamp(last_date)
-            _data_age = (pd.Timestamp(today_sgt) - _ld.normalize()).days
-            _is_stale = _data_age > 1
-
-            # v3.7.54: 信号 = 当前可执行 (实时 bp_est < 0.30)
-            # 历史触过 (今日 pre-market 跌过) → 显"已触过", 不推工具入场
+            _bdays_age = (len(pd.bdate_range(_ld.normalize(),
+                                                pd.Timestamp(today_sgt).normalize())) - 1)
+            _is_stale = _bdays_age > 1
             if _is_stale:
                 sig_text = "数据过期"
-                _delta_str = (f"末数据 {_ld.date()} ({_data_age}d ago) — "
-                              f"重启 dashboard 触发数据刷新")
-            elif _raw_sig and bp_est is not None and bp_est < 0.30:
-                # 当下 bp 仍在 buy zone — 工具推荐有效
+                _delta_str = f"末数据 {_ld.date()} ({_bdays_age}bd) — 重启刷新"
+            elif _raw_sig:
                 sig_text = _sig_map.get(_raw_sig, _raw_sig)
                 _sizing_tag = ""
                 if _sizing > 1.0 and _has_open_buy:
                     _sizing_tag = f" | 仓位 {_sizing:.0f}× ({_sizing_reasons})"
-                _delta_str = (f"Regime: {last_regime} | 实时 bp={bp_est:.3f} | "
+                _bp_tag = f" | bp={bp_est:.2f}" if bp_est is not None else ""
+                _delta_str = (f"Regime: {last_regime}{_bp_tag} | "
                               f"RV={rv_pctile.get(last_date,0):.0%}{_sizing_tag}")
-            elif _raw_sig:
-                # 今日 day-low 触过但已反弹 — 不可执行
-                sig_text = "今日已触过 (已反弹)"
-                _delta_str = (f"曾触发 {_raw_sig} 但现 bp={bp_est:.2f} > 0.30, "
-                              f"等下次回踩")
             else:
                 sig_text = "今日无信号"
-                _delta_str = (f"现 bp={bp_est:.3f} (需 < 0.30) | "
-                              f"RV={rv_pctile.get(last_date,0):.0%} | "
-                              f"持仓 / 历史见可视化")
+                _delta_str = (f"bp={bp_est:.2f} | RV={rv_pctile.get(last_date,0):.0%} | "
+                              f"等下次入场窗口" if bp_est is not None else
+                              f"RV={rv_pctile.get(last_date,0):.0%}")
             st.metric("当日信号", sig_text, delta=_delta_str)
         st.markdown('</div>', unsafe_allow_html=True)
 
