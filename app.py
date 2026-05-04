@@ -1713,6 +1713,27 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         _1h = gld_1h[gld_1h.index >= _cutoff].copy()
         if len(_1h) == 0:
             _1h = gld_1h.iloc[-_intraday_days*24:].copy()
+        # v3.7.65: 过滤 yfinance prepost 脏 1h bar
+        # 双层: (a) 1h Low/High 截到 daily Low/High (1h 不应超 daily 极值)
+        #        (b) 异常 wick 截到 ±3% Open/Close 范围
+        _dates_n = _1h.index.normalize()
+        _daily_lo_map = low_d.reindex(_dates_n.unique())
+        _daily_hi_map = high_d.reindex(_dates_n.unique())
+        _1h_dlow = _1h.index.to_series().apply(
+            lambda t: _daily_lo_map.get(t.normalize(), float("nan")))
+        _1h_dhigh = _1h.index.to_series().apply(
+            lambda t: _daily_hi_map.get(t.normalize(), float("nan")))
+        # 去掉 NaN: 用 close 兜底
+        _1h_dlow = _1h_dlow.fillna(_1h["Close"])
+        _1h_dhigh = _1h_dhigh.fillna(_1h["Close"])
+        # 容许 1h 略低于 daily Low (因 prepost 合理波动) ±0.3%
+        _1h["Low"] = _1h["Low"].clip(lower=_1h_dlow * 0.997)
+        _1h["High"] = _1h["High"].clip(upper=_1h_dhigh * 1.003)
+        # close 也可能脏 (e.g. 17:00 close=$404 vs daily $417), 同样 clip
+        _1h["Close"] = _1h["Close"].clip(
+            lower=_1h_dlow * 0.997, upper=_1h_dhigh * 1.003)
+        _1h["Open"] = _1h["Open"].clip(
+            lower=_1h_dlow * 0.997, upper=_1h_dhigh * 1.003)
         plot_ts = list(_1h.index)
         ts2i = {ts: i for i, ts in enumerate(plot_ts)}
         # xi() 接受 daily 日期, 找到当日第一个 1h timestamp
