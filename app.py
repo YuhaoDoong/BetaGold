@@ -2398,12 +2398,45 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                            (_trigs["trigger_time"] <= _w_end)]
             if len(_disp) == 0:
                 continue
-            for _, _r2 in _disp.iterrows():
-                _xx = _proj_to_idx([_r2["trigger_time"]])[0]
-                _color, _marker = _trig_palette(_r2, _side)
-                ax_price.scatter([_xx], [_r2["price"] * _r], marker=_marker,
+            for _idx_in_disp, _r2 in enumerate(_disp.itertuples()):
+                _xx = _proj_to_idx([_r2.trigger_time])[0]
+                _color, _marker = _trig_palette(
+                    {"trigger_time": _r2.trigger_time}, _side)
+                # v3.7.71: 多笔同日 markers y 偏移避免视觉重叠
+                _y_offset = _idx_in_disp * (_r2.price * 0.0008) * _r
+                ax_price.scatter([_xx], [_r2.price * _r + _y_offset],
+                                 marker=_marker,
                                  s=110, color=_color, edgecolors="black",
                                  lw=0.8, zorder=8)
+
+        # v3.7.71: 在 1h chart 加 STRADDLE/SHORT_VOL 日级信号 marker
+        # (这些是日级信号, 标在当日 09:30 EDT bar 位置, y= daily close)
+        try:
+            for _d, _row in _unified_viz.iterrows():
+                _ch_d = str(_row.get("chosen", ""))
+                _has_str = (_row.get("straddle_signal", False)
+                             or "STRADDLE" in _ch_d)
+                _has_sv = (_row.get("short_vol_signal", False)
+                             or "SHORT_VOL" in _ch_d)
+                if not _has_str and not _has_sv:
+                    continue
+                # 找当日 1h 第一个 bar (~ 北京 16:00 / US 04:00 pre-market 起)
+                _day_bars = _idx_1h[(_idx_1h.normalize()
+                                      == pd.Timestamp(_d).normalize())]
+                if len(_day_bars) == 0:
+                    continue
+                _xx_d = _proj_to_idx([_day_bars[0]])[0]
+                _yy = _row["entry_p"] * _r
+                if _has_str:
+                    ax_price.scatter([_xx_d], [_yy * 1.005],
+                                      marker="*", s=200, color="#FFD700",
+                                      edgecolors="black", lw=1.0, zorder=9)
+                if _has_sv:
+                    ax_price.scatter([_xx_d], [_yy * 1.010],
+                                      marker="P", s=200, color="#FF6F00",
+                                      edgecolors="black", lw=1.0, zorder=9)
+        except Exception:
+            pass
 
         # (v3.7.23: Stoch RSI 子图已移到主图下方, 此 K线 panel 仅保留 K线 + Squeeze)
 
