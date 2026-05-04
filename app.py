@@ -2075,9 +2075,8 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                 if _avg_t is None and _is_1h_view:
                     continue
                 _xi_target = _xi_at(_avg_t) if _avg_t else xi(d)
-                # v3.7.86: y 用真实出场触发价 (而非 entry_p = 入场价)
+                # v3.7.86/87: y 用真实出场触发价 (而非 entry_p = 入场价)
                 _yp = _avg_exit_price.get(pd.Timestamp(d), entry_p)
-                _yp = entry_p
             else:
                 _xi_target = xi(d)
                 _yp = entry_p
@@ -3022,38 +3021,69 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         _pp_log = _intra_log_asset[
             _intra_log_asset.get("timeframe", "") == _avg_tf_match
         ] if len(_intra_log_asset) else _intra_log_asset
-        # 每天 dedupe 后逐条同步
+        # 每天 dedupe 后逐条同步 (BUY → 多笔独立持仓含加仓; EXIT → 平所有 OPEN)
         if len(_pp_log):
             from core.intraday_triggers import (
                 dedupe_intraday as _dd_pp)
             for _d, _grp in _pp_log.groupby("date"):
+                _d_norm = pd.Timestamp(_d).normalize()
+                _chosen_today = (sig_df.loc[_d_norm, "chosen"]
+                                  if _d_norm in sig_df.index else "")
+                _base_strategy = (_chosen_today.split("+")[0].strip()
+                                   if _chosen_today else "SPOT")
                 for _side in ["BUY", "EXIT"]:
                     _sub = _grp[_grp["side"] == _side]
                     if not len(_sub): continue
                     _dd = _dd_pp(_sub, side=_side, min_drop_pct=0.3)
-                    for _, _r in _dd.iterrows():
+                    for _i_dd, (_, _r) in enumerate(_dd.iterrows()):
                         _t_time = pd.Timestamp(_r["trigger_time"])
                         _ul_p = float(_r["price"])
-                        # 推策略 (来自 sig_df.chosen 当日)
-                        _d_norm = pd.Timestamp(_d).normalize()
-                        _chosen_today = (sig_df.loc[_d_norm, "chosen"]
-                                          if _d_norm in sig_df.index else "")
-                        _strategy = (_chosen_today.split("+")[0].strip()
-                                      if _chosen_today else "SPOT")
                         if _side == "BUY":
-                            # 推 option ticker + 试拉实时 quote
-                            _osym = _pp_infer_opt(asset_key, _strategy,
-                                                    _ul_p, _t_time)
-                            _oprice = (_pp_opt_quote(_osym)
-                                       if _osym else None)
+                            # v3.7.87: RTH (09:30-16:00 ET) → option strategy
+                            #          off-hours → futures (期权未开盘)
+                            _is_rth = (9.5 <= _t_time.hour
+                                          + _t_time.minute/60.0 <= 16.0)
+                            if _is_rth:
+                                # 加仓后缀 (区分多笔同日同策略)
+                                _suffix = (f" 加仓{_i_dd}" if _i_dd > 0
+                                            else "")
+                                _strategy = f"{_base_strategy}{_suffix}"
+                                _osym = _pp_infer_opt(asset_key,
+                                                       _base_strategy,
+                                                       _ul_p, _t_time)
+                            else:
+                                _strategy = "FUTURES_LONG"
+                                _osym = None
                             _pp_open(_pp_root, asset_key, _strategy,
                                      _t_time, _ul_p,
                                      side="BUY", qty=1,
                                      option_symbol=_osym,
-                                     option_price=_oprice)
+                                     option_price=None)
                         else:  # EXIT
                             _pp_close(_pp_root, asset_key,
                                        _t_time, _ul_p)
+        # 日线级 STRADDLE / SHORT_VOL 信号: 09:30 ET 自动开仓
+        # (这两个不依赖 intraday BUY trigger, 是 daily strategy)
+        try:
+            for _d_sig, _row in sig_df.iterrows():
+                if not (_d_sig in viz_dates):
+                    continue
+                _t_930 = pd.Timestamp(_d_sig).normalize() \
+                    + pd.Timedelta(hours=9, minutes=30)
+                _ul_open = float(close_d.get(_d_sig, 0))
+                if _ul_open <= 0: continue
+                if _row.get("straddle_signal", False):
+                    _osym_s = _pp_infer_opt(asset_key, "STRADDLE",
+                                              _ul_open, _t_930)
+                    _pp_open(_pp_root, asset_key, "STRADDLE",
+                             _t_930, _ul_open, side="BUY", qty=1,
+                             option_symbol=_osym_s, option_price=None)
+                if _row.get("short_vol_signal", False):
+                    _pp_open(_pp_root, asset_key, "SHORT_VOL",
+                             _t_930, _ul_open, side="BUY", qty=1,
+                             option_symbol=None, option_price=None)
+        except Exception:
+            pass
         # MTM + 显示
         _spot_now = (gc_now / _viz_ratio
                        if (gc_now > 0 and _viz_ratio > 0)

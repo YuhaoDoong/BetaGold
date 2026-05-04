@@ -179,6 +179,31 @@ def close_position(data_root: str, asset: str, exit_time: pd.Timestamp,
     return n_closed
 
 
+def _strategy_pnl_formula(strategy: str, spot_ratio: float) -> float:
+    """根据 strategy 推 P&L (% of underlying move).
+    spot_ratio = current_spot / entry_spot - 1 (e.g. 0.02 = +2%)
+    返回 P&L %.
+    delta 近似 (粗模型, 仅作 MTM 显示用):
+      BUY CALL ≈ +50% delta   (ATM call ATM spot move 1% ≈ +0.5% NAV)
+      SELL PUT ≈ +30% delta   (反 short put 价值随 spot ↑)
+      STRADDLE ≈ ±50% (long vol, |move| × 2 - theta)
+      SHORT_VOL ≈ ∓50% (short vol)
+      FUTURES_LONG / SPOT ≈ 100% delta
+    """
+    move_pct = spot_ratio * 100
+    s = strategy.upper()
+    if s in ("BUY CALL", "BUY_CALL"):
+        return move_pct * 0.5 / 1.0  # 简化, 实际 OTM 杠杆更高
+    if s in ("SELL PUT", "SELL_PUT"):
+        return move_pct * 0.3
+    if s == "STRADDLE":
+        # long vol: 任一方向都赚 (近似)
+        return abs(move_pct) * 1.0 - 0.3  # 减 theta 衰减估算
+    if s in ("SHORT_VOL", "SHORT VOL"):
+        return -abs(move_pct) * 0.8 + 0.5  # short vol + theta 收
+    return move_pct  # FUTURES_LONG / SPOT 1:1
+
+
 def mark_to_market(data_root: str, current_quotes: dict) -> pd.DataFrame:
     """对 OPEN 持仓计算未实现 P&L.
     current_quotes: {asset: spot_price, option_symbol: option_price, ...}
@@ -199,15 +224,39 @@ def mark_to_market(data_root: str, current_quotes: dict) -> pd.DataFrame:
         entry_ul = row["open_ul_price"]
         cur_ul = row.get("current_ul")
         if pd.notna(cur_opt) and pd.notna(entry_opt) and entry_opt > 0:
+            # 直接用 option quote (live)
             unr = (cur_opt / entry_opt - 1) * 100
         elif pd.notna(cur_ul) and entry_ul and entry_ul > 0:
-            sign = 1 if row["strategy"] in ("BUY CALL", "SPOT") else -1
-            unr = sign * (cur_ul / entry_ul - 1) * 100
+            # 退化用 underlying-move + strategy delta 近似
+            unr = _strategy_pnl_formula(row["strategy"],
+                                          cur_ul / entry_ul - 1)
         else:
             unr = float("nan")
         rec = row.to_dict(); rec["unrealized_pct"] = unr
         rows.append(rec)
     return pd.DataFrame(rows)
+
+
+def fetch_realtime_option_chain_quote(asset: str, expiry_str: str,
+                                         strike: float, right: str) -> Optional[float]:
+    """从 yfinance option_chain 拉当前 lastPrice (历史时点拿不到, 仅 live).
+    asset: GLD / SLV
+    expiry_str: 'YYYY-MM-DD'
+    right: 'C' / 'P'
+    """
+    try:
+        import yfinance as yf
+        t = yf.Ticker(asset)
+        if expiry_str not in t.options:
+            return None
+        chain = t.option_chain(expiry_str)
+        df = chain.calls if right.upper() == "C" else chain.puts
+        match = df[df["strike"] == strike]
+        if not len(match):
+            return None
+        return float(match.iloc[0]["lastPrice"])
+    except Exception:
+        return None
 
 
 def fetch_realtime_option_price(option_symbol: str) -> Optional[float]:
