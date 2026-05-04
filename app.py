@@ -2989,9 +2989,29 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         _is_strad_today = bool(sig_df.loc[_today, "straddle_signal"]
                                 if _today in sig_df.index else False)
         _rows1 = []
-        from core.paper_positions import (
-            estimate_straddle_premium as _bs_pair,
-            infer_option_symbol as _infer_sym, bs_price as _bs1)
+        from core.paper_positions import price_strategy_at as _price_strat
+        # buy_type 是日线策略, 不是 chosen
+        _today_buy_type = (sig_df.loc[_today, "buy_type"]
+                            if _today in sig_df.index else None) or ""
+        # 当日 ETF daily OHLC (用于插值)
+        _O_today = float(close_d.get(_today, 0))
+        _C_today = float(close_d.get(_today, 0))
+        if _today in close_d.index:
+            try:
+                # 真实 daily Open
+                _gld_csv = pd.read_csv(
+                    f"/Users/yhdong/Gold/data/raw/market/{asset_key.lower()}.csv",
+                    index_col=0, parse_dates=True)
+                if _today in _gld_csv.index:
+                    _O_today = float(_gld_csv.loc[_today, "Open"])
+                    _C_today = float(_gld_csv.loc[_today, "Close"])
+                    _H_today = float(_gld_csv.loc[_today, "High"])
+                    _L_today = float(_gld_csv.loc[_today, "Low"])
+                else:
+                    _H_today = float(high_d.get(_today, _C_today))
+                    _L_today = float(low_d.get(_today, _C_today))
+            except Exception:
+                _H_today = _L_today = _C_today
         for _, r in _today_log.iterrows():
             _t = pd.Timestamp(r["trigger_time"])
             _h = _t.hour + _t.minute/60.0
@@ -3000,28 +3020,22 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             if _is_strad_today:
                 _strat = "STRADDLE"
             elif _is_rth:
-                _strat = (_today_chosen.split("+")[0].strip()
-                           if _today_chosen else "SPOT")
+                _strat = _today_buy_type if _today_buy_type else "SPOT"
             else:
                 _strat = "FUTURES_LONG"
-            _strike = round(_ul) if _ul > 50 else round(_ul * 2) / 2
             _opt_code = ""; _opt_p = "—"
-            if _strat == "BUY CALL":
-                _sym = _infer_sym(asset_key, _strat, _ul, _t, dte_target=45)
-                _c = _bs1(_ul, _strike, 45/365, 0.04, 0.20, "C")
-                _opt_code = _sym or ""; _opt_p = f"${_c:.2f}"
-            elif _strat == "SELL PUT":
-                # put credit spread: short ATM put + long -5% put
-                _short_K = _strike; _long_K = round(_strike * 0.95)
-                _ps = _bs1(_ul, _short_K, 45/365, 0.04, 0.20, "P")
-                _pl = _bs1(_ul, _long_K, 45/365, 0.04, 0.20, "P")
-                _credit = _ps - _pl
-                _opt_code = f"-P${_short_K}/+P${_long_K} 45d"
-                _opt_p = f"收${_credit:.2f}"
-            elif _strat == "STRADDLE":
-                _ic, _ip = _bs_pair(_ul, _strike, 14, iv=0.20)
-                _opt_code = f"ATM C+P 14d ${_strike:.0f}"
-                _opt_p = f"${_ic + _ip:.2f}"
+            if _strat in ("BUY CALL", "SELL PUT", "STRADDLE"):
+                _pricing = _price_strat(asset_key, _strat, _today, _t, _ul,
+                                          _O_today, _C_today,
+                                          _H_today, _L_today)
+                if _pricing["legs"]:
+                    _opt_code = _pricing["source"]
+                    if _strat == "SELL PUT":
+                        _opt_p = f"收${_pricing['entry_price']:.2f}"
+                    else:
+                        _opt_p = f"${_pricing['entry_price']:.2f}"
+                else:
+                    _opt_code = "(kline_db 无)"
             elif _strat == "FUTURES_LONG":
                 _opt_code = f"{_futures_ticker} 多头"
                 _opt_p = f"${_ul:.2f}"
@@ -3036,22 +3050,20 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             })
         st.dataframe(pd.DataFrame(_rows1).iloc[::-1],
                       use_container_width=True, hide_index=True)
-        st.caption("RTH (09:30-16:00 ET) 触发用日线 chosen 策略; "
+        st.caption("RTH (09:30-16:00 ET) 触发用日线 buy_type; "
                    "非 RTH 走期货多头 (期权未开盘). "
-                   "期权价 = Black-Scholes 估 (IV ≈ 20%).")
+                   "期权价 = kline_db EOD OHLC + spot 比例插值 (远比 BS+假IV 准).")
     else:
         st.caption(f"今日 {today_sgt} 无盘中触发")
 
-    # ── (2) 历史未平仓信号 (按策略真实期权组合, BS 估入场 + chain 现价) ──
+    # ── (2) 历史未平仓信号 (kline_db 真实 OHLC + 比例插值法) ──
     st.divider()
-    st.subheader("📊 历史未平仓信号 (期权组合 entry/current)")
+    st.subheader("📊 历史未平仓信号 (kline_db EOD OHLC + 插值)")
     try:
         from core.paper_positions import (
             load_positions as _pp_load2,
-            estimate_straddle_premium as _bs_sp2,
-            find_active_expiry_near as _find_exp2,
-            fetch_chain_atm_premium as _chain_atm2,
-            bs_price as _bs2,
+            price_strategy_at as _price_strat2,
+            _load_kline_db as _kdb_load,
         )
         _all_pos2 = _pp_load2(_intra_cfg["data_root"])
         _open_pos2 = (_all_pos2[(_all_pos2["asset"] == asset_key) &
@@ -3060,60 +3072,59 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         if len(_open_pos2):
             _today_dt2 = pd.Timestamp(today_sgt).normalize()
             _cur_spot2 = float(close_d.iloc[-1])
+            _kdb = _kdb_load()
+            _gld_csv = pd.read_csv(
+                f"/Users/yhdong/Gold/data/raw/market/{asset_key.lower()}.csv",
+                index_col=0, parse_dates=True)
             _rows2 = []
             for _, p in _open_pos2.iterrows():
                 _strat_p = p["strategy"]
                 _entry_t = pd.Timestamp(p["open_time"])
+                _entry_d = _entry_t.normalize()
                 _entry_spot = float(p["open_ul_price"])
-                _strike = (round(_entry_spot, 0) if _entry_spot > 50
-                            else round(_entry_spot * 2) / 2)
-                if "STRADDLE" in _strat_p: _dte = 14
-                elif "SHORT_VOL" in _strat_p: _dte = 30
-                elif "SELL PUT" in _strat_p or "加仓" in _strat_p: _dte = 45
-                elif "BUY CALL" in _strat_p: _dte = 45
-                else: _dte = 0
+                # 入场日 daily OHLC
+                if _entry_d in _gld_csv.index:
+                    _eO = float(_gld_csv.loc[_entry_d, "Open"])
+                    _eC = float(_gld_csv.loc[_entry_d, "Close"])
+                    _eH = float(_gld_csv.loc[_entry_d, "High"])
+                    _eL = float(_gld_csv.loc[_entry_d, "Low"])
+                else:
+                    _eO = _eC = _eH = _eL = _entry_spot
+                # 入场期权 (kline_db 插值)
+                _entry_pricing = _price_strat2(asset_key, _strat_p, _entry_d,
+                                                  _entry_t, _entry_spot,
+                                                  _eO, _eC, _eH, _eL)
                 _entry_str = "—"; _cur_str = "—"; _gain = 0.0
-                _iv = 0.20
-                if _dte > 0:
-                    _target_exp = _entry_t + pd.Timedelta(days=_dte)
-                    _exp_str = _find_exp2(asset_key, _target_exp,
-                                            tolerance_days=10)
-                    _T_e = _dte / 365.0
-                    _T_now = max(1, (_target_exp - _today_dt2).days) / 365.0
-                if "STRADDLE" in _strat_p:
-                    _ec, _ep = _bs_sp2(_entry_spot, _strike, _dte, iv=_iv)
-                    _entry_prem = _ec + _ep
-                    _entry_str = f"C${_ec:.2f}+P${_ep:.2f}=${_entry_prem:.2f}"
-                    _cc = _cp = None
-                    if _exp_str and pd.Timestamp(_exp_str) >= _today_dt2:
-                        _cc, _cp, _ = _chain_atm2(asset_key, _exp_str,
-                                                    _cur_spot2)
-                    if _cc is None or _cp is None:
-                        _cc2, _cp2 = _bs_sp2(_cur_spot2, _strike,
-                                              max(1, (_target_exp - _today_dt2).days),
-                                              iv=_iv)
-                        _cc = _cc or _cc2; _cp = _cp or _cp2
-                    _cur_prem = _cc + _cp
-                    _cur_str = f"C${_cc:.2f}+P${_cp:.2f}=${_cur_prem:.2f}"
-                    _gain = (_cur_prem / _entry_prem - 1) * 100
-                elif "SELL PUT" in _strat_p or "加仓" in _strat_p:
-                    _short_K = _strike; _long_K = round(_strike * 0.95)
-                    _ps = _bs2(_entry_spot, _short_K, _T_e, 0.04, _iv, "P")
-                    _pl = _bs2(_entry_spot, _long_K, _T_e, 0.04, _iv, "P")
-                    _e_credit = _ps - _pl
-                    _entry_str = f"-P${_ps:.2f}/+P${_pl:.2f}=收${_e_credit:.2f}"
-                    _ps2 = _bs2(_cur_spot2, _short_K, _T_now, 0.04, _iv, "P")
-                    _pl2 = _bs2(_cur_spot2, _long_K, _T_now, 0.04, _iv, "P")
-                    _c_credit = _ps2 - _pl2
-                    _cur_str = f"-P${_ps2:.2f}/+P${_pl2:.2f}=平${_c_credit:.2f}"
-                    _gain = (((_e_credit - _c_credit) / _e_credit * 100)
-                              if _e_credit > 0 else 0)
-                elif "BUY CALL" in _strat_p:
-                    _ec1 = _bs2(_entry_spot, _strike, _T_e, 0.04, _iv, "C")
-                    _entry_str = f"C${_ec1:.2f}"
-                    _cc1 = _bs2(_cur_spot2, _strike, _T_now, 0.04, _iv, "C")
-                    _cur_str = f"C${_cc1:.2f}"
-                    _gain = (_cc1 / _ec1 - 1) * 100
+                if _entry_pricing["legs"]:
+                    if "SELL PUT" in _strat_p or "加仓" in _strat_p:
+                        _entry_str = f"收${_entry_pricing['entry_price']:.2f}"
+                    else:
+                        _entry_str = f"${_entry_pricing['entry_price']:.2f}"
+                    # 现期权: 同合约 latest kline_db close
+                    _cur_total = 0.0; _cur_legs = []
+                    for _leg_label, _leg_code, _leg_K, _leg_qty in _entry_pricing["legs"]:
+                        _leg_kdb = _kdb[_kdb["code"] == _leg_code] if _kdb is not None else None
+                        if _leg_kdb is not None and len(_leg_kdb):
+                            _last = _leg_kdb.iloc[-1]["close"]
+                            _cur_legs.append((_leg_label, _last, _leg_qty))
+                        else:
+                            _cur_legs.append((_leg_label, None, _leg_qty))
+                    if all(c[1] is not None for c in _cur_legs):
+                        if "SELL PUT" in _strat_p or "加仓" in _strat_p:
+                            # short put - long put = current credit (低=赚)
+                            _cur_total = sum(-c[1] if c[2] == -1 else c[1]
+                                              for c in _cur_legs) * -1  # 负的 = 收
+                            # 修正: short_put leg qty=-1, long_put qty=1, sum = -short + long
+                            _cur_total = -sum(c[2] * c[1] for c in _cur_legs)
+                            _cur_str = f"平${_cur_total:.2f}"
+                            if _entry_pricing["entry_price"] > 0:
+                                _gain = ((_entry_pricing["entry_price"] - _cur_total)
+                                          / _entry_pricing["entry_price"]) * 100
+                        else:  # BUY CALL / STRADDLE
+                            _cur_total = sum(c[2] * c[1] for c in _cur_legs)
+                            _cur_str = f"${_cur_total:.2f}"
+                            if _entry_pricing["entry_price"] > 0:
+                                _gain = (_cur_total / _entry_pricing["entry_price"] - 1) * 100
                 elif "FUTURES" in _strat_p:
                     _entry_str = f"${_entry_spot:.2f}"
                     _cur_str = f"${_cur_spot2:.2f}"
@@ -3123,7 +3134,7 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                     "策略": _strat_p,
                     "入场Spot": f"${_entry_spot:.2f}",
                     "现Spot": f"${_cur_spot2:.2f}",
-                    "Strike": f"${_strike:.0f}" if _dte > 0 else "—",
+                    "期权合约": _entry_pricing.get("source", "—")[:30],
                     "入场期权": _entry_str,
                     "现期权": _cur_str,
                     "P&L%": f"{_gain:+.1f}%",
@@ -3212,80 +3223,73 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
 
     # ── (2) 近一月真实期权模拟 (30 天 × 30 DTE 期权) ──
     st.divider()
-    st.subheader("🎯 近一月期权模拟 (30 天 · 30 DTE 期权 BS入场 + chain现价)")
-    st.caption("一月前买的 30 DTE 期权理应未过期, 现仍可拉 chain.lastPrice 验真实盈亏")
+    st.subheader("🎯 近一月期权模拟 (30 天 · kline_db 真实 OHLC + 比例插值)")
+    st.caption("入场 = kline_db EOD + spot O/C 比例插值; 现 = 同合约 latest kline_db close")
     try:
         from core.paper_positions import (
-            estimate_straddle_premium as _bs_pair3,
-            find_active_expiry_near as _find_exp3,
-            fetch_chain_atm_premium as _chain_atm3,
-            bs_price as _bs3,
+            price_strategy_at as _price_strat3,
+            _load_kline_db as _kdb_load3,
         )
         _bt_30_start = pd.Timestamp(today_sgt) - timedelta(days=30)
         _bt_30_dates = sig_df.index[sig_df.index >= _bt_30_start]
         _today_dt3 = pd.Timestamp(today_sgt).normalize()
         _cur_spot3 = float(close_d.iloc[-1])
+        _kdb3 = _kdb_load3()
+        _gld_csv3 = pd.read_csv(
+            f"/Users/yhdong/Gold/data/raw/market/{asset_key.lower()}.csv",
+            index_col=0, parse_dates=True)
         _opt_recs = []
         for _d_o, _r_o in sig_df.loc[_bt_30_dates].iterrows():
-            _ch_o = _r_o.get("chosen", "")
-            if not _ch_o or _ch_o == "EXIT": continue
-            _strategy_o = _ch_o.split("+")[0].strip()
+            _bt_o = _r_o.get("buy_type")
+            if not _bt_o or not _r_o.get("buy_signal", False): continue
+            _strategy_o = _bt_o
             if _r_o.get("straddle_signal", False):
                 _strategy_o = "STRADDLE"
             _entry_spot_o = float(close_d.get(_d_o, 0))
             if _entry_spot_o <= 0: continue
-            _strike_o = (round(_entry_spot_o) if _entry_spot_o > 50
-                          else round(_entry_spot_o * 2) / 2)
-            _dte_o = 14 if _strategy_o == "STRADDLE" else 30
-            _target_exp_o = _d_o + pd.Timedelta(days=_dte_o)
-            _exp_str_o = _find_exp3(asset_key, _target_exp_o, tolerance_days=10)
-            _T_e_o = _dte_o / 365.0
-            _T_now_o = max(1, (_target_exp_o - _today_dt3).days) / 365.0
-            _iv_o = 0.20
+            # 入场日 OHLC
+            if _d_o in _gld_csv3.index:
+                _eO = float(_gld_csv3.loc[_d_o, "Open"])
+                _eC = float(_gld_csv3.loc[_d_o, "Close"])
+                _eH = float(_gld_csv3.loc[_d_o, "High"])
+                _eL = float(_gld_csv3.loc[_d_o, "Low"])
+            else:
+                _eO = _eC = _eH = _eL = _entry_spot_o
+            # 入场期权 (假设 09:30 ET 入场, 用 spot Open 比例)
+            _entry_pricing_o = _price_strat3(asset_key, _strategy_o, _d_o,
+                                                _d_o + pd.Timedelta(hours=9, minutes=30),
+                                                _eO, _eO, _eC, _eH, _eL,
+                                                dte_target=(14 if _strategy_o == "STRADDLE" else 30))
             _entry_str_o = "—"; _cur_str_o = "—"; _gain_o = 0.0
-            if _strategy_o == "STRADDLE":
-                _ec_o, _ep_o = _bs_pair3(_entry_spot_o, _strike_o, _dte_o, iv=_iv_o)
-                _ent_prem = _ec_o + _ep_o
-                _entry_str_o = f"${_ent_prem:.2f}"
-                _cc_o = _cp_o = None
-                if _exp_str_o and pd.Timestamp(_exp_str_o) >= _today_dt3:
-                    _cc_o, _cp_o, _ = _chain_atm3(asset_key, _exp_str_o, _cur_spot3)
-                if _cc_o is None or _cp_o is None:
-                    _cc2_o, _cp2_o = _bs_pair3(_cur_spot3, _strike_o,
-                                                max(1, (_target_exp_o - _today_dt3).days),
-                                                iv=_iv_o)
-                    _cc_o = _cc_o or _cc2_o; _cp_o = _cp_o or _cp2_o
-                _cur_prem = _cc_o + _cp_o
-                _cur_str_o = f"${_cur_prem:.2f}"
-                _gain_o = (_cur_prem / _ent_prem - 1) * 100 if _ent_prem > 0 else 0
-            elif "BUY CALL" in _strategy_o:
-                _ec_o = _bs3(_entry_spot_o, _strike_o, _T_e_o, 0.04, _iv_o, "C")
-                _entry_str_o = f"${_ec_o:.2f}"
-                _cc_o = None
-                if _exp_str_o and pd.Timestamp(_exp_str_o) >= _today_dt3:
-                    _cc_chain, _, _atm = _chain_atm3(asset_key, _exp_str_o, _cur_spot3)
-                    _cc_o = _cc_chain
-                if _cc_o is None:
-                    _cc_o = _bs3(_cur_spot3, _strike_o, _T_now_o, 0.04, _iv_o, "C")
-                _cur_str_o = f"${_cc_o:.2f}"
-                _gain_o = (_cc_o / _ec_o - 1) * 100 if _ec_o > 0 else 0
-            elif "SELL PUT" in _strategy_o:
-                _short_K = _strike_o; _long_K = round(_strike_o * 0.95)
-                _ps_o = _bs3(_entry_spot_o, _short_K, _T_e_o, 0.04, _iv_o, "P")
-                _pl_o = _bs3(_entry_spot_o, _long_K, _T_e_o, 0.04, _iv_o, "P")
-                _ent_credit = _ps_o - _pl_o
-                _entry_str_o = f"收${_ent_credit:.2f}"
-                _ps2_o = _bs3(_cur_spot3, _short_K, _T_now_o, 0.04, _iv_o, "P")
-                _pl2_o = _bs3(_cur_spot3, _long_K, _T_now_o, 0.04, _iv_o, "P")
-                _cur_credit = _ps2_o - _pl2_o
-                _cur_str_o = f"平${_cur_credit:.2f}"
-                _gain_o = (((_ent_credit - _cur_credit) / _ent_credit * 100)
-                            if _ent_credit > 0 else 0)
+            _exp_str_o = "—"
+            if _entry_pricing_o["legs"]:
+                _exp_str_o = _entry_pricing_o["legs"][0][1]  # code as expiry proxy
+                if "SELL PUT" in _strategy_o:
+                    _entry_str_o = f"收${_entry_pricing_o['entry_price']:.2f}"
+                else:
+                    _entry_str_o = f"${_entry_pricing_o['entry_price']:.2f}"
+                # 现期权: kline_db latest close per leg
+                _cur_total = 0.0; _ok = True
+                for _lab, _code, _K, _qty in _entry_pricing_o["legs"]:
+                    _kr = _kdb3[_kdb3["code"] == _code] if _kdb3 is not None else None
+                    if _kr is None or not len(_kr):
+                        _ok = False; break
+                    _cur_total += _qty * float(_kr.iloc[-1]["close"])
+                if _ok:
+                    if "SELL PUT" in _strategy_o:
+                        _cur_total = -_cur_total  # neg credit = current premium to close
+                        _cur_str_o = f"平${_cur_total:.2f}"
+                        if _entry_pricing_o["entry_price"] > 0:
+                            _gain_o = ((_entry_pricing_o["entry_price"] - _cur_total)
+                                        / _entry_pricing_o["entry_price"]) * 100
+                    else:
+                        _cur_str_o = f"${_cur_total:.2f}"
+                        if _entry_pricing_o["entry_price"] > 0:
+                            _gain_o = (_cur_total / _entry_pricing_o["entry_price"] - 1) * 100
             _opt_recs.append({
                 "信号日": _d_o.strftime("%m-%d"),
                 "策略": _strategy_o,
-                "Strike": f"${_strike_o:.0f}",
-                "到期": _exp_str_o or f"~+{_dte_o}d",
+                "合约": _entry_pricing_o.get("source", "—")[:35],
                 "入场Spot": f"${_entry_spot_o:.2f}",
                 "入场期权": _entry_str_o,
                 "现Spot": f"${_cur_spot3:.2f}",
