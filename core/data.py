@@ -82,11 +82,14 @@ def fetch_realtime_gold_fx(futures_ticker="GC=F"):
         gc_price = gc_info.get("lastPrice") or gc_info.get("previousClose")
         cny_rate = cny_info.get("lastPrice") or cny_info.get("previousClose")
         if gc_price and cny_rate:
+            from zoneinfo import ZoneInfo
             return {
                 "gc_price": float(gc_price),
                 "usdcny": float(cny_rate),
                 "shfe_approx": float(gc_price) * float(cny_rate) / 31.1035,
-                "timestamp": datetime.now().strftime("%H:%M:%S"),
+                # v3.7.76: 时间戳改用美东时间 (跟模型基础一致)
+                "timestamp": datetime.now(
+                    ZoneInfo("America/New_York")).strftime("%H:%M:%S ET"),
             }
     except Exception:
         pass
@@ -94,8 +97,17 @@ def fetch_realtime_gold_fx(futures_ticker="GC=F"):
 
 
 def get_today_sgt():
-    """返回 SGT (UTC+8) 的今日日期."""
-    return datetime.now(_TZ_SGT).date()
+    """v3.7.76: 返回美东 (ET, 自动夏冬令) 今日日期 — 全部代码统一 ET.
+    保留函数名 get_today_sgt 兼容旧调用, 实际返回 ET date.
+    """
+    from zoneinfo import ZoneInfo
+    return datetime.now(ZoneInfo("America/New_York")).date()
+
+
+def get_today_et():
+    """返回美东 (ET) 今日日期 (新名)."""
+    from zoneinfo import ZoneInfo
+    return datetime.now(ZoneInfo("America/New_York")).date()
 
 
 def auto_refresh_market_data(cfg: dict):

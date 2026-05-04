@@ -1664,7 +1664,7 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             from datetime import timedelta as _td
             from core.events import get_all_events
             _now_naive_lite = pd.Timestamp.now(
-                tz="Asia/Singapore").tz_localize(None)
+                tz="America/New_York").tz_localize(None)
             _ev_list = get_all_events(
                 _now_naive_lite.normalize().strftime("%Y-%m-%d"),
                 (_now_naive_lite + _td(days=14)).strftime("%Y-%m-%d"),
