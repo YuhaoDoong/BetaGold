@@ -2502,12 +2502,12 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         _live_buys_raw = _ig_detect(
             _kline_data, _thresholds_intra,
             _IG_Cfg(timeframe_minutes=_interval_min, side="BUY",
-                    rule_set=_IG_BUY, confirm_mode="any"),
+                    rule_set=_IG_BUY, confirm_mode=2),  # v3.7.82
             asset=asset_key, daily_low=low_d, daily_high=high_d)
         _live_exits_raw = _ig_detect(
             _kline_data, _thresholds_intra,
             _IG_Cfg(timeframe_minutes=_interval_min, side="EXIT",
-                    rule_set=_IG_EXIT, confirm_mode="any"),
+                    rule_set=_IG_EXIT, confirm_mode=2),  # v3.7.82
             asset=asset_key, daily_low=low_d, daily_high=high_d)
         # v3.7.67: 日内去重 — 同日多触发只保留显著加仓点 (≥0.5% 跌幅)
         _live_buys = _ig_dedupe(_live_buys_raw, side="BUY", min_drop_pct=1.5)

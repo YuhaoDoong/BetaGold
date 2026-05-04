@@ -252,7 +252,7 @@ class TriggerConfig:
     timeframe_minutes: int = 60        # 1h
     side: str = "BUY"                   # "BUY" or "EXIT"
     rule_set: Sequence[str] = DEFAULT_BUY_RULES
-    confirm_mode: str = "any"           # "any" / "all" / int (k_of_n)
+    confirm_mode: str | int = 2         # v3.7.82: any → 2-of-4 (单笔效率 +60%, win 79→81%)
     oversold: float = DEFAULT_STOCH_OVERSOLD
     overbought: float = DEFAULT_STOCH_OVERBOUGHT
     kdj_oversold: float = DEFAULT_KDJ_J_OVERSOLD
@@ -596,7 +596,7 @@ def backfill(kline: pd.DataFrame,
              timeframe_minutes: int = 60,
              buy_rules: Sequence[str] = DEFAULT_BUY_RULES,
              exit_rules: Sequence[str] = DEFAULT_EXIT_RULES,
-             confirm_mode: str | int = "any",
+             confirm_mode: str | int = 2,  # v3.7.82
              session_utc: tuple[time, time] | None = None,
              log_path: str | None = None) -> pd.DataFrame:
     """全量回填: 对 kline 同时跑 BUY 和 EXIT 配置, 写入 log."""
