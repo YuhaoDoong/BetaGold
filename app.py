@@ -2352,7 +2352,8 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             if len(_disp) == 0:
                 continue
             _xx = _proj_to_idx(list(_disp["trigger_time"]))
-            ax_price.scatter(_xx, _disp["price"].values, marker=_marker,
+            # v3.7.66: marker price × _r 转期货坐标 (跟 candle 一致)
+            ax_price.scatter(_xx, _disp["price"].values * _r, marker=_marker,
                              s=70, color=_color, edgecolors="black",
                              lw=0.7, zorder=8)
 
