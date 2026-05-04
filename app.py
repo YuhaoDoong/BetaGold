@@ -3000,6 +3000,27 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                 _is_strad_today = bool(_strad_today_df["straddle_signal"].iloc[0])
         except Exception:
             pass
+        # v3.7.100: dedupe 今日触发 — 策略 BUY 加仓需价跌 0.3%, 否则 419>418 不该加.
+        # 策略不同时独立 dedupe (premarket FUTURES vs RTH options 是两个 bucket).
+        from core.intraday_triggers import dedupe_intraday as _dd_today
+        def _dd_by_bucket(df, side):
+            if not len(df): return df
+            df = df.sort_values("trigger_time").copy()
+            df["_h"] = pd.to_datetime(df["trigger_time"]).dt.hour + \
+                        pd.to_datetime(df["trigger_time"]).dt.minute / 60.0
+            df["_bucket"] = df["_h"].apply(lambda h: "RTH" if 9.5 <= h <= 16.0 else "OFF")
+            out = []
+            for b, grp in df.groupby("_bucket", sort=False):
+                dd = _dd_today(grp.drop(columns=["_h","_bucket"]),
+                                side=side, min_drop_pct=0.3)
+                out.append(dd)
+            return pd.concat(out) if out else pd.DataFrame()
+        _today_buys = _today_log[_today_log["side"] == "BUY"]
+        _today_exits = _today_log[_today_log["side"] == "EXIT"]
+        _today_buys_dd = _dd_by_bucket(_today_buys, "BUY")
+        _today_exits_dd = _dd_by_bucket(_today_exits, "EXIT")
+        _today_log_dd = pd.concat([_today_buys_dd, _today_exits_dd]).sort_values("trigger_time") \
+            if len(_today_buys_dd) or len(_today_exits_dd) else pd.DataFrame()
         _rows1 = []
         from core.paper_positions import price_strategy_at as _price_strat
         # buy_type 是日线策略, 不是 chosen
@@ -3024,7 +3045,7 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                     _L_today = float(low_d.get(_today, _C_today))
             except Exception:
                 _H_today = _L_today = _C_today
-        for _, r in _today_log.iterrows():
+        for _, r in _today_log_dd.iterrows():
             _t = pd.Timestamp(r["trigger_time"])
             _h = _t.hour + _t.minute/60.0
             _is_rth = 9.5 <= _h <= 16.0
@@ -3062,9 +3083,10 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             })
         st.dataframe(pd.DataFrame(_rows1).iloc[::-1],
                       use_container_width=True, hide_index=True)
-        st.caption("RTH (09:30-16:00 ET) 触发用日线 buy_type; "
-                   "非 RTH 走期货多头 (期权未开盘). "
-                   "期权价 = kline_db EOD OHLC + spot 比例插值 (远比 BS+假IV 准).")
+        st.caption(f"raw {len(_today_log)} 笔 → dedupe (BUY 加仓需价跌 0.3%) "
+                   f"留 {len(_today_log_dd)} 笔. "
+                   f"RTH (09:30-16:00 ET) 走 {_today_buy_type or 'SPOT'}; "
+                   f"非 RTH 走期货多头. 期权价 = kline_db OHLC × spot 比例插值.")
     else:
         st.caption(f"今日 {today_sgt} 无盘中触发")
 
