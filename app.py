@@ -1164,11 +1164,11 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     # ── 加载盘中触发 log (在回测之前!), 构造每日代表价 ──
     from core.data import load_config, load_oos_predictions
     _intra_cfg = load_config()
-    # v3.7.68: 改用 average_of_day (dedupe 后均值) 替代 worst_of_day
-    # = 实际分批加仓的持仓均价 (比保守 worst 更贴近实战)
+    # v3.7.68/73: 用 dedupe-平均价 + 平均时间 (= 实战分批加仓的均时均价)
     from core.intraday_triggers import (
         load_log as _ig_load,
-        average_of_day as _ig_avg_global)
+        average_of_day as _ig_avg_global,
+        dedupe_intraday as _ig_dedupe_g)
     _intra_log_path = os.path.join(_intra_cfg["data_root"],
                                     "intraday_signal_log.parquet")
     _intra_log_full = _ig_load(_intra_log_path)
@@ -1180,6 +1180,20 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     _worst_exit_lookup = _ig_avg_global(_intra_log_asset, "EXIT",
                                            dedup_first=True, min_drop_pct=0.5) \
         if len(_intra_log_asset) else pd.DataFrame()
+    # v3.7.73: 计算每日 BUY/EXIT trigger 平均时间 (用于主图 marker x 位置)
+    def _avg_trigger_time(side):
+        if not len(_intra_log_asset): return {}
+        sub = _intra_log_asset[_intra_log_asset["side"] == side].copy()
+        out = {}
+        for d, grp in sub.groupby("date"):
+            dd = _ig_dedupe_g(grp, side=side, min_drop_pct=0.5)
+            if len(dd) == 0: continue
+            ts_list = pd.to_datetime(dd["trigger_time"])
+            avg_ns = ts_list.astype("int64").mean()
+            out[pd.Timestamp(d)] = pd.Timestamp(int(avg_ns))
+        return out
+    _avg_buy_time = _avg_trigger_time("BUY")
+    _avg_exit_time = _avg_trigger_time("EXIT")
 
     # 真实策略回测 — 入场/退出价用 log 代表价 + 3% 止损 + 连续熔断
     trades = run_backtest(
@@ -1909,18 +1923,27 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                     label=_legend_labels[_key])
     _legend_added = set()
 
-    # v3.7.72: helper — 找当日 US 开盘 09:30 EDT 对应的 1h bar 位置
+    # v3.7.72: helper — 美股开盘 09:30 EDT 1h bar 位置 (用于 STRADDLE/SHORT_VOL)
     def _xi_open(d):
-        """STRADDLE/SHORT_VOL 用此, 标在美股开盘瞬间 (= 北京 21:30)."""
         d_norm = pd.Timestamp(d).normalize()
-        # 找当日 09:30 EDT 或最接近的 (yfinance 1h 经常是 09:30 一个 bar)
         cands = [(i, ts) for i, ts in enumerate(plot_ts)
                  if ts.normalize() == d_norm
                  and 9 <= (ts.hour + ts.minute/60.0) <= 11]
         if cands:
-            # 取最早的 9-10 EDT bar
             return min(cands, key=lambda x: x[1])[0]
-        return xi(d)  # fallback
+        return xi(d)
+
+    # v3.7.73: helper — trigger 平均时间投影 (用于方向性 markers x 位置)
+    def _xi_at(ts):
+        """找最接近 ts 的 plot_ts 索引位置."""
+        if ts is None or pd.isna(ts):
+            return None
+        try:
+            target_num = mdates.date2num(pd.Timestamp(ts))
+            ref_nums = [mdates.date2num(t) for t in plot_ts]
+            return int(np.interp(target_num, ref_nums, np.arange(len(plot_ts))))
+        except Exception:
+            return None
 
     # v3.7.70/72: 混合信号不合并; STRADDLE/SHORT_VOL 标在美股开盘时间点
     for d, r in _unified_viz.iterrows():
@@ -1941,10 +1964,18 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                     else (160 if is_add else 120))
             edge = "purple" if is_add and part in ("BUY CALL", "SELL PUT") \
                    else "black"
-            # 方向性 markers 按 dedupe entry_p (= 平均价); STRADDLE/SHORT_VOL
-            # x 用美股开盘时间点 (而非每日首 bar)
-            _xi_target = (_xi_open(d)
-                          if part in ("STRADDLE", "SHORT_VOL") else xi(d))
+            # v3.7.73: x 位置精准 — STRADDLE/SHORT_VOL 美股开盘 (09:30 EDT);
+            # 方向性 BC/SP 用 trigger 平均时间 (反映加仓的时间分布)
+            if part in ("STRADDLE", "SHORT_VOL"):
+                _xi_target = _xi_open(d)
+            elif part in ("BUY CALL", "SELL PUT"):
+                _avg_t = _avg_buy_time.get(pd.Timestamp(d))
+                _xi_target = _xi_at(_avg_t) if _avg_t else xi(d)
+            elif part == "EXIT":
+                _avg_t = _avg_exit_time.get(pd.Timestamp(d))
+                _xi_target = _xi_at(_avg_t) if _avg_t else xi(d)
+            else:
+                _xi_target = xi(d)
             if _xi_target is None:
                 continue
             y_offset = j * (entry_p * 0.003)
@@ -2392,6 +2423,19 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
 
         # 截到显示窗口画散点
         _w_start, _w_end = _idx_1h[0], _idx_1h[-1]
+        # v3.7.73: 调试输出 — 让用户看到 dedupe 实际保留的 markers
+        if len(_live_buys) > 0:
+            _dbg = _live_buys[
+                (_live_buys["trigger_time"] >= _w_start) &
+                (_live_buys["trigger_time"] <= _w_end)].copy()
+            with st.expander(f"🔍 1h chart 标注的 BUY triggers ({len(_dbg)} 笔, dedupe 后)",
+                              expanded=False):
+                if len(_dbg):
+                    _dbg_show = _dbg[["trigger_time","price","rules"]].copy()
+                    _dbg_show["futures_price"] = (_dbg_show["price"] * _r).round(2)
+                    st.dataframe(_dbg_show, use_container_width=True)
+                else:
+                    st.caption("窗口内无触发")
         # v3.7.70: 1h marker 用跟主图同样的图例 (BUY CALL/SELL PUT/EXIT 颜色)
         # 颜色根据当日 chosen 决定 (BC=蓝 ▲ / SP=橙 ▲ / EXIT=红 ▼)
         # 如有 STRADDLE/SHORT_VOL 同时触发, 单独画 ★/P
