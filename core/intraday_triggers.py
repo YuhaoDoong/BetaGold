@@ -499,6 +499,52 @@ def best_of_day(triggers: pd.DataFrame, side: str = "BUY") -> pd.DataFrame:
     return _agg_of_day(triggers, side, "best")
 
 
+def average_of_day(triggers: pd.DataFrame, side: str = "BUY",
+                     dedup_first: bool = True,
+                     min_drop_pct: float = 0.5) -> pd.DataFrame:
+    """每日多触发取平均价 (= 实际分批加仓的持仓均价).
+
+    v3.7.68: 适合 dedupe_intraday 后的"显著加仓点"取平均 — 比 worst 更贴近实战.
+
+    Args:
+        dedup_first: 先 dedupe_intraday 再 average (避免噪音触发拖偏均值)
+        min_drop_pct: dedupe 阈值, 仅在 dedup_first=True 时生效
+
+    Returns: 每天一行 DataFrame, price = 当日 dedupe 后触发均价
+    """
+    if triggers is None or len(triggers) == 0:
+        return triggers
+    sub = triggers[triggers["side"] == side].copy()
+    if not len(sub):
+        return sub
+    if dedup_first:
+        # 按 date 分组分别 dedupe (dedupe_intraday 是日内逻辑)
+        out_rows = []
+        for d, grp in sub.groupby("date"):
+            dd = dedupe_intraday(grp, side=side, min_drop_pct=min_drop_pct)
+            if len(dd) > 0:
+                avg_p = dd["price"].mean()
+                first = dd.iloc[0].copy()
+                first["price"] = float(avg_p)
+                first["n_intraday"] = len(dd)
+                out_rows.append(first)
+        if not out_rows:
+            return sub.iloc[0:0]
+        return pd.DataFrame(out_rows).reset_index(drop=True)
+    # 不 dedupe — 直接所有 raw 取平均
+    grouped = sub.groupby("date").agg({
+        "price": "mean",
+        "trigger_time": "first",
+        "side": "first",
+        "asset": "first",
+        "timeframe": "first",
+        "rules": "first",
+        "bp_threshold": "first",
+        "n_confirms": "max",
+    }).reset_index()
+    return grouped
+
+
 def first_of_day(triggers: pd.DataFrame, side: str = "BUY") -> pd.DataFrame:
     """每日多触发取最早一次 (按时间)."""
     return _agg_of_day(triggers, side, "first")

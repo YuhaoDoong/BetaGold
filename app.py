@@ -1146,16 +1146,21 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     # ── 加载盘中触发 log (在回测之前!), 构造每日代表价 ──
     from core.data import load_config, load_oos_predictions
     _intra_cfg = load_config()
+    # v3.7.68: 改用 average_of_day (dedupe 后均值) 替代 worst_of_day
+    # = 实际分批加仓的持仓均价 (比保守 worst 更贴近实战)
     from core.intraday_triggers import (
-        load_log as _ig_load, worst_of_day as _ig_worst_global)
+        load_log as _ig_load,
+        average_of_day as _ig_avg_global)
     _intra_log_path = os.path.join(_intra_cfg["data_root"],
                                     "intraday_signal_log.parquet")
     _intra_log_full = _ig_load(_intra_log_path)
     _intra_log_asset = _intra_log_full[_intra_log_full["asset"] == asset_key] \
         if len(_intra_log_full) else _intra_log_full
-    _worst_buy_lookup = _ig_worst_global(_intra_log_asset, "BUY") \
+    _worst_buy_lookup = _ig_avg_global(_intra_log_asset, "BUY",
+                                          dedup_first=True, min_drop_pct=0.5) \
         if len(_intra_log_asset) else pd.DataFrame()
-    _worst_exit_lookup = _ig_worst_global(_intra_log_asset, "EXIT") \
+    _worst_exit_lookup = _ig_avg_global(_intra_log_asset, "EXIT",
+                                           dedup_first=True, min_drop_pct=0.5) \
         if len(_intra_log_asset) else pd.DataFrame()
 
     # 真实策略回测 — 入场/退出价用 log 代表价 + 3% 止损 + 连续熔断
