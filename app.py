@@ -3407,56 +3407,208 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     else:
         st.caption("近 60 天内无已平仓信号 (vol 都还在 hold 期内, 方向性无 EXIT trigger)")
 
-    # v3.7.110: 全历史回测分析 — 5 策略 × 3 阶段路由
+    # v3.7.118: 全历史回测分析 — 全面改写 (基于 v3.7.115/117 真实期权回测)
     st.divider()
-    st.subheader(f"📚 全历史回测 ({asset_key}, 5 年 × 5 策略, 3 阶段数据源路由)")
-    st.caption("阶段 1 (>1y): spot delta proxy · 阶段 2 (1y~60d): kline_db EOD 期权 · "
-               "阶段 3 (<60d): kline_db + 真实退出规则 · "
-               "运行: `python scripts/full_history_backtest.py`")
+    st.header(f"📚 全历史回测分析 ({asset_key})")
+    st.caption(
+        "数据源: scripts/full_history_backtest.py 输出. "
+        "stage1 (kline_db 前): 仅 FUTURES (spot move). "
+        "stage2 (kline_db 后, 2025-04-29 起): 全 kline_db EOD OHLC 真实价格 + 真退出规则. "
+        "v3.7.117 IV 三阶过滤已生效."
+    )
     _bt_csv = (f"/Users/yhdong/Gold/data/backtest_history/"
                 f"backtest_{asset_key.lower()}_"
                 f"{pd.Timestamp(today_sgt).strftime('%Y%m%d')}.csv")
+    if not os.path.exists(_bt_csv):
+        # fallback 拿最近的
+        import glob
+        _candidates = sorted(glob.glob(
+            f"/Users/yhdong/Gold/data/backtest_history/"
+            f"backtest_{asset_key.lower()}_*.csv"))
+        if _candidates: _bt_csv = _candidates[-1]
     if os.path.exists(_bt_csv):
         _bt_df = pd.read_csv(_bt_csv, parse_dates=["signal_date", "exit_date"])
-        # 按策略汇总
-        _by_strat = []
-        for strat, sub in _bt_df.groupby("strategy"):
+        st.caption(f"📁 数据: `{os.path.basename(_bt_csv)}` ({len(_bt_df)} 笔记录)")
+        # v3.7.118: 真实期权 = stage2 LEAPS + stage3 近月
+        _real = _bt_df[_bt_df["stage"].isin(["stage2_leaps", "stage3_short_options"])]
+        st.markdown(f"#### 🎯 真实期权汇总 ({len(_real)} 笔 = LEAPS + 近月)")
+
+        # ─── (0) 策略 × Stage 二维表 (核心: LEAPS vs 近月) ───
+        st.markdown("**🔥 策略 × Stage 矩阵 (LEAPS vs 近月差异)**")
+        _matrix = []
+        for strat in ["BUY CALL", "SELL PUT", "STRADDLE", "FUTURES_LONG"]:
+            row = {"策略": strat}
+            for stage_lbl, stage_id in [
+                    ("stage1 现货", "stage1_spot_only"),
+                    ("stage2 LEAPS", "stage2_leaps"),
+                    ("stage3 近月", "stage3_short_options"),
+                    ("全期", None)]:
+                if stage_id:
+                    sub = _bt_df[(_bt_df["strategy"] == strat) & (_bt_df["stage"] == stage_id)]
+                else:
+                    sub = _bt_df[_bt_df["strategy"] == strat]
+                if len(sub):
+                    wr = (sub["pnl_pct"] > 0).mean() * 100
+                    row[stage_lbl] = f"{len(sub)}/{wr:.0f}%/{sub['pnl_pct'].sum():+.0f}%"
+                else:
+                    row[stage_lbl] = "—"
+            _matrix.append(row)
+        st.dataframe(pd.DataFrame(_matrix), use_container_width=True, hide_index=True)
+        st.caption("格式: n / 胜率 / 累计%. **LEAPS theta 小 vega 主导, 近月 theta 衰减快**.")
+
+        # ─── (1) 按策略汇总 ───
+        st.markdown("**📊 真实期权策略表现**")
+        _by_strat_real = []
+        for strat, sub in _real.groupby("strategy"):
+            if not len(sub): continue
             wins = (sub["pnl_pct"] > 0).sum()
-            _by_strat.append({
+            _by_strat_real.append({
                 "策略": strat, "n": len(sub),
                 "胜率": f"{wins / len(sub) * 100:.1f}%",
                 "单笔均": f"{sub['pnl_pct'].mean():+.2f}%",
-                "std": f"{sub['pnl_pct'].std():.2f}%",
-                "累计": f"{sub['pnl_pct'].sum():+.0f}%",
-                "Sharpe": f"{sub['pnl_pct'].mean() / sub['pnl_pct'].std() * (252**0.5):.2f}"
-                            if sub['pnl_pct'].std() > 0 else "—",
+                "单笔std": f"{sub['pnl_pct'].std():.2f}%",
+                "累计 P&L": f"{sub['pnl_pct'].sum():+.0f}%",
+                "最佳": f"{sub['pnl_pct'].max():+.0f}%",
+                "最差": f"{sub['pnl_pct'].min():+.0f}%",
             })
-        st.markdown("**📊 按策略汇总**")
-        st.dataframe(pd.DataFrame(_by_strat), use_container_width=True, hide_index=True)
-        # 按时段
-        _by_stage = []
+        if _by_strat_real:
+            st.dataframe(pd.DataFrame(_by_strat_real),
+                          use_container_width=True, hide_index=True)
+
+        # ─── (2) GVZ IV 三阶 × 策略 (核心 v3.7.117 验证) ───
+        if "gvz_iv_pct" in _real.columns and (_real["gvz_iv_pct"] > 0).any():
+            st.markdown("**🌡️ GVZ IV 三阶 × 策略 (验证 v3.7.117 三阶规则)**")
+            _bins = [(0, 22, "低 IV (<22) BC 优"),
+                      (22, 28, "中 IV (22-28) 二次确认"),
+                      (28, 100, "高 IV (>28) 深破+SP")]
+            _iv_rows = []
+            for lo, hi, label in _bins:
+                _b = _real[(_real["gvz_iv_pct"] >= lo) & (_real["gvz_iv_pct"] < hi)]
+                row = {"IV 区间": label, "总笔": len(_b)}
+                for strat in ["BUY CALL", "SELL PUT", "STRADDLE"]:
+                    _ss = _b[_b["strategy"] == strat]
+                    if len(_ss):
+                        wr = (_ss["pnl_pct"] > 0).mean() * 100
+                        row[f"{strat} n/wr/cum"] = (
+                            f"{len(_ss)}/{wr:.0f}%/{_ss['pnl_pct'].sum():+.0f}%")
+                    else:
+                        row[f"{strat} n/wr/cum"] = "—"
+                _iv_rows.append(row)
+            st.dataframe(pd.DataFrame(_iv_rows),
+                          use_container_width=True, hide_index=True)
+
+        # ─── (3) RV%tile × 策略 (BC↔SP 切点) ───
+        st.markdown("**📈 RV%tile × 策略 (验证 BC↔SP 切点)**")
+        _rv_rows = []
+        for lo, hi in [(0, 0.25), (0.25, 0.5), (0.5, 0.75), (0.75, 1.01)]:
+            _b = _real[(_real["rv_pctile"] >= lo) & (_real["rv_pctile"] < hi)]
+            row = {"RV%tile 区间": f"[{lo:.2f}, {hi:.2f})", "总笔": len(_b)}
+            for strat in ["BUY CALL", "SELL PUT", "STRADDLE"]:
+                _ss = _b[_b["strategy"] == strat]
+                if len(_ss):
+                    wr = (_ss["pnl_pct"] > 0).mean() * 100
+                    row[strat] = f"{len(_ss)}/{wr:.0f}%"
+                else:
+                    row[strat] = "—"
+            _rv_rows.append(row)
+        st.dataframe(pd.DataFrame(_rv_rows),
+                      use_container_width=True, hide_index=True)
+
+        # ─── (4) bp_low 深破阈值效果 (高 IV 区间) ───
+        if "bp_low" in _real.columns:
+            st.markdown("**📉 bp_low 深破阈值 × 高 IV 过滤效果**")
+            _hi_iv = _real[_real["gvz_iv_pct"] >= 28]
+            _bp_rows = []
+            for thresh in [1.0, 0.30, 0.20, 0.10, 0.05]:
+                _b = _hi_iv[_hi_iv["bp_low"] <= thresh]
+                row = {"bp_low ≤": f"{thresh:.2f}", "总笔": len(_b)}
+                for strat in ["BUY CALL", "SELL PUT"]:
+                    _ss = _b[_b["strategy"] == strat]
+                    if len(_ss):
+                        wr = (_ss["pnl_pct"] > 0).mean() * 100
+                        row[f"{strat} wr/cum"] = (
+                            f"{wr:.0f}%/{_ss['pnl_pct'].sum():+.0f}%")
+                    else:
+                        row[f"{strat} wr/cum"] = "—"
+                _bp_rows.append(row)
+            st.dataframe(pd.DataFrame(_bp_rows),
+                          use_container_width=True, hide_index=True)
+
+        # ─── (5) Regime × 策略 ───
+        st.markdown("**🌐 Regime × 策略 (胜率/笔数)**")
+        try:
+            _reg_rows = []
+            for reg, sub in _real.groupby("regime"):
+                if not len(sub): continue
+                row = {"Regime": reg}
+                for strat in ["BUY CALL", "SELL PUT", "STRADDLE", "FUTURES_LONG"]:
+                    _ss = sub[sub["strategy"] == strat]
+                    if len(_ss):
+                        wr = (_ss["pnl_pct"] > 0).mean() * 100
+                        row[strat] = f"{wr:.0f}%/{len(_ss)}"
+                    else:
+                        row[strat] = "—"
+                _reg_rows.append(row)
+            st.dataframe(pd.DataFrame(_reg_rows),
+                          use_container_width=True, hide_index=True)
+        except Exception:
+            pass
+
+        # ─── (6) 推荐 portfolio 比较 ───
+        st.markdown("**🏆 Portfolio 比较 (累计 P&L)**")
+        _portfolios = []
+        portfolios_def = {
+            "BC only": _real[_real["strategy"] == "BUY CALL"],
+            "SP only": _real[_real["strategy"] == "SELL PUT"],
+            "STRADDLE only": _real[_real["strategy"] == "STRADDLE"],
+            "BC + STRADDLE": _real[_real["strategy"].isin(["BUY CALL", "STRADDLE"])],
+            "BC + STRADDLE + FUTURES (推荐)": _bt_df[_bt_df["strategy"].isin(
+                ["BUY CALL", "STRADDLE", "FUTURES_LONG"])],
+            "全策略 (5 全开)": _bt_df,
+        }
+        for name, sub in portfolios_def.items():
+            if not len(sub): continue
+            wr = (sub["pnl_pct"] > 0).mean() * 100
+            _portfolios.append({
+                "Portfolio": name,
+                "笔数": len(sub),
+                "胜率": f"{wr:.1f}%",
+                "单笔均": f"{sub['pnl_pct'].mean():+.2f}%",
+                "累计": f"{sub['pnl_pct'].sum():+.0f}%",
+            })
+        st.dataframe(pd.DataFrame(_portfolios),
+                      use_container_width=True, hide_index=True)
+
+        # ─── (7) 时段统计 (stage1 vs stage2) ───
+        st.markdown("**📅 stage1 (FUTURES only, kline_db 前) vs stage2 (真实期权)**")
+        _stage_rows = []
         for stage, sub in _bt_df.groupby("stage"):
             wins = (sub["pnl_pct"] > 0).sum()
-            _by_stage.append({
-                "时段": stage, "n": len(sub),
+            _stage_rows.append({
+                "stage": stage, "n": len(sub),
                 "胜率": f"{wins / len(sub) * 100:.1f}%",
                 "单笔均": f"{sub['pnl_pct'].mean():+.2f}%",
                 "累计": f"{sub['pnl_pct'].sum():+.0f}%",
             })
-        st.markdown("**📅 按时段汇总**")
-        st.dataframe(pd.DataFrame(_by_stage), use_container_width=True, hide_index=True)
-        # Regime × 策略 cross-tab
-        st.markdown("**🌐 Regime × 策略 (胜率)**")
-        try:
-            _ct = _bt_df.pivot_table(
-                index="regime", columns="strategy",
-                values="pnl_pct", aggfunc=lambda x: f"{(x>0).mean()*100:.0f}%/{len(x)}")
-            st.dataframe(_ct, use_container_width=True)
-        except Exception:
-            st.caption("regime 交叉统计跳过")
+        st.dataframe(pd.DataFrame(_stage_rows),
+                      use_container_width=True, hide_index=True)
+
+        # ─── 重跑入口 ───
+        st.divider()
+        with st.expander("⚙️ 重跑回测 / grid search 命令"):
+            st.code(
+                "# 重跑全历史 (~1 min)\n"
+                "python scripts/full_history_backtest.py\n\n"
+                "# IV × bp_low 三阶 grid (验证 v3.7.117 规则)\n"
+                "python scripts/test_iv_bp_filter.py\n\n"
+                "# BC vs SP 切点 grid\n"
+                "python scripts/optimize_bc_sp_split.py\n\n"
+                "# portfolio 比较 grid\n"
+                "python scripts/optimize_params_grid.py",
+                language="bash")
     else:
         st.warning(f"无回测 CSV ({_bt_csv}). 运行: "
-                    f"`python scripts/full_history_backtest.py`")
+                    f"`python scripts/full_history_backtest.py` 生成.")
 
     # ── (1) 日线简易回测 (180 天) ──
     st.divider()
