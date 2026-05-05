@@ -482,7 +482,7 @@ def price_strategy_at(asset: str, strategy: str,
                             daily_close_price=c["close"] - sc["close"],
                             kline_codes=[c["code"], sc["code"]],
                             source=f"+C${c['strike']:.0f}/-C${sc['strike']:.0f} ({_e})")
-    elif "SELL PUT" in strategy:
+    elif "SELL PUT" in strategy or "SHORT_VOL" in strategy:
         sp = pick_liquid_monthly_option(asset, signal_date, spot_at_trigger,
                                            "P", dte_target)
         # OTM put -5% (流动性容差)
@@ -551,6 +551,15 @@ def price_strategy_at(asset: str, strategy: str,
                         daily_close_price=c["close"] + p["close"],
                         kline_codes=[c["code"], p["code"]],
                         source=f"C${c['strike']:.0f}+P${p['strike']:.0f} ({_e})")
+    elif "FUTURES" in strategy:
+        # v3.7.107: 期货多头 — 直接 spot, 无 leg/kline_db
+        out.update(legs=[("futures_long", f"{asset}_FUT", spot_at_trigger, 1)],
+                    entry_price=spot_at_trigger,
+                    leg_prices=[("futures_long", spot_at_trigger)],
+                    daily_open_price=daily_O,
+                    daily_close_price=daily_C,
+                    kline_codes=[],
+                    source=f"{asset} 期货多头 @ ${spot_at_trigger:.2f}")
     return out
 
 
@@ -572,6 +581,33 @@ def simulate_option_exit(entry_pricing: dict, signal_date: pd.Timestamp,
 
     返回 {is_closed, exit_date, exit_value, exit_reason, pnl_pct}
     """
+    # v3.7.107: FUTURES_LONG 无 kline_db, 直接 spot 跟踪
+    if "FUTURES" in strategy:
+        # 入场后第二天 close 平仓 (overnight 期货, 当日 RTH 转期权)
+        try:
+            import pandas as pd
+            asset_key = entry_pricing["legs"][0][1].split("_")[0]
+            csv_p = f"/Users/yhdong/Gold/data/raw/market/{asset_key.lower()}.csv"
+            spot_df = pd.read_csv(csv_p, index_col=0, parse_dates=True)
+            sig_d = pd.Timestamp(signal_date).normalize()
+            entry_value = entry_pricing["entry_price"]
+            later = spot_df.index[spot_df.index > sig_d]
+            if len(later) >= 1:
+                _exit_d = later[0]  # 下一交易日 close
+                if _exit_d <= today_dt:
+                    cur = float(spot_df.loc[_exit_d, "Close"])
+                    return {"is_closed": True, "exit_date": _exit_d,
+                             "exit_value": cur, "exit_reason": "下日 close",
+                             "pnl_pct": (cur / entry_value - 1) * 100,
+                             "leg_prices": [("futures_long", cur)]}
+            # 仍持仓 (未到 close 时间)
+            cur = float(spot_df["Close"].iloc[-1])
+            return {"is_closed": False, "current_value": cur,
+                     "hold_days": 0,
+                     "pnl_pct": (cur / entry_value - 1) * 100,
+                     "leg_prices": [("futures_long", cur)]}
+        except Exception:
+            return {"is_closed": False}
     db = _load_kline_db()
     if db is None or not entry_pricing.get("legs"):
         return {"is_closed": False}
