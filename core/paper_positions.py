@@ -584,8 +584,8 @@ def simulate_option_exit(entry_pricing: dict, signal_date: pd.Timestamp,
     # v3.7.107: FUTURES_LONG 无 kline_db, 直接 spot 跟踪
     if "FUTURES" in strategy:
         # 入场后第二天 close 平仓 (overnight 期货, 当日 RTH 转期权)
+        # v3.7.108: 不要 local import pd — 会让函数其他分支用 pd 时 UnboundLocalError
         try:
-            import pandas as pd
             asset_key = entry_pricing["legs"][0][1].split("_")[0]
             csv_p = f"/Users/yhdong/Gold/data/raw/market/{asset_key.lower()}.csv"
             spot_df = pd.read_csv(csv_p, index_col=0, parse_dates=True)

@@ -1581,6 +1581,14 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         )
         st.info(_signal_label)
 
+        # v3.7.108: 缩小状态栏字体 (今日窗口/盘中实时/当日信号 显示不全)
+        st.markdown("""
+        <style>
+        div[data-testid="stMetricLabel"] p { font-size: 0.85rem !important; }
+        div[data-testid="stMetricValue"] { font-size: 1.1rem !important; }
+        div[data-testid="stMetricDelta"] { font-size: 0.75rem !important; }
+        </style>
+        """, unsafe_allow_html=True)
         sb1, sb2, sb3, sb4, sb5 = st.columns(5)
         with sb1:
             # v3.7.54/55: 三态 — 可入场 / 已触过 (含 pre-market 反弹) / 未开启
