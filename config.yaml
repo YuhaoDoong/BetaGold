@@ -14,6 +14,9 @@ paths:
   labels: "processed/labels.parquet"
   gld_csv: "raw/market/gld.csv"
   gold_futures_csv: "raw/market/gold_futures.csv"
-  oos_predictions: "models/dl_range_v2_oos.parquet"
+  # v3.7.106: 切到 GC=F (纽约金期货 23h) 训练的模型
+  # ETF 价格波动会扩大 close-to-close 偏差 → 期货价更稳定
+  oos_predictions: "models/dl_range_gc_oos.parquet"
+  oos_predictions_gld: "models/dl_range_v2_oos.parquet"  # 备用 (旧 GLD ETF 模型)
   usdcny_csv: "raw/market/usdcny.csv"
   eod_snapshots: "raw/options_history"

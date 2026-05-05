@@ -448,7 +448,9 @@ def extend_oos_predictions(cfg: dict, asset: str = "gld"):
         feat_path = os.path.join(data_root, "processed", "features_slv.parquet")
     else:
         oos_path = cfg["resolved"]["oos_predictions"]
-        model_path = os.path.join(os.path.dirname(oos_path), "dl_range_v2_model.pkl")
+        # v3.7.106: model_path 从 oos 文件名推 (e.g. dl_range_gc_oos.parquet → dl_range_gc_model.pkl)
+        _stem = os.path.basename(oos_path).replace("_oos.parquet", "_model.pkl")
+        model_path = os.path.join(os.path.dirname(oos_path), _stem)
         feat_path = cfg["resolved"]["features"]
 
     if not os.path.exists(model_path) or not os.path.exists(oos_path) \
