@@ -40,15 +40,13 @@ from core.binance_futures import compute_liquidation_price, estimate_futures_pnl
 
 
 def stage_for(date: pd.Timestamp, today: pd.Timestamp) -> str:
-    """v3.7.112 重新划分:
-    stage1 (>2y): 简易日线 spot 方向胜率 (只 FUTURES + 方向性 BC/SP win-only)
-    stage2 (2y~90d): LEAPS 期权估价 (yfinance LEAPS daily 或 BS + GVZ 历史)
-    stage3 (<90d):  kline_db EOD 真实期权 OHLC + 真退出规则
+    """v3.7.115 简化 2 阶段 (用户: 只有真实期权才比较):
+    stage1 (kline_db 前, <2025-04-29): 简易 spot 方向 — FUTURES only, BC/SP/STRADDLE 跳过
+    stage2 (kline_db 后): kline_db EOD 真实期权 OHLC + 真退出规则
     """
-    days = (today - date).days
-    if days <= 90: return "stage3_kline_db"
-    if days <= 730: return "stage2_leaps"
-    return "stage1_spot_direction"
+    KLINE_START = pd.Timestamp("2025-04-29")
+    if date >= KLINE_START: return "stage2_kline_real"
+    return "stage1_spot_only"
 
 
 def simulate_futures_history(entry_d: pd.Timestamp, entry_spot_etf: float,
@@ -102,27 +100,22 @@ def simulate_stage1_spot_direction(entry_d: pd.Timestamp, entry_spot: float,
 
     持有 5 trading days, 看 spot close-to-close move.
     """
+    # v3.7.115: stage1 (>2y) 只跑 FUTURES_LONG (spot move %), 其他全部跳过
+    # 用户原话: "stage1 历史久远的是日线简易信号, 哪来 sell put?"
+    # 只有真实期权数据 (stage2/3) 才比较 BC vs SP.
     s = strategy.upper()
-    if s in ("STRADDLE", "SHORT_VOL"):
-        return {"closed": False, "reason": "stage1 跳过 vol 策略"}
+    if s != "FUTURES_LONG":
+        return {"closed": False, "reason": "stage1 只跑 FUTURES (无真期权数据)"}
     later = asset_csv.index[asset_csv.index > entry_d]
     if len(later) < 5: return {"closed": False}
     exit_d = later[4]
     if pd.Timestamp(exit_d) > today: return {"closed": False}
     exit_spot = float(asset_csv.loc[exit_d, "Close"])
     move = (exit_spot / entry_spot - 1) * 100
-    if s == "FUTURES_LONG" or s == "BUY CALL":
-        # 上涨赢 / 下跌输. 期货按真实 move (杠杆另算), BC 信号方向胜率
-        pnl = move
-    elif s == "SELL PUT":
-        # 横盘+上涨赢, 大跌输. spot 视角: 反 move 直觉
-        pnl = -move  # spot 跌 = SELL PUT 输, spot 涨 = SELL PUT 赢 (信号方向)
-    else:
-        pnl = move
     return {"closed": True, "exit_date": pd.Timestamp(exit_d),
              "entry_spot": entry_spot, "exit_spot": exit_spot,
-             "ret_spot_pct": move, "pnl_pct": pnl,
-             "reason": "5d spot direction", "hold_days": 5}
+             "ret_spot_pct": move, "pnl_pct": move,
+             "reason": "5d spot move (FUTURES only)", "hold_days": 5}
 
 
 def simulate_stage2_leaps(entry_d: pd.Timestamp, entry_spot: float,
@@ -280,17 +273,18 @@ def main():
                 n_total += 1
                 if "FUTURES" in strat:
                     res = simulate_futures_history(d, entry_spot, ratio, daily, today)
-                elif stage == "stage1_spot_direction":
-                    res = simulate_stage1_spot_direction(d, entry_spot, strat, daily, today)
-                elif stage == "stage2_leaps":
-                    res = simulate_stage2_leaps(d, entry_spot, strat, asset_key, daily, today, gvz_df)
-                else:  # stage3_kline_db
+                elif stage == "stage1_spot_only":
+                    # 无真实期权数据期, BC/SP/STRADDLE 全跳过
+                    if strat != "FUTURES_LONG":
+                        continue
+                    res = simulate_futures_history(d, entry_spot, ratio, daily, today)
+                else:  # stage2_kline_real — 真实 kline_db EOD OHLC
                     res = simulate_option_stage23(d, entry_spot, strat, asset_key, daily, today)
-                # v3.7.114: stage3 OPEN 但 mark-to-market 也算入 grid (近 90d 多数还在持仓)
+                # v3.7.115: 持仓中 MTM 也算入 grid (用真实 kline_db latest close)
                 if not res.get("closed"):
-                    if stage == "stage3_kline_db" and "pnl_pct" in res:
+                    if stage == "stage2_kline_real" and "pnl_pct" in res:
                         res["closed"] = True
-                        res["reason"] = "MTM (持仓中)"
+                        res["reason"] = "MTM (持仓中, 真实期权 latest close)"
                     else:
                         continue
                 # v3.7.114: 加 raw RV (10d annualized %) + GVZ IV 列, 给 grid IV-RV gap
