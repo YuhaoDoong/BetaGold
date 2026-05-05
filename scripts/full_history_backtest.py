@@ -40,15 +40,16 @@ from core.binance_futures import compute_liquidation_price, estimate_futures_pnl
 
 
 def stage_for(date: pd.Timestamp, today: pd.Timestamp) -> str:
-    """v3.7.119 撤回 LEAPS 拆分 (前次 wr 差异是时段 bias 不是策略优势).
-    都用近月 DTE (45/14/30), 跟实际交易一致.
-    stage1 (<kline_db): FUTURES only
-    stage2 (kline_db 后): 近月期权真实回测
-    输出 sub_period 列细分时段.
+    """v3.7.120 主辅明确:
+    stage1 (<kline_db): FUTURES only (历史背景, 不参数优化)
+    stage2_main_3m (近 90d): 主回测 — 近月期权 DTE 45/14/30, **参数优化主要数据**
+    stage2_leaps_aux (90~365d): 辅 — 同样近月 DTE (跟主一致), 用于扩样本
     """
     KLINE_START = pd.Timestamp("2025-04-29")
     if date < KLINE_START: return "stage1_spot_only"
-    return "stage2_options_real"
+    days = (today - date).days
+    if days <= 90: return "stage2_main_3m"
+    return "stage2_leaps_aux"
 
 
 def simulate_futures_history(entry_d: pd.Timestamp, entry_spot_etf: float,
@@ -291,13 +292,13 @@ def main():
                     if strat != "FUTURES_LONG":
                         continue
                     res = simulate_futures_history(d, entry_spot, ratio, daily, today)
-                else:  # stage2_options_real
+                else:  # stage2_main_3m OR stage2_leaps_aux 都用同 DTE 45
                     res = simulate_option_stage23(d, entry_spot, strat, asset_key,
                                                        daily, today)
                 # v3.7.119: MTM 也保留 (paired comparison 需要同信号 BC + SP 都有数据)
                 # 加 is_mtm 标记区分真闭环 vs 持仓 mtm
                 if not res.get("closed"):
-                    if "pnl_pct" in res:
+                    if "pnl_pct" in res and stage in ("stage2_main_3m", "stage2_leaps_aux"):
                         res["closed"] = True
                         res["reason"] = "MTM"
                         res["is_mtm"] = True

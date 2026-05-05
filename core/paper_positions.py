@@ -628,24 +628,43 @@ def simulate_option_exit(entry_pricing: dict, signal_date: pd.Timestamp,
     is_credit = "SELL PUT" in strategy or "SHORT_VOL" in strategy
     is_long_vol = "STRADDLE" in strategy
     is_long_dir = "BUY CALL" in strategy
-    # 取首 leg 的 expiry (假设所有 legs 同 expiry)
+    # v3.7.120: credit spread max_risk = spread_width - credit (Reg-T margin)
+    # PnL% 用 max_risk 当分母 (跟 BUY CALL 用 premium 当分母对称)
+    spread_width = 0.0
+    if is_credit and len(legs) >= 2:
+        # short put @ K_short / long put @ K_long < K_short
+        ks = [l[2] for l in legs if "short" in l[0]]
+        kl = [l[2] for l in legs if "put" in l[0] and "short" not in l[0]]
+        if ks and kl:
+            spread_width = abs(ks[0] - kl[0])  # e.g. $20
+    max_risk = (spread_width - entry_value) if (is_credit and spread_width > 0) \
+                else entry_value
+    if max_risk <= 0: max_risk = max(0.01, entry_value)
+    # 取首 leg 的 expiry
     first_code = legs[0][1]
     first_kdb = db[db["code"] == first_code]
     if not len(first_kdb): return {"is_closed": False}
     expiry_dt = pd.Timestamp(first_kdb.iloc[0]["expiry"])
-    # 退出规则
+    # 退出规则 (基于 max_risk 比例, 跟券商 margin 一致)
     if is_credit:
-        profit_target = entry_value * 0.5  # cur_credit ≤ 0.5 × entry → +50%
-        # v3.7.109: stop 从 2.0× 降到 1.5× (50% 损 = 通常 stop, 100% 太晚)
-        stop_loss = entry_value * 1.5       # cur_credit ≥ 1.5 × entry → -50%
+        # +50% on margin → cur_credit ≤ 0.5 × entry (收一半利润)
+        profit_target = entry_value * 0.5
+        # -50% on margin → loss = 0.5 × max_risk → cur_credit = entry + 0.5 × max_risk
+        stop_loss = entry_value + 0.5 * max_risk
     elif is_long_vol:
-        profit_target = entry_value * 2.0   # cur_value ≥ 2 × entry → +100%
-        stop_loss = None                      # 长 vol 不主动止损, 等 14d
+        profit_target = entry_value * 2.0
+        stop_loss = None
     elif is_long_dir:
-        profit_target = entry_value * 2.0   # +100%
-        stop_loss = entry_value * 0.5        # -50%
+        profit_target = entry_value * 2.0
+        stop_loss = entry_value * 0.5
     else:
         profit_target = stop_loss = None
+
+    def _pnl_pct(cv):
+        """统一 PnL% 公式 (max_risk 分母, 跟券商 margin 一致)."""
+        if is_credit:
+            return (entry_value - cv) / max_risk * 100
+        return (cv / entry_value - 1) * 100
     # 逐日 MTM
     sig_d = pd.Timestamp(signal_date).normalize()
     days = sorted(set(db[db["code"].isin([l[1] for l in legs])]["date"].unique()))
@@ -676,9 +695,7 @@ def simulate_option_exit(entry_pricing: dict, signal_date: pd.Timestamp,
             return {"is_closed": True, "exit_date": d_ts,
                      "exit_value": cur_value, "exit_reason": "+50% profit"
                      if is_credit else "+100% profit",
-                     "pnl_pct": ((entry_value - cur_value) / entry_value * 100
-                                  if is_credit
-                                  else (cur_value / entry_value - 1) * 100),
+                     "pnl_pct": _pnl_pct(cur_value),
                      "leg_prices": leg_prices_at_exit}
         if stop_loss is not None and (
             (is_credit and cur_value >= stop_loss) or
@@ -686,30 +703,26 @@ def simulate_option_exit(entry_pricing: dict, signal_date: pd.Timestamp,
             return {"is_closed": True, "exit_date": d_ts,
                      "exit_value": cur_value,
                      "exit_reason": "stop loss",
-                     "pnl_pct": ((entry_value - cur_value) / entry_value * 100
-                                  if is_credit
-                                  else (cur_value / entry_value - 1) * 100),
+                     "pnl_pct": _pnl_pct(cur_value),
                      "leg_prices": leg_prices_at_exit}
         # STRADDLE 持仓 14d
         if is_long_vol and hold_days >= 14:
             return {"is_closed": True, "exit_date": d_ts,
                      "exit_value": cur_value,
                      "exit_reason": "14d 定时",
-                     "pnl_pct": (cur_value / entry_value - 1) * 100}
+                     "pnl_pct": _pnl_pct(cur_value)}
         # SHORT_VOL 30d
         if is_credit and "SHORT_VOL" in strategy and hold_days >= 30:
             return {"is_closed": True, "exit_date": d_ts,
                      "exit_value": cur_value,
                      "exit_reason": "30d 定时",
-                     "pnl_pct": (entry_value - cur_value) / entry_value * 100}
+                     "pnl_pct": _pnl_pct(cur_value)}
         # expiry
         if d_ts >= expiry_dt:
             return {"is_closed": True, "exit_date": d_ts,
                      "exit_value": cur_value,
                      "exit_reason": "expiry",
-                     "pnl_pct": ((entry_value - cur_value) / entry_value * 100
-                                  if is_credit
-                                  else (cur_value / entry_value - 1) * 100),
+                     "pnl_pct": _pnl_pct(cur_value),
                      "leg_prices": leg_prices_at_exit}
     # 未触发退出 → OPEN (用最新 close 算 mark-to-market)
     if hold_days > 0 and ok:
