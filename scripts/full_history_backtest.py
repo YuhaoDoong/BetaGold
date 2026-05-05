@@ -40,11 +40,15 @@ from core.binance_futures import compute_liquidation_price, estimate_futures_pnl
 
 
 def stage_for(date: pd.Timestamp, today: pd.Timestamp) -> str:
-    """3 阶段路由: stage1=久远, stage2=近 1 年, stage3=近 60 天."""
+    """v3.7.112 重新划分:
+    stage1 (>2y): 简易日线 spot 方向胜率 (只 FUTURES + 方向性 BC/SP win-only)
+    stage2 (2y~90d): LEAPS 期权估价 (yfinance LEAPS daily 或 BS + GVZ 历史)
+    stage3 (<90d):  kline_db EOD 真实期权 OHLC + 真退出规则
+    """
     days = (today - date).days
-    if days <= 60: return "stage3_kline_db"
-    if days <= 365: return "stage2_leaps_binance"
-    return "stage1_daily_spot"
+    if days <= 90: return "stage3_kline_db"
+    if days <= 730: return "stage2_leaps"
+    return "stage1_spot_direction"
 
 
 def simulate_futures_history(entry_d: pd.Timestamp, entry_spot_etf: float,
@@ -87,80 +91,105 @@ def simulate_futures_history(entry_d: pd.Timestamp, entry_spot_etf: float,
     return {"closed": False, "reason": "持仓中", "hold_days": hold}
 
 
-def simulate_option_stage1_spot(entry_d: pd.Timestamp, entry_spot: float,
-                                   strategy: str, asset_csv: pd.DataFrame,
-                                   today: pd.Timestamp) -> dict:
-    """阶段 1 (>1 年): 用 spot delta 近似估期权 P&L (无真实期权数据).
+def simulate_stage1_spot_direction(entry_d: pd.Timestamp, entry_spot: float,
+                                       strategy: str, asset_csv: pd.DataFrame,
+                                       today: pd.Timestamp) -> dict:
+    """阶段 1 (>2 年): 简易 spot 方向胜率, NOT 期权 pnl.
 
-    v3.7.111 修: 重新校准近似公式 (旧版 SELL PUT 3% 跌 = -50% 错得离谱).
+    用户原话: "stage 1 一年以上的不是简易日线价格信号就可以了么? 哪来的 sell put?"
+    实施: 只跑 FUTURES_LONG (spot move%) 和 方向性 BC/SP win-only (信号方向是否对).
+          STRADDLE/SHORT_VOL 跳过 (没真实期权数据, 无意义模拟).
 
-    BUY CALL ATM 45d: delta ~0.5, premium ~2% spot.
-      P&L% = (spot_change × delta - theta_5d) / premium
-      简化: 5d move +2% → 价值 ~+2% × 0.5 / 2% premium = +50%
-      简化公式: pnl = move × 25 - 5 (clamp to ±100)
-    SELL PUT credit spread (-ATM/+-5%): credit ~30% of \$5 width = \$1.5
-      max loss = \$5 - \$1.5 = \$3.5 (move 全部到 -5% 以下)
-      max win = \$1.5 (spot >= ATM at expiry, full theta)
-      P&L% on credit:
-        move >= 0: +30% theta decay 5d (full credit -> \$1)
-        move 0~-3%: gradual loss
-        move <= -5%: max loss = -233% of credit
-      简化:
-        +0.5% < move < +5%: +20% (modest theta gain)
-        -2% < move <= +0.5%: +5%
-        -4% < move <= -2%: -30%
-        move <= -4%: -100% (max loss)
-    STRADDLE long vol 14 DTE: premium ~3% spot (combined ATM call+put)
-      P&L% = (|move| - premium - theta) / premium
-      简化:
-        |move| > 4%: +50% (well above breakeven)
-        2 < |move| <= 4: 0% breakeven
-        |move| <= 2: -40% (theta loss)
-    SHORT_VOL: 反 STRADDLE
-        |move| > 4%: -50%
-        2 < |move| <= 4: 0
-        |move| <= 2: +40% (theta gain)
-    持有 5 trading days 看 close-to-close.
+    持有 5 trading days, 看 spot close-to-close move.
     """
+    s = strategy.upper()
+    if s in ("STRADDLE", "SHORT_VOL"):
+        return {"closed": False, "reason": "stage1 跳过 vol 策略"}
     later = asset_csv.index[asset_csv.index > entry_d]
     if len(later) < 5: return {"closed": False}
     exit_d = later[4]
     if pd.Timestamp(exit_d) > today: return {"closed": False}
     exit_spot = float(asset_csv.loc[exit_d, "Close"])
     move = (exit_spot / entry_spot - 1) * 100
-    s = strategy.upper()
-    # v3.7.111 v3 校准: 平衡 5 策略的近似 P&L 公式
-    # 假设 5d 平均 |move| 1.5%, 大多 < 2%
-    if s == "BUY CALL":
-        # ATM call 45d, premium ~2% spot, delta 0.5
-        # 5d move %: pnl = move × 15 - 2 (theta), bound ±100
-        pnl = max(-80, min(150, move * 15 - 2))
+    if s == "FUTURES_LONG" or s == "BUY CALL":
+        # 上涨赢 / 下跌输. 期货按真实 move (杠杆另算), BC 信号方向胜率
+        pnl = move
     elif s == "SELL PUT":
-        # Credit spread (-ATM/+-5%), max win ~ +30% credit, max loss capped
-        if move >= 1: pnl = 25
-        elif move >= -1: pnl = 15
-        elif move >= -2.5: pnl = -10
-        elif move >= -4: pnl = -50
-        else: pnl = -100  # max loss capped at 100%
-    elif s == "STRADDLE":
-        # Long ATM C+P 14d, premium ~2.5% combined, breakeven |move| > 2%
-        # pnl% = (|move| - 2) × 35, theta -15 if |move|<1.5
-        if abs(move) >= 4: pnl = max(50, min(200, (abs(move) - 2) * 50))
-        elif abs(move) >= 2: pnl = (abs(move) - 2) * 20
-        elif abs(move) >= 1.5: pnl = -10
-        else: pnl = -25  # theta loss in flat
-    elif s == "SHORT_VOL":
-        # 反 STRADDLE: |move| < 1.5% +25, > 4% -100
-        if abs(move) >= 4: pnl = -80
-        elif abs(move) >= 2: pnl = -20
-        elif abs(move) >= 1.5: pnl = 10
-        else: pnl = 25
+        # 横盘+上涨赢, 大跌输. spot 视角: 反 move 直觉
+        pnl = -move  # spot 跌 = SELL PUT 输, spot 涨 = SELL PUT 赢 (信号方向)
     else:
         pnl = move
     return {"closed": True, "exit_date": pd.Timestamp(exit_d),
              "entry_spot": entry_spot, "exit_spot": exit_spot,
              "ret_spot_pct": move, "pnl_pct": pnl,
-             "reason": "5d spot proxy v2", "hold_days": 5}
+             "reason": "5d spot direction", "hold_days": 5}
+
+
+def simulate_stage2_leaps(entry_d: pd.Timestamp, entry_spot: float,
+                              strategy: str, asset_key: str,
+                              asset_csv: pd.DataFrame,
+                              today: pd.Timestamp,
+                              gvz_df: pd.DataFrame = None) -> dict:
+    """阶段 2 (2y~90d): LEAPS 期权估价 (BS + GVZ 历史 IV, yfinance LEAPS 历史 fallback).
+
+    LEAPS DTE 远 (180-730d), theta 影响小, vega 主导.
+    """
+    s = strategy.upper()
+    if s in ("FUTURES_LONG",):
+        # 期货跟 stage1 同 spot move
+        return simulate_stage1_spot_direction(entry_d, entry_spot, s, asset_csv, today)
+    later = asset_csv.index[asset_csv.index > entry_d]
+    if len(later) < 30:
+        return {"closed": False, "reason": "stage2 数据不足"}
+    # LEAPS hold 30d
+    exit_d = later[29]
+    if pd.Timestamp(exit_d) > today: return {"closed": False}
+    exit_spot = float(asset_csv.loc[exit_d, "Close"])
+    move_pct = (exit_spot / entry_spot - 1) * 100
+    # GVZ 入场日 IV (估)
+    iv_entry = 0.18
+    if gvz_df is not None and entry_d in gvz_df.index:
+        iv_entry = float(gvz_df.loc[entry_d, "Close"]) / 100
+    iv_entry = max(0.10, min(0.40, iv_entry))
+    # LEAPS DTE 365d, ATM
+    T_e = 365 / 365.0
+    T_x = (365 - 30) / 365.0
+    K = round(entry_spot)
+    if s == "BUY CALL":
+        ec = bs_price(entry_spot, K, T_e, 0.04, iv_entry, "C")
+        cc = bs_price(exit_spot, K, T_x, 0.04, iv_entry, "C")
+        pnl = (cc / ec - 1) * 100 if ec > 0 else 0
+    elif s == "SELL PUT":
+        # LEAPS put credit spread, -ATM / +-5%
+        K2 = round(entry_spot * 0.95)
+        ep_s = bs_price(entry_spot, K, T_e, 0.04, iv_entry, "P")
+        ep_l = bs_price(entry_spot, K2, T_e, 0.04, iv_entry, "P")
+        ec_s = bs_price(exit_spot, K, T_x, 0.04, iv_entry, "P")
+        ec_l = bs_price(exit_spot, K2, T_x, 0.04, iv_entry, "P")
+        ent_credit = ep_s - ep_l
+        cur_credit = ec_s - ec_l
+        pnl = ((ent_credit - cur_credit) / ent_credit * 100) if ent_credit > 0 else 0
+    elif s == "STRADDLE":
+        ec = bs_price(entry_spot, K, T_e, 0.04, iv_entry, "C")
+        ep = bs_price(entry_spot, K, T_e, 0.04, iv_entry, "P")
+        cc = bs_price(exit_spot, K, T_x, 0.04, iv_entry, "C")
+        cp = bs_price(exit_spot, K, T_x, 0.04, iv_entry, "P")
+        ent_total = ec + ep
+        cur_total = cc + cp
+        pnl = (cur_total / ent_total - 1) * 100 if ent_total > 0 else 0
+    elif s == "SHORT_VOL":
+        # 反 STRADDLE
+        ec = bs_price(entry_spot, K, T_e, 0.04, iv_entry, "C")
+        ep = bs_price(entry_spot, K, T_e, 0.04, iv_entry, "P")
+        cc = bs_price(exit_spot, K, T_x, 0.04, iv_entry, "C")
+        cp = bs_price(exit_spot, K, T_x, 0.04, iv_entry, "P")
+        pnl = ((ec + ep) / (cc + cp) - 1) * 100 if (cc + cp) > 0 else 0
+    else:
+        pnl = move_pct
+    return {"closed": True, "exit_date": pd.Timestamp(exit_d),
+             "entry_spot": entry_spot, "exit_spot": exit_spot,
+             "ret_spot_pct": move_pct, "pnl_pct": pnl,
+             "reason": f"LEAPS 30d (IV {iv_entry:.2f})", "hold_days": 30}
 
 
 def simulate_option_stage23(entry_d: pd.Timestamp, entry_spot: float,
@@ -192,6 +221,15 @@ def main():
     today = pd.Timestamp.now().normalize()
     out_dir = Path("/Users/yhdong/Gold/data/backtest_history")
     out_dir.mkdir(exist_ok=True)
+    # GVZ 黄金 VIX 历史 (用于 stage2 IV 估)
+    try:
+        import yfinance as yf
+        gvz_df = yf.Ticker("^GVZ").history(period="5y")
+        gvz_df.index = pd.to_datetime(gvz_df.index).tz_localize(None).normalize()
+        print(f"GVZ 历史: {len(gvz_df)} 行 (用作 stage2 IV 估)")
+    except Exception as e:
+        gvz_df = None
+        print(f"GVZ 拉失败: {e}")
     print(f"=== 全历史回测启动 (today={today.date()}) ===\n")
 
     for asset_key, csv_name in [("GLD", "gld.csv"), ("SLV", "slv.csv")]:
@@ -239,9 +277,11 @@ def main():
                 n_total += 1
                 if "FUTURES" in strat:
                     res = simulate_futures_history(d, entry_spot, ratio, daily, today)
-                elif stage == "stage1_daily_spot":
-                    res = simulate_option_stage1_spot(d, entry_spot, strat, daily, today)
-                else:
+                elif stage == "stage1_spot_direction":
+                    res = simulate_stage1_spot_direction(d, entry_spot, strat, daily, today)
+                elif stage == "stage2_leaps":
+                    res = simulate_stage2_leaps(d, entry_spot, strat, asset_key, daily, today, gvz_df)
+                else:  # stage3_kline_db
                     res = simulate_option_stage23(d, entry_spot, strat, asset_key, daily, today)
                 if not res.get("closed"):
                     continue
