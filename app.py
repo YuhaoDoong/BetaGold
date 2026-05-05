@@ -3407,6 +3407,57 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     else:
         st.caption("近 60 天内无已平仓信号 (vol 都还在 hold 期内, 方向性无 EXIT trigger)")
 
+    # v3.7.110: 全历史回测分析 — 5 策略 × 3 阶段路由
+    st.divider()
+    st.subheader(f"📚 全历史回测 ({asset_key}, 5 年 × 5 策略, 3 阶段数据源路由)")
+    st.caption("阶段 1 (>1y): spot delta proxy · 阶段 2 (1y~60d): kline_db EOD 期权 · "
+               "阶段 3 (<60d): kline_db + 真实退出规则 · "
+               "运行: `python scripts/full_history_backtest.py`")
+    _bt_csv = (f"/Users/yhdong/Gold/data/backtest_history/"
+                f"backtest_{asset_key.lower()}_"
+                f"{pd.Timestamp(today_sgt).strftime('%Y%m%d')}.csv")
+    if os.path.exists(_bt_csv):
+        _bt_df = pd.read_csv(_bt_csv, parse_dates=["signal_date", "exit_date"])
+        # 按策略汇总
+        _by_strat = []
+        for strat, sub in _bt_df.groupby("strategy"):
+            wins = (sub["pnl_pct"] > 0).sum()
+            _by_strat.append({
+                "策略": strat, "n": len(sub),
+                "胜率": f"{wins / len(sub) * 100:.1f}%",
+                "单笔均": f"{sub['pnl_pct'].mean():+.2f}%",
+                "std": f"{sub['pnl_pct'].std():.2f}%",
+                "累计": f"{sub['pnl_pct'].sum():+.0f}%",
+                "Sharpe": f"{sub['pnl_pct'].mean() / sub['pnl_pct'].std() * (252**0.5):.2f}"
+                            if sub['pnl_pct'].std() > 0 else "—",
+            })
+        st.markdown("**📊 按策略汇总**")
+        st.dataframe(pd.DataFrame(_by_strat), use_container_width=True, hide_index=True)
+        # 按时段
+        _by_stage = []
+        for stage, sub in _bt_df.groupby("stage"):
+            wins = (sub["pnl_pct"] > 0).sum()
+            _by_stage.append({
+                "时段": stage, "n": len(sub),
+                "胜率": f"{wins / len(sub) * 100:.1f}%",
+                "单笔均": f"{sub['pnl_pct'].mean():+.2f}%",
+                "累计": f"{sub['pnl_pct'].sum():+.0f}%",
+            })
+        st.markdown("**📅 按时段汇总**")
+        st.dataframe(pd.DataFrame(_by_stage), use_container_width=True, hide_index=True)
+        # Regime × 策略 cross-tab
+        st.markdown("**🌐 Regime × 策略 (胜率)**")
+        try:
+            _ct = _bt_df.pivot_table(
+                index="regime", columns="strategy",
+                values="pnl_pct", aggfunc=lambda x: f"{(x>0).mean()*100:.0f}%/{len(x)}")
+            st.dataframe(_ct, use_container_width=True)
+        except Exception:
+            st.caption("regime 交叉统计跳过")
+    else:
+        st.warning(f"无回测 CSV ({_bt_csv}). 运行: "
+                    f"`python scripts/full_history_backtest.py`")
+
     # ── (1) 日线简易回测 (180 天) ──
     st.divider()
     st.subheader("📈 日线简易回测 (180 天 · 纽约金价位级)")
