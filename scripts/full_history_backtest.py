@@ -32,6 +32,31 @@ from core.signals import build_band, compute_rv_pctile
 from core.signals_v2 import generate_daily_signals
 from core.regime import RegimeClassifier
 from core.events import detect_straddle_signal, detect_short_vol_signal
+
+
+def compute_daily_indicators(close: pd.Series, high: pd.Series, low: pd.Series):
+    """v3.7.122: 日线 MACD/RSI/Stoch (信号选择特征, 替代不稳定的前 N 日趋势).
+    返回 DataFrame: macd_hist / rsi_14 / stoch_k / stoch_d.
+    """
+    ema_12 = close.ewm(span=12, adjust=False).mean()
+    ema_26 = close.ewm(span=26, adjust=False).mean()
+    macd = ema_12 - ema_26
+    macd_signal = macd.ewm(span=9, adjust=False).mean()
+    macd_hist = macd - macd_signal
+    delta = close.diff()
+    gain = delta.where(delta > 0, 0).rolling(14, min_periods=3).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(14, min_periods=3).mean()
+    rs = gain / loss.replace(0, np.nan)
+    rsi = 100 - 100 / (1 + rs)
+    lowest = low.rolling(14, min_periods=3).min()
+    highest = high.rolling(14, min_periods=3).max()
+    raw_k = (close - lowest) / (highest - lowest).replace(0, np.nan) * 100
+    stoch_k = raw_k.rolling(3, min_periods=1).mean()
+    stoch_d = stoch_k.rolling(3, min_periods=1).mean()
+    return pd.DataFrame({
+        "macd_hist": macd_hist, "rsi_14": rsi,
+        "stoch_k": stoch_k, "stoch_d": stoch_d,
+    })
 from core.paper_positions import (price_strategy_at, simulate_option_exit,
                                      pick_liquid_monthly_option,
                                      interpolate_option_intraday,
@@ -193,20 +218,20 @@ def simulate_option_stage23(entry_d: pd.Timestamp, entry_spot: float,
                                 asset_csv: pd.DataFrame,
                                 today: pd.Timestamp,
                                 stage_name: str = "stage3_short_options") -> dict:
-    """阶段 2/3: 用 kline_db 真实期权 OHLC + 插值 + 真实退出规则.
-    v3.7.118: stage 不同 DTE 不同
-      stage2_leaps:        LEAPS DTE 180 (vega 主导)
-      stage3_short_options: 近月 DTE 45 (theta 主导)
+    """阶段 2/3: 用 kline_db 真实期权 OHLC + 真实退出规则.
+    v3.7.122: DTE 智能选择 — 信号距今 + buffer (尽可能短的还没过期).
+      base DTE: BC/SP 45, STRADDLE 14, SHORT_VOL 30
+      若 today - entry_d > 0 (历史信号), DTE = max(base, days_since + buffer)
+      buffer = 30d (确保期权今天仍活跃可查 chain)
     """
     if entry_d not in asset_csv.index: return {"closed": False}
     eO = float(asset_csv.loc[entry_d, "Open"])
     eC = float(asset_csv.loc[entry_d, "Close"])
     eH = float(asset_csv.loc[entry_d, "High"])
     eL = float(asset_csv.loc[entry_d, "Low"])
-    # v3.7.119: 统一近月 DTE (跟实际交易一致)
-    if strategy == "STRADDLE": dte = 14
-    elif strategy == "SHORT_VOL": dte = 30
-    else: dte = 45
+    base_dte = 14 if strategy == "STRADDLE" else (30 if strategy == "SHORT_VOL" else 45)
+    days_since = (today - entry_d).days
+    dte = max(base_dte, days_since + 30) if days_since > base_dte - 30 else base_dte
     ent = price_strategy_at(asset_key, strategy, entry_d,
                               entry_d + pd.Timedelta(hours=9, minutes=30),
                               entry_spot, eO, eC, eH, eL,
@@ -247,6 +272,8 @@ def main():
         oos = load_oos_predictions(cfg)
         upper, lower, _ = build_band(oos, close_d)
         rv_pct = compute_rv_pctile(features.loc[common, "rv_10d"])
+        # v3.7.122: 日线技术指标 (替代不稳定的前 N 日趋势)
+        daily_ind = compute_daily_indicators(close_d, high_d, low_d)
         feat_cols = [c for c in features.columns if not c.startswith("fwd_")]
         regime = RegimeClassifier().classify(features[feat_cols])["regime"]
         # v3.7.117: 接入 GVZ → IV 三阶过滤 (高 IV 时跳过 + 深破 0.10 + 强制 SP)
@@ -310,6 +337,9 @@ def main():
                 _gvz_iv = (float(gvz_df.loc[d, "Close"]) if (gvz_df is not None
                             and d in gvz_df.index) else 0)
                 _bp_low = float(row.get("bp_low", 0))
+                # v3.7.122: 加 bp_close / bp_high (区间预测维度, 替代不稳定的前 N 日趋势)
+                _bp_close = float(row.get("bp_close", 0))
+                _bp_high = float(row.get("bp_high", 0))
                 # v3.7.119: sub_period 标签 (相对今日 days, 替代之前混淆 LEAPS/近月)
                 _days_back = (today - d).days
                 _sub = ("近30d" if _days_back <= 30
@@ -328,6 +358,15 @@ def main():
                     "gvz_iv_pct": _gvz_iv,         # GVZ IV %
                     "iv_rv_gap_pct": _gvz_iv - _raw_rv,  # IV-RV (>0 = SP 优)
                     "bp_low": _bp_low,              # 当日 daily Low 在 band 位置 (深破阈值用)
+                    "bp_close": _bp_close,          # close 在 band 位置 (区间预测核心)
+                    "bp_high": _bp_high,            # daily High 在 band 位置
+                    # v3.7.122: 日线技术指标 (信号方向选择特征)
+                    "macd_hist": float(daily_ind["macd_hist"].get(d, 0))
+                                  if d in daily_ind.index else 0,
+                    "rsi_14": float(daily_ind["rsi_14"].get(d, 50))
+                                if d in daily_ind.index else 50,
+                    "stoch_k": float(daily_ind["stoch_k"].get(d, 50))
+                                 if d in daily_ind.index else 50,
                     "entry_spot_etf": entry_spot,
                     "entry_spot_gc": entry_spot * ratio,
                     "exit_date": res.get("exit_date"),

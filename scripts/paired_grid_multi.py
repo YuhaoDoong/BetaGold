@@ -58,18 +58,17 @@ for asset in ["GLD", "SLV"]:
     csv = CSV / f"backtest_{asset.lower()}_20260505.csv"
     df = pd.read_csv(csv, parse_dates=["signal_date","exit_date"])
     df = df[df["stage"].isin(["stage2_main_3m", "stage2_leaps_aux"])]
-    bc = df[df["strategy"]=="BUY CALL"][["signal_date","pnl_pct","rv_pctile","gvz_iv_pct",
-                                            "iv_rv_gap_pct","bp_low","regime"]].set_index("signal_date")
+    cols = ["signal_date","pnl_pct","rv_pctile","gvz_iv_pct","iv_rv_gap_pct",
+            "bp_low","bp_close","bp_high","regime","macd_hist","rsi_14","stoch_k"]
+    cols = [c for c in cols if c in df.columns]
+    bc = df[df["strategy"]=="BUY CALL"][cols].set_index("signal_date")
     sp = df[df["strategy"]=="SELL PUT"][["signal_date","pnl_pct"]].set_index("signal_date")
-    bc.columns = ["bc_pnl","rv","gvz","gap","bp_low","regime"]
+    rename_map = {"pnl_pct":"bc_pnl","rv_pctile":"rv","gvz_iv_pct":"gvz",
+                   "iv_rv_gap_pct":"gap"}
+    bc = bc.rename(columns=rename_map)
     sp.columns = ["sp_pnl"]
     paired = bc.join(sp, how="inner").reset_index()
     print(f"配对信号: {len(paired)}")
-
-    # 加前期趋势
-    asset_csv = pd.read_csv(f"/Users/yhdong/Gold/data/raw/market/{asset.lower()}.csv",
-                              index_col=0, parse_dates=True)
-    paired = add_pre_trend(paired, asset_csv)
 
     print("\n【1. RV%tile】")
     paired_grid(paired, "rv", [(0,0.25),(0.25,0.5),(0.5,0.75),(0.75,1.01)])
@@ -77,19 +76,32 @@ for asset in ["GLD", "SLV"]:
     print("\n【2. GVZ IV】")
     paired_grid(paired, "gvz", [(0,18),(18,22),(22,28),(28,100)])
 
-    print("\n【3. IV-RV gap】")
+    print("\n【3. IV-RV gap (>0 = IV 高于 RV)】")
     paired_grid(paired, "gap", [(-100,-3),(-3,0),(0,3),(3,8),(8,100)])
 
-    print("\n【4. bp_low (深破)】")
+    print("\n【4. bp_low (深破程度)】")
     paired_grid(paired, "bp_low", [(-1,0.05),(0.05,0.15),(0.15,0.30),(0.30,2.0)])
 
-    print("\n【5. 前 5d 趋势】(>0=涨势, <0=跌势)")
-    paired_grid(paired, "pre_5d_ret", [(-100,-2),(-2,-0.5),(-0.5,0.5),(0.5,2),(2,100)])
+    print("\n【5. bp_close (close 在 band 位置 — 区间预测)】")
+    paired_grid(paired, "bp_close", [(-1,0.10),(0.10,0.30),(0.30,0.50),(0.50,2.0)])
 
-    print("\n【6. 前 10d 趋势】")
-    paired_grid(paired, "pre_10d_ret", [(-100,-3),(-3,-1),(-1,1),(1,3),(3,100)])
+    if "macd_hist" in paired.columns:
+        print("\n【6. MACD hist (>0=多头动能, <0=空头动能)】")
+        # 5 个等量分位
+        q = paired["macd_hist"].quantile([0,0.2,0.4,0.6,0.8,1.0]).values
+        bins = [(q[i], q[i+1]) for i in range(5)]
+        paired_grid(paired, "macd_hist", bins,
+                     label_fn=lambda lo,hi:f"MACD [{lo:>+5.2f}, {hi:>+5.2f})")
 
-    print("\n【7. Regime】")
+    if "rsi_14" in paired.columns:
+        print("\n【7. RSI 14 (>70 超买, <30 超卖)】")
+        paired_grid(paired, "rsi_14", [(0,30),(30,45),(45,55),(55,70),(70,100)])
+
+    if "stoch_k" in paired.columns:
+        print("\n【8. Stoch %K】")
+        paired_grid(paired, "stoch_k", [(0,20),(20,40),(40,60),(60,80),(80,100)])
+
+    print("\n【9. Regime】")
     for reg in ["Bull","Mixed","Bear"]:
         sub = paired[paired["regime"]==reg]
         if not len(sub): continue
