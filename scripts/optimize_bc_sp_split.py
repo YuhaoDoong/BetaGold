@@ -74,6 +74,28 @@ def grid_for_asset(asset: str, today_str: str):
         print(f'  {reg:<6} BC: n={len(bc_r):>4} wr={bc_wr:>5.1f}% cum={bc_cum:>+7.0f}% | '
               f'SP: n={len(sp_r):>4} wr={sp_wr:>5.1f}% cum={sp_cum:>+7.0f}%  ★ {winner}')
 
+    # === IV-RV gap grid (IV>RV → SP 优势 — 卖贵 IV) ===
+    if "iv_rv_gap_pct" in df.columns:
+        print("\n【IV-RV gap 切点】(gap >= 切点 用 SP, < 切点 用 BC)")
+        print(f'{"gap":>6} {"BC n":>6} {"BC win":>8} {"BC cum":>10} '
+              f'{"SP n":>6} {"SP win":>8} {"SP cum":>10} {"合计":>10}')
+        best_gap = (-1e9, None)
+        for gap_cut in [-5, -3, -1, 0, 1, 3, 5, 8, 10, 15]:
+            bc_use = bc[bc["iv_rv_gap_pct"] < gap_cut]
+            sp_use = sp[sp["iv_rv_gap_pct"] >= gap_cut]
+            if not len(bc_use) or not len(sp_use): continue
+            bc_wr = (bc_use["pnl_pct"] > 0).mean() * 100
+            sp_wr = (sp_use["pnl_pct"] > 0).mean() * 100
+            bc_cum = bc_use["pnl_pct"].sum()
+            sp_cum = sp_use["pnl_pct"].sum()
+            total = bc_cum + sp_cum
+            print(f'  {gap_cut:>+5}  {len(bc_use):>6} {bc_wr:>7.1f}% {bc_cum:>+9.0f}%  '
+                  f'{len(sp_use):>6} {sp_wr:>7.1f}% {sp_cum:>+9.0f}%  {total:>+9.0f}%')
+            if total > best_gap[0]:
+                best_gap = (total, gap_cut)
+        if best_gap[1] is not None:
+            print(f"\n  ★ IV-RV gap 最优: {best_gap[1]:+} (合计 {best_gap[0]:+.0f}%)")
+
     # === Stage 分段 ===
     print("\n【Stage × Strategy】(stage2 LEAPS 最可信)")
     for stage in df["stage"].unique():

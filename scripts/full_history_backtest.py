@@ -286,8 +286,17 @@ def main():
                     res = simulate_stage2_leaps(d, entry_spot, strat, asset_key, daily, today, gvz_df)
                 else:  # stage3_kline_db
                     res = simulate_option_stage23(d, entry_spot, strat, asset_key, daily, today)
+                # v3.7.114: stage3 OPEN 但 mark-to-market 也算入 grid (近 90d 多数还在持仓)
                 if not res.get("closed"):
-                    continue
+                    if stage == "stage3_kline_db" and "pnl_pct" in res:
+                        res["closed"] = True
+                        res["reason"] = "MTM (持仓中)"
+                    else:
+                        continue
+                # v3.7.114: 加 raw RV (10d annualized %) + GVZ IV 列, 给 grid IV-RV gap
+                _raw_rv = float(rv_s.get(d, 0)) if d in rv_s.index else 0
+                _gvz_iv = (float(gvz_df.loc[d, "Close"]) if (gvz_df is not None
+                            and d in gvz_df.index) else 0)
                 rec = {
                     "asset": asset_key,
                     "signal_date": d,
@@ -295,6 +304,9 @@ def main():
                     "stage": stage,
                     "regime": regime.get(d, "?"),
                     "rv_pctile": float(rv_pct.get(d, 0)),
+                    "rv_10d_pct": _raw_rv,        # raw RV % annualized
+                    "gvz_iv_pct": _gvz_iv,         # GVZ IV %
+                    "iv_rv_gap_pct": _gvz_iv - _raw_rv,  # IV-RV (>0 = SP 优)
                     "entry_spot_etf": entry_spot,
                     "entry_spot_gc": entry_spot * ratio,
                     "exit_date": res.get("exit_date"),
