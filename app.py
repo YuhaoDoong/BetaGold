@@ -131,6 +131,41 @@ def _get_realtime_prices(futures_ticker="GC=F"):
     return fetch_realtime_gold_fx(futures_ticker)
 
 
+@st.cache_data(ttl=60)
+def _get_realtime_etf(etf_ticker="GLD"):
+    """v3.7.103: ETF 实时 spot 直拉 yfinance, 不再用 GC=F / ratio 反推.
+    缓存 60s.
+    """
+    try:
+        import yfinance as yf
+        df = yf.Ticker(etf_ticker).history(period="1d", interval="1m")
+        if df is not None and len(df) > 0:
+            return float(df["Close"].iloc[-1])
+    except Exception:
+        pass
+    return None
+
+
+@st.cache_data(ttl=60)
+def _get_realtime_ratio(asset_key="GLD"):
+    """v3.7.104: 实时 GC=F / GLD ratio (期货价 / ETF 价), 60s 缓存.
+    用于阈值换算 — ETF 有 premium/discount 时 ratio 会动 (~±0.3%).
+    返回 None 时调用方 fallback 历史 60d mean.
+    """
+    try:
+        import yfinance as yf
+        fut_t = "GC=F" if asset_key == "GLD" else "SI=F"
+        etf_t = asset_key
+        fut = yf.Ticker(fut_t).history(period="1d", interval="5m")
+        etf = yf.Ticker(etf_t).history(period="1d", interval="5m")
+        if (fut is not None and len(fut) and etf is not None and len(etf)
+                and etf["Close"].iloc[-1] > 0):
+            return float(fut["Close"].iloc[-1] / etf["Close"].iloc[-1])
+    except Exception:
+        pass
+    return None
+
+
 @st.cache_data(ttl=3600)
 def load_1h_data():
     """加载 GC=F 1h 数据和 OOS 预测.
@@ -1291,11 +1326,14 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     eff_bp090 = oi_adj_bp090 if oi_adj_bp090 > 0 else next_bp090
 
     # v3.7.62: SLV 用 si_slv_ratio (动态算), GLD 用 gc_gld_ratio
+    # v3.7.104: 优先用实时 ratio (60s 缓存), 失败 fallback 60d 历史均值
+    _live_ratio = _get_realtime_ratio(asset_key)
     if asset_key == "GLD":
-        gc_gld_r = gc_gld_ratio if gc_gld_ratio else 10.9
+        gc_gld_r = _live_ratio if _live_ratio else (gc_gld_ratio if gc_gld_ratio else 10.9)
     else:
-        gc_gld_r = (locals().get("si_slv_ratio") if locals().get("si_slv_ratio")
-                    else 1.11)
+        gc_gld_r = (_live_ratio if _live_ratio
+                     else (locals().get("si_slv_ratio") if locals().get("si_slv_ratio")
+                            else 1.11))
     _rt_ticker = "GC=F" if asset_key == "GLD" else "SI=F"
     rt = _get_realtime_prices(_rt_ticker)
     _cny = rt["usdcny"] if rt else (usdcny_rate if usdcny_rate else 7.0)
@@ -1335,7 +1373,13 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     if eff_bp030 > 0:
         # 实时价格
         gc_now = rt["gc_price"] if rt else 0
-        gld_est = gc_now / gc_gld_r if gc_now > 0 else last_close
+        # v3.7.103: ETF spot 优先直拉 yfinance, 失败才 GC=F / ratio 反推
+        _etf_ticker = "GLD" if asset_key == "GLD" else "SLV"
+        _etf_live = _get_realtime_etf(_etf_ticker)
+        if _etf_live is not None and _etf_live > 0:
+            gld_est = _etf_live  # 真 ETF live
+        else:
+            gld_est = gc_now / gc_gld_r if gc_now > 0 else last_close
         bp_est = (gld_est - next_lower) / (next_upper - next_lower) \
             if next_upper > next_lower else 0
         # 判断当前信号
