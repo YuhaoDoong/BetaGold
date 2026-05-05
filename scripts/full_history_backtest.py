@@ -40,13 +40,16 @@ from core.binance_futures import compute_liquidation_price, estimate_futures_pnl
 
 
 def stage_for(date: pd.Timestamp, today: pd.Timestamp) -> str:
-    """v3.7.115 简化 2 阶段 (用户: 只有真实期权才比较):
-    stage1 (kline_db 前, <2025-04-29): 简易 spot 方向 — FUTURES only, BC/SP/STRADDLE 跳过
-    stage2 (kline_db 后): kline_db EOD 真实期权 OHLC + 真退出规则
+    """v3.7.118 三阶分: LEAPS vs 近月期权特性差异大, 拆开.
+    stage1 (<kline_db, 即 <2025-04-29): FUTURES only (无真期权数据)
+    stage2_leaps (90d~365d 前): LEAPS 期权 (DTE 180+, vega 主导, hold 30d)
+    stage3_short (近 90d):        近月期权 (DTE 30-45, theta 主导, hold 5-14d)
     """
     KLINE_START = pd.Timestamp("2025-04-29")
-    if date >= KLINE_START: return "stage2_kline_real"
-    return "stage1_spot_only"
+    if date < KLINE_START: return "stage1_spot_only"
+    days = (today - date).days
+    if days <= 90: return "stage3_short_options"
+    return "stage2_leaps"
 
 
 def simulate_futures_history(entry_d: pd.Timestamp, entry_spot_etf: float,
@@ -188,18 +191,31 @@ def simulate_stage2_leaps(entry_d: pd.Timestamp, entry_spot: float,
 def simulate_option_stage23(entry_d: pd.Timestamp, entry_spot: float,
                                 strategy: str, asset_key: str,
                                 asset_csv: pd.DataFrame,
-                                today: pd.Timestamp) -> dict:
-    """阶段 2/3: 用 kline_db 真实期权 OHLC + 插值 + 真实退出规则."""
+                                today: pd.Timestamp,
+                                stage_name: str = "stage3_short_options") -> dict:
+    """阶段 2/3: 用 kline_db 真实期权 OHLC + 插值 + 真实退出规则.
+    v3.7.118: stage 不同 DTE 不同
+      stage2_leaps:        LEAPS DTE 180 (vega 主导)
+      stage3_short_options: 近月 DTE 45 (theta 主导)
+    """
     if entry_d not in asset_csv.index: return {"closed": False}
     eO = float(asset_csv.loc[entry_d, "Open"])
     eC = float(asset_csv.loc[entry_d, "Close"])
     eH = float(asset_csv.loc[entry_d, "High"])
     eL = float(asset_csv.loc[entry_d, "Low"])
+    if stage_name == "stage2_leaps":
+        # LEAPS: 长期权
+        if strategy == "STRADDLE": dte = 60   # LEAPS straddle 60d
+        elif strategy == "SHORT_VOL": dte = 90
+        else: dte = 180  # BC/SP LEAPS
+    else:  # stage3_short_options
+        if strategy == "STRADDLE": dte = 14
+        elif strategy == "SHORT_VOL": dte = 30
+        else: dte = 45
     ent = price_strategy_at(asset_key, strategy, entry_d,
                               entry_d + pd.Timedelta(hours=9, minutes=30),
                               entry_spot, eO, eC, eH, eL,
-                              dte_target=(14 if strategy == "STRADDLE" else
-                                           30 if strategy == "SHORT_VOL" else 45))
+                              dte_target=dte)
     if not ent.get("legs"):
         return {"closed": False, "reason": "kline_db 无期权"}
     if abs(ent.get("entry_price", 0)) < 0.01:
@@ -278,15 +294,15 @@ def main():
                 if "FUTURES" in strat:
                     res = simulate_futures_history(d, entry_spot, ratio, daily, today)
                 elif stage == "stage1_spot_only":
-                    # 无真实期权数据期, BC/SP/STRADDLE 全跳过
                     if strat != "FUTURES_LONG":
                         continue
                     res = simulate_futures_history(d, entry_spot, ratio, daily, today)
-                else:  # stage2_kline_real — 真实 kline_db EOD OHLC
-                    res = simulate_option_stage23(d, entry_spot, strat, asset_key, daily, today)
-                # v3.7.115: 持仓中 MTM 也算入 grid (用真实 kline_db latest close)
+                else:  # stage2_leaps OR stage3_short_options
+                    res = simulate_option_stage23(d, entry_spot, strat, asset_key,
+                                                       daily, today, stage_name=stage)
                 if not res.get("closed"):
-                    if stage == "stage2_kline_real" and "pnl_pct" in res:
+                    # 持仓中 MTM 也算入 grid (期权 stage 真实 kline_db latest close)
+                    if stage in ("stage2_leaps", "stage3_short_options") and "pnl_pct" in res:
                         res["closed"] = True
                         res["reason"] = "MTM (持仓中, 真实期权 latest close)"
                     else:
