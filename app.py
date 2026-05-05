@@ -131,14 +131,25 @@ def _get_realtime_prices(futures_ticker="GC=F"):
     return fetch_realtime_gold_fx(futures_ticker)
 
 
-@st.cache_data(ttl=60)
+# v3.7.105: 数据 TTL 集中管理 (秒)
+_TTL_CONFIG = {
+    "etf_live_spot": 60,        # ETF spot 高频 (盘中跳动)
+    "futures_live": 60,          # GC=F 高频
+    "ratio_refresh": 7200,       # ratio 2h 刷一次 (偏差 < 0.3% 不需高频)
+    "option_chain": 300,         # 期权链 5min
+}
+
+
+@st.cache_data(ttl=_TTL_CONFIG["etf_live_spot"])
 def _get_realtime_etf(etf_ticker="GLD"):
-    """v3.7.103: ETF 实时 spot 直拉 yfinance, 不再用 GC=F / ratio 反推.
-    缓存 60s.
+    """v3.7.103: ETF 实时 spot 直拉 yfinance.
+    v3.7.105: prepost=True 拉 04:00-19:55 ET (16h), 含 premarket + aftermarket.
+    20:00-04:00 ET 亚欧夜盘 ETF 无数据 — 调用方走 ratio fallback.
     """
     try:
         import yfinance as yf
-        df = yf.Ticker(etf_ticker).history(period="1d", interval="1m")
+        df = yf.Ticker(etf_ticker).history(period="1d", interval="1m",
+                                              prepost=True)
         if df is not None and len(df) > 0:
             return float(df["Close"].iloc[-1])
     except Exception:
@@ -146,10 +157,10 @@ def _get_realtime_etf(etf_ticker="GLD"):
     return None
 
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=_TTL_CONFIG["ratio_refresh"])
 def _get_realtime_ratio(asset_key="GLD"):
-    """v3.7.104: 实时 GC=F / GLD ratio (期货价 / ETF 价), 60s 缓存.
-    用于阈值换算 — ETF 有 premium/discount 时 ratio 会动 (~±0.3%).
+    """v3.7.104: 实时 GC=F / GLD ratio (期货价 / ETF 价).
+    v3.7.105: TTL 60s → 2h. ratio 漂移 < 0.3%, 不需高频更新.
     返回 None 时调用方 fallback 历史 60d mean.
     """
     try:
@@ -157,7 +168,8 @@ def _get_realtime_ratio(asset_key="GLD"):
         fut_t = "GC=F" if asset_key == "GLD" else "SI=F"
         etf_t = asset_key
         fut = yf.Ticker(fut_t).history(period="1d", interval="5m")
-        etf = yf.Ticker(etf_t).history(period="1d", interval="5m")
+        etf = yf.Ticker(etf_t).history(period="1d", interval="5m",
+                                          prepost=True)
         if (fut is not None and len(fut) and etf is not None and len(etf)
                 and etf["Close"].iloc[-1] > 0):
             return float(fut["Close"].iloc[-1] / etf["Close"].iloc[-1])
