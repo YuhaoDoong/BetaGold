@@ -40,16 +40,15 @@ from core.binance_futures import compute_liquidation_price, estimate_futures_pnl
 
 
 def stage_for(date: pd.Timestamp, today: pd.Timestamp) -> str:
-    """v3.7.118 三阶分: LEAPS vs 近月期权特性差异大, 拆开.
-    stage1 (<kline_db, 即 <2025-04-29): FUTURES only (无真期权数据)
-    stage2_leaps (90d~365d 前): LEAPS 期权 (DTE 180+, vega 主导, hold 30d)
-    stage3_short (近 90d):        近月期权 (DTE 30-45, theta 主导, hold 5-14d)
+    """v3.7.119 撤回 LEAPS 拆分 (前次 wr 差异是时段 bias 不是策略优势).
+    都用近月 DTE (45/14/30), 跟实际交易一致.
+    stage1 (<kline_db): FUTURES only
+    stage2 (kline_db 后): 近月期权真实回测
+    输出 sub_period 列细分时段.
     """
     KLINE_START = pd.Timestamp("2025-04-29")
     if date < KLINE_START: return "stage1_spot_only"
-    days = (today - date).days
-    if days <= 90: return "stage3_short_options"
-    return "stage2_leaps"
+    return "stage2_options_real"
 
 
 def simulate_futures_history(entry_d: pd.Timestamp, entry_spot_etf: float,
@@ -203,15 +202,10 @@ def simulate_option_stage23(entry_d: pd.Timestamp, entry_spot: float,
     eC = float(asset_csv.loc[entry_d, "Close"])
     eH = float(asset_csv.loc[entry_d, "High"])
     eL = float(asset_csv.loc[entry_d, "Low"])
-    if stage_name == "stage2_leaps":
-        # LEAPS: 长期权
-        if strategy == "STRADDLE": dte = 60   # LEAPS straddle 60d
-        elif strategy == "SHORT_VOL": dte = 90
-        else: dte = 180  # BC/SP LEAPS
-    else:  # stage3_short_options
-        if strategy == "STRADDLE": dte = 14
-        elif strategy == "SHORT_VOL": dte = 30
-        else: dte = 45
+    # v3.7.119: 统一近月 DTE (跟实际交易一致)
+    if strategy == "STRADDLE": dte = 14
+    elif strategy == "SHORT_VOL": dte = 30
+    else: dte = 45
     ent = price_strategy_at(asset_key, strategy, entry_d,
                               entry_d + pd.Timedelta(hours=9, minutes=30),
                               entry_spot, eO, eC, eH, eL,
@@ -297,14 +291,16 @@ def main():
                     if strat != "FUTURES_LONG":
                         continue
                     res = simulate_futures_history(d, entry_spot, ratio, daily, today)
-                else:  # stage2_leaps OR stage3_short_options
+                else:  # stage2_options_real
                     res = simulate_option_stage23(d, entry_spot, strat, asset_key,
-                                                       daily, today, stage_name=stage)
+                                                       daily, today)
+                # v3.7.119: MTM 也保留 (paired comparison 需要同信号 BC + SP 都有数据)
+                # 加 is_mtm 标记区分真闭环 vs 持仓 mtm
                 if not res.get("closed"):
-                    # 持仓中 MTM 也算入 grid (期权 stage 真实 kline_db latest close)
-                    if stage in ("stage2_leaps", "stage3_short_options") and "pnl_pct" in res:
+                    if "pnl_pct" in res:
                         res["closed"] = True
-                        res["reason"] = "MTM (持仓中, 真实期权 latest close)"
+                        res["reason"] = "MTM"
+                        res["is_mtm"] = True
                     else:
                         continue
                 # v3.7.114: 加 raw RV + GVZ IV + IV-RV gap 列
@@ -313,11 +309,18 @@ def main():
                 _gvz_iv = (float(gvz_df.loc[d, "Close"]) if (gvz_df is not None
                             and d in gvz_df.index) else 0)
                 _bp_low = float(row.get("bp_low", 0))
+                # v3.7.119: sub_period 标签 (相对今日 days, 替代之前混淆 LEAPS/近月)
+                _days_back = (today - d).days
+                _sub = ("近30d" if _days_back <= 30
+                         else "30-90d" if _days_back <= 90
+                         else "90-365d" if _days_back <= 365
+                         else ">1y")
                 rec = {
                     "asset": asset_key,
                     "signal_date": d,
                     "strategy": strat,
                     "stage": stage,
+                    "sub_period": _sub,
                     "regime": regime.get(d, "?"),
                     "rv_pctile": float(rv_pct.get(d, 0)),
                     "rv_10d_pct": _raw_rv,        # raw RV % annualized
