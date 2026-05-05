@@ -238,8 +238,12 @@ def main():
         rv_pct = compute_rv_pctile(features.loc[common, "rv_10d"])
         feat_cols = [c for c in features.columns if not c.startswith("fwd_")]
         regime = RegimeClassifier().classify(features[feat_cols])["regime"]
+        # v3.7.117: 接入 GVZ → IV 三阶过滤 (高 IV 时跳过 + 深破 0.10 + 强制 SP)
+        gvz_s = (gvz_df["Close"] if (gvz_df is not None and "Close" in gvz_df.columns)
+                 else None)
         sig_df = generate_daily_signals(close_d, high_d, low_d, upper, lower,
-                                           regime, rv_pct, asset=asset_key)
+                                           regime, rv_pct, asset=asset_key,
+                                           gvz_series=gvz_s)
         # 检测 vol 信号
         rv_s = features.loc[close_d.index, "rv_10d"]
         strad_df = detect_straddle_signal(rv_s, sig_df.index, rv_pctile=rv_pct,

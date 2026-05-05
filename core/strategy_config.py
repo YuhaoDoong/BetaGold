@@ -48,6 +48,16 @@ class AssetConfig:
     rv_filter_low: float = 0.50         # < 此值 → BUY CALL
     rv_filter_high: float = 0.80        # > 此值 → SELL PUT
 
+    # ── v3.7.117: GVZ IV 三阶过滤 (实证 v3.7.116 grid) ──
+    # 真实期权数据验证: 高 IV 时方向性几乎全错向 (BC 3.8% wr GLD / 20.7% SLV).
+    # 高 IV + 深破 0.10 + 切 SP only → 50-58% wr 保本.
+    iv_filter_enabled: bool = True
+    iv_filter_low_max: float = 22.0     # GVZ < 此值 = 低 IV, 方向正常
+    iv_filter_high_min: float = 28.0    # GVZ > 此值 = 高 IV, 触发深破规则
+    iv_high_bp_low_max: float = 0.10    # 高 IV 时 bp_low 必须 ≤ 此值才入场
+    iv_high_force_sp: bool = True        # 高 IV 时强制 SELL PUT (BC 全错)
+    iv_mid_dual_confirm: bool = True     # 22-28 中 IV 需二次确认 (技术指标 align)
+
     # ── STRADDLE 做多波动率 ──
     straddle_rv_threshold: float = 20.0   # RV < 此值 +2 分
     straddle_rv_abs_max: float = 25.0     # RV > 此值不触发

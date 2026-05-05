@@ -92,8 +92,12 @@ def generate_daily_signals(close_d, high_d, low_d,
                            rv_low=RV_FILTER_LOW,
                            rv_high=RV_FILTER_HIGH,
                            volume=None,
-                           asset=None):
-    """asset 参数会查 strategy_config 覆盖默认阈值 (per-asset 校准)."""
+                           asset=None,
+                           gvz_series=None):
+    """asset 参数会查 strategy_config 覆盖默认阈值 (per-asset 校准).
+    v3.7.117: gvz_series (可选) 接入 IV 三阶过滤.
+    """
+    _iv_cfg = None
     if asset is not None:
         try:
             from core.strategy_config import get_config
@@ -102,6 +106,8 @@ def generate_daily_signals(close_d, high_d, low_d,
             rv_high = _ac.rv_filter_high
             buy_bp = _ac.buy_bp
             exit_bp = _ac.exit_bp
+            if getattr(_ac, "iv_filter_enabled", False):
+                _iv_cfg = _ac
         except Exception:
             pass
     """日线级别信号: v1.0 Band + H/L 触发 + RV 极值过滤.
@@ -153,13 +159,38 @@ def generate_daily_signals(close_d, high_d, low_d,
         if rv_filter and buy_sig and not rv_extreme:
             buy_sig = False
         buy_type = None
+        iv_filter_reason = ""  # v3.7.117 透明记录 IV 过滤原因
         if buy_sig:
             if rv_filter:
                 # 低 RV → BUY CALL (期权便宜), 高 RV → SELL PUT (收 IV)
                 buy_type = "BUY CALL" if rv < rv_low else "SELL PUT"
             else:
-                # 兼容旧 v1.0 逻辑: 0.85 为分界
                 buy_type = "BUY CALL" if rv <= 0.85 else "SELL PUT"
+            # v3.7.117: GVZ IV 三阶过滤 (实证 BC 高 IV 全错向)
+            if _iv_cfg is not None and gvz_series is not None and d in gvz_series.index:
+                gvz = float(gvz_series.get(d, 0))
+                if gvz >= _iv_cfg.iv_filter_high_min:
+                    # 高 IV (>=28): 必需深破 + 强制 SP
+                    if bp_low > _iv_cfg.iv_high_bp_low_max:
+                        buy_sig = False
+                        buy_type = None
+                        iv_filter_reason = f"高IV {gvz:.0f} bp_low {bp_low:.2f}>{_iv_cfg.iv_high_bp_low_max} 跳过"
+                    else:
+                        if _iv_cfg.iv_high_force_sp:
+                            buy_type = "SELL PUT"
+                            iv_filter_reason = f"高IV {gvz:.0f} 深破 {bp_low:.2f} 强制 SP"
+                elif gvz >= _iv_cfg.iv_filter_low_max:
+                    # 中 IV (22-28): 二次确认 (用 sizing_confirm 已有 RSI/MACD/Stoch)
+                    if _iv_cfg.iv_mid_dual_confirm and sizing_confirm is not None and d in sizing_confirm.index:
+                        cnt = sizing_confirm['confirm_count'].get(d, 0)
+                        if cnt < 2:  # 不足 2 个技术指标 align → skip
+                            buy_sig = False
+                            buy_type = None
+                            iv_filter_reason = f"中IV {gvz:.0f} confirm {int(cnt)}/4<2 跳过"
+                        else:
+                            iv_filter_reason = f"中IV {gvz:.0f} confirm {int(cnt)}/4 通过"
+                else:
+                    iv_filter_reason = f"低IV {gvz:.0f} 正常"
 
         exit_sig = bp_high > exit_bp
         # Regime 退出
@@ -203,6 +234,7 @@ def generate_daily_signals(close_d, high_d, low_d,
             "signal_text": " + ".join(parts),
             "sizing": round(sizing, 1),
             "sizing_reasons": ", ".join(sizing_reasons) if sizing_reasons else "",
+            "iv_filter_reason": iv_filter_reason,
         })
 
     return pd.DataFrame(records).set_index("date")
