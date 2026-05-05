@@ -287,10 +287,12 @@ def main():
                         res["reason"] = "MTM (持仓中, 真实期权 latest close)"
                     else:
                         continue
-                # v3.7.114: 加 raw RV (10d annualized %) + GVZ IV 列, 给 grid IV-RV gap
+                # v3.7.114: 加 raw RV + GVZ IV + IV-RV gap 列
+                # v3.7.116: 加 bp_low (当日 daily Low 在 band 中位置) 用于深破阈值 grid
                 _raw_rv = float(rv_s.get(d, 0)) if d in rv_s.index else 0
                 _gvz_iv = (float(gvz_df.loc[d, "Close"]) if (gvz_df is not None
                             and d in gvz_df.index) else 0)
+                _bp_low = float(row.get("bp_low", 0))
                 rec = {
                     "asset": asset_key,
                     "signal_date": d,
@@ -301,6 +303,7 @@ def main():
                     "rv_10d_pct": _raw_rv,        # raw RV % annualized
                     "gvz_iv_pct": _gvz_iv,         # GVZ IV %
                     "iv_rv_gap_pct": _gvz_iv - _raw_rv,  # IV-RV (>0 = SP 优)
+                    "bp_low": _bp_low,              # 当日 daily Low 在 band 位置 (深破阈值用)
                     "entry_spot_etf": entry_spot,
                     "entry_spot_gc": entry_spot * ratio,
                     "exit_date": res.get("exit_date"),
