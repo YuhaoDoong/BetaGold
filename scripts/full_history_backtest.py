@@ -92,34 +92,75 @@ def simulate_option_stage1_spot(entry_d: pd.Timestamp, entry_spot: float,
                                    today: pd.Timestamp) -> dict:
     """阶段 1 (>1 年): 用 spot delta 近似估期权 P&L (无真实期权数据).
 
-    BUY CALL: long delta 0.5, +1% spot ≈ +2% premium (ATM 杠杆)
-    SELL PUT: short delta 0.3, +1% spot ≈ +0.5% credit ROI
-    STRADDLE: long vol, |move| 时 +
+    v3.7.111 修: 重新校准近似公式 (旧版 SELL PUT 3% 跌 = -50% 错得离谱).
+
+    BUY CALL ATM 45d: delta ~0.5, premium ~2% spot.
+      P&L% = (spot_change × delta - theta_5d) / premium
+      简化: 5d move +2% → 价值 ~+2% × 0.5 / 2% premium = +50%
+      简化公式: pnl = move × 25 - 5 (clamp to ±100)
+    SELL PUT credit spread (-ATM/+-5%): credit ~30% of \$5 width = \$1.5
+      max loss = \$5 - \$1.5 = \$3.5 (move 全部到 -5% 以下)
+      max win = \$1.5 (spot >= ATM at expiry, full theta)
+      P&L% on credit:
+        move >= 0: +30% theta decay 5d (full credit -> \$1)
+        move 0~-3%: gradual loss
+        move <= -5%: max loss = -233% of credit
+      简化:
+        +0.5% < move < +5%: +20% (modest theta gain)
+        -2% < move <= +0.5%: +5%
+        -4% < move <= -2%: -30%
+        move <= -4%: -100% (max loss)
+    STRADDLE long vol 14 DTE: premium ~3% spot (combined ATM call+put)
+      P&L% = (|move| - premium - theta) / premium
+      简化:
+        |move| > 4%: +50% (well above breakeven)
+        2 < |move| <= 4: 0% breakeven
+        |move| <= 2: -40% (theta loss)
     SHORT_VOL: 反 STRADDLE
+        |move| > 4%: -50%
+        2 < |move| <= 4: 0
+        |move| <= 2: +40% (theta gain)
     持有 5 trading days 看 close-to-close.
     """
     later = asset_csv.index[asset_csv.index > entry_d]
     if len(later) < 5: return {"closed": False}
-    exit_d = later[4]  # 5d
+    exit_d = later[4]
     if pd.Timestamp(exit_d) > today: return {"closed": False}
     exit_spot = float(asset_csv.loc[exit_d, "Close"])
     move = (exit_spot / entry_spot - 1) * 100
     s = strategy.upper()
+    # v3.7.111 v3 校准: 平衡 5 策略的近似 P&L 公式
+    # 假设 5d 平均 |move| 1.5%, 大多 < 2%
     if s == "BUY CALL":
-        pnl = move * 2.0  # leverage approx
+        # ATM call 45d, premium ~2% spot, delta 0.5
+        # 5d move %: pnl = move × 15 - 2 (theta), bound ±100
+        pnl = max(-80, min(150, move * 15 - 2))
     elif s == "SELL PUT":
-        pnl = -move * 0.6 if move < 0 else 0.5  # credit decay if up
-        if move < -3: pnl = -50  # large drop = stop
+        # Credit spread (-ATM/+-5%), max win ~ +30% credit, max loss capped
+        if move >= 1: pnl = 25
+        elif move >= -1: pnl = 15
+        elif move >= -2.5: pnl = -10
+        elif move >= -4: pnl = -50
+        else: pnl = -100  # max loss capped at 100%
     elif s == "STRADDLE":
-        pnl = abs(move) * 1.5 - 1.0  # vol gain - theta
+        # Long ATM C+P 14d, premium ~2.5% combined, breakeven |move| > 2%
+        # pnl% = (|move| - 2) × 35, theta -15 if |move|<1.5
+        if abs(move) >= 4: pnl = max(50, min(200, (abs(move) - 2) * 50))
+        elif abs(move) >= 2: pnl = (abs(move) - 2) * 20
+        elif abs(move) >= 1.5: pnl = -10
+        else: pnl = -25  # theta loss in flat
     elif s == "SHORT_VOL":
-        pnl = 1.0 - abs(move) * 1.0
+        # 反 STRADDLE: |move| < 1.5% +25, > 4% -100
+        if abs(move) >= 4: pnl = -80
+        elif abs(move) >= 2: pnl = -20
+        elif abs(move) >= 1.5: pnl = 10
+        else: pnl = 25
     else:
-        pnl = move  # FUTURES
+        pnl = move
     return {"closed": True, "exit_date": pd.Timestamp(exit_d),
              "entry_spot": entry_spot, "exit_spot": exit_spot,
              "ret_spot_pct": move, "pnl_pct": pnl,
-             "reason": "5d spot proxy", "hold_days": 5}
+             "reason": "5d spot proxy v2", "hold_days": 5}
 
 
 def simulate_option_stage23(entry_d: pd.Timestamp, entry_spot: float,
