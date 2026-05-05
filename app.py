@@ -223,7 +223,7 @@ def generate_chart(close, high, dates_all, upper_band, lower_band,
 
     Args:
         spot_ratio: 价位换算比例 (期货/ETF). 1.0 = 不换算.
-        spot_label: 现货标签 (如 "伦敦金"). None = 用 asset_key.
+        spot_label: 现货标签 (如 "纽约金"). None = 用 asset_key.
         straddle_dates: pd.DatetimeIndex 或 list, Straddle 触发日期 (★ 标记).
     """
     _r = float(spot_ratio) if spot_ratio else 1.0
@@ -1381,7 +1381,7 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         </style>""", unsafe_allow_html=True)
 
         _is_gold = asset_key == "GLD"
-        _spot_label = "伦敦金" if _is_gold else "伦敦银"
+        _spot_label = "纽约金" if _is_gold else "纽约银"
         _shfe_label = "沪金" if _is_gold else "沪银"
         _etf_label = "GLD" if _is_gold else "SLV"
         _price_fmt = ",.0f" if _is_gold else ",.2f"
@@ -1623,7 +1623,7 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
 
             # 根据资产类型显示对应期货
             _is_gold_rt = asset_key == "GLD"
-            _spot_label_rt = "伦敦金" if _is_gold_rt else "伦敦银"
+            _spot_label_rt = "纽约金" if _is_gold_rt else "纽约银"
             _etf_label_rt = "GLD" if _is_gold_rt else "SLV"
             _pfmt = ".1f" if _is_gold_rt else ".2f"
 
@@ -1780,7 +1780,7 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     # v3.7.86: 同步算价
     _avg_buy_price = _avg_trigger_price("BUY", _avg_tf_match)
     _avg_exit_price = _avg_trigger_price("EXIT", _avg_tf_match)
-    # v3.7.84: 主图数据源改 COMEX 期货 (GC=F/SI=F) — 23h 全球夜盘, 真伦敦金价
+    # v3.7.84: 主图数据源改 COMEX 期货 (GC=F/SI=F) — 23h 全球夜盘, 真纽约金价
     # ETF (GLD/SLV) 只 US session 6.5h, 缺亚欧夜盘 — 用户诉求显示 24h
     # 实现: 拉 GC=F (gold scale $3800) → 除以 _viz_ratio → ETF-等价 scale ($400)
     #      下游 × _r 逻辑不变, 仅新增 overnight bars
@@ -1821,7 +1821,7 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         5, 1, figsize=(18, 18), sharex=True,
         gridspec_kw={"height_ratios": [3, 2, 1, 1, 1], "hspace": 0.08})
 
-    # ── 价位换算: 主图用伦敦金/伦敦银 (现货/期货), 不再用 ETF 价位 ──
+    # ── 价位换算: 主图用纽约金/纽约银 (现货/期货), 不再用 ETF 价位 ──
     _viz_ticker = "GC=F" if asset_key == "GLD" else "SI=F"
     _viz_rt = _get_realtime_prices(_viz_ticker)
     if _viz_rt and _viz_rt.get("gc_price", 0) > 0 and last_close > 0:
@@ -1830,7 +1830,7 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         _viz_ratio = gc_gld_ratio
     else:
         _viz_ratio = 1.0
-    _viz_spot_label = "伦敦金" if asset_key == "GLD" else "伦敦银"
+    _viz_spot_label = "纽约金" if asset_key == "GLD" else "纽约银"
     _viz_unit = "USD/oz"
     _r = _viz_ratio  # 简写
 
@@ -3248,7 +3248,7 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
 
     # ── (1) 日线简易回测 (180 天) ──
     st.divider()
-    st.subheader("📈 日线简易回测 (180 天 · 伦敦金价位级)")
+    st.subheader("📈 日线简易回测 (180 天 · 纽约金价位级)")
     _bt_180_start = pd.Timestamp(today_sgt) - timedelta(days=180)
     _bt_180_dates = sig_df.index[sig_df.index >= _bt_180_start]
     _bt_180_sig = sig_df.loc[_bt_180_dates]
@@ -3821,7 +3821,7 @@ def main():
             compute_next_day_band(close, range_df, bp_dates, last_date)
 
     # ── 顶部指标 ──
-    # 今日预测模式: 标题用伦敦金/伦敦银 (现货/期货价), ETF 价格作为副信息
+    # 今日预测模式: 标题用纽约金/纽约银 (现货/期货价), ETF 价格作为副信息
     _top_rt = None
     if mode == "今日预测":
         _top_ticker = "GC=F" if asset_key == "GLD" else "SI=F"
@@ -3833,7 +3833,7 @@ def main():
         if len(close) > 1:
             delta_pct = f"{(last_close / close.iloc[-2] - 1) * 100:+.2f}%"
         if _top_rt and _top_rt.get("gc_price", 0) > 0:
-            _spot_label = "伦敦金" if asset_key == "GLD" else "伦敦银"
+            _spot_label = "纽约金" if asset_key == "GLD" else "纽约银"
             _pfmt = ".1f" if asset_key == "GLD" else ".2f"
             st.metric(_spot_label, f"${_top_rt['gc_price']:{_pfmt}}",
                       delta=f"{asset_key} ${last_close:.2f} "
@@ -3909,7 +3909,7 @@ def main():
     _sp = locals().get("sell_put_viz", sell_put)
     _ex = locals().get("exit_sig_viz", exit_sig)
 
-    # 价位换算: 主图改用伦敦金/伦敦银
+    # 价位换算: 主图改用纽约金/纽约银
     _gc_ticker_for_chart = "GC=F" if asset_key == "GLD" else "SI=F"
     _gc_rt_chart = _get_realtime_prices(_gc_ticker_for_chart)
     if _gc_rt_chart and _gc_rt_chart.get("gc_price", 0) > 0 \
@@ -3919,7 +3919,7 @@ def main():
         _spot_ratio_chart = gc_gld_ratio
     else:
         _spot_ratio_chart = 1.0
-    _spot_label_chart = "伦敦金" if asset_key == "GLD" else "伦敦银"
+    _spot_label_chart = "纽约金" if asset_key == "GLD" else "纽约银"
 
     # Straddle 触发日 + 信号去重 (与盘中信号页一致)
     _straddle_for_chart = None
@@ -4153,7 +4153,7 @@ def main():
                     _spot_ratio = _top_rt["gc_price"] / last_close
                 elif gc_gld_ratio:
                     _spot_ratio = gc_gld_ratio
-                _spot_label_t = "伦敦金" if asset_key == "GLD" else "伦敦银"
+                _spot_label_t = "纽约金" if asset_key == "GLD" else "纽约银"
                 _pfmt_t = ".1f" if asset_key == "GLD" else ".2f"
                 _tu_spot = f"${tu * _spot_ratio:{_pfmt_t}}" if _spot_ratio else "—"
                 _tl_spot = f"${tl * _spot_ratio:{_pfmt_t}}" if _spot_ratio else "—"
@@ -4279,7 +4279,7 @@ def main():
 
             _is_gold_tbl = asset_key == "GLD"
             _etf_col = "GLD (USD)" if _is_gold_tbl else "SLV (USD)"
-            _spot_col = "伦敦金现 XAU (USD/oz)" if _is_gold_tbl else "伦敦银现 XAG (USD/oz)"
+            _spot_col = "纽约金现 XAU (USD/oz)" if _is_gold_tbl else "纽约银现 XAG (USD/oz)"
             _fut_col = "纽约金 COMEX (USD/oz)" if _is_gold_tbl else "纽约银 COMEX (USD/oz)"
             _shfe_col = "沪金 AU (CNY/g)" if _is_gold_tbl else "沪银 AG (CNY/kg)"
             st.markdown(f"""
@@ -4298,7 +4298,7 @@ def main():
             st.caption(
                 f"换算来源: {src} ({rt_label}) | "
                 f"1盎司={_g}克 | "
-                f"伦敦金≈COMEX期货"
+                f"纽约金≈COMEX期货"
             )
 
         # ── OI 因子详情 ──
