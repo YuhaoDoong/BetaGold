@@ -1406,8 +1406,10 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         _bp_low_today = (float(_today_row["bp_low"])
                          if _today_row is not None
                          and "bp_low" in _today_row.index else None)
-        # 用实时 bp_est 判断窗口当前状态
-        _window_open = (bp_est is not None and bp_est < 0.30)
+        # v3.7.101: 直接价格比较 (spot < bp030 → 可入场), 跟用户视角一致.
+        # 旧 bp_est 在边缘附近 (0.28~0.32) 会摇摆, 用价格更直接.
+        _window_open = (gld_est is not None and eff_bp030 > 0
+                          and gld_est < eff_bp030)
         # 历史是否触过 (信息性, 不等于可入场)
         _window_touched = (_bp_low_today is not None
                             and _bp_low_today < 0.30)
@@ -2816,7 +2818,10 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     _bdays_gap = len(pd.bdate_range(_ld2.normalize(),
                                        pd.Timestamp(today_sgt).normalize())) - 1
     _stale_today = _bdays_gap > 1
-    _live_actionable = bp_est is not None and bp_est < 0.30
+    # v3.7.101: 跟 _window_open 同源 — spot < bp030 直接判, 不依赖 bp_est 边缘
+    _live_actionable = (locals().get("gld_est") is not None
+                         and locals().get("eff_bp030", 0) > 0
+                         and gld_est < eff_bp030)
 
     # 当日各策略激活状态
     _r2 = sig_df.loc[last_date] if (last_date in sig_df.index and not _stale_today) else None
