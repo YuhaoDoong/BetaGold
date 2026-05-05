@@ -264,11 +264,14 @@ def main():
                 strats.append("STRADDLE")
             if d in sv_df.index and bool(sv_df.loc[d, "short_vol_signal"]):
                 strats.append("SHORT_VOL")
+            # v3.7.113: buy_signal=True 时同时测 BUY CALL + SELL PUT 两次
+            #   后续根据 RV/IV 优化决定哪个最优
+            #   FUTURES_LONG 也并行
             if row.get("buy_signal", False):
-                bt = row.get("buy_type") or ""
-                if bt:
-                    strats.append(bt)
-                    strats.append("FUTURES_LONG")  # 同期触发期货并行
+                strats.extend(["BUY CALL", "SELL PUT", "FUTURES_LONG"])
+            # v3.7.113: SHORT_VOL 屏蔽 (用户暂时关 — IC 4-leg 待真实模型)
+            if "SHORT_VOL" in strats:
+                strats.remove("SHORT_VOL")
             if not strats: continue
             entry_spot = float(close_d.get(d, 0))
             if entry_spot <= 0: continue
