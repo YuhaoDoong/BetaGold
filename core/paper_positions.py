@@ -583,8 +583,7 @@ def simulate_option_exit(entry_pricing: dict, signal_date: pd.Timestamp,
     """
     # v3.7.107: FUTURES_LONG 无 kline_db, 直接 spot 跟踪
     if "FUTURES" in strategy:
-        # 入场后第二天 close 平仓 (overnight 期货, 当日 RTH 转期权)
-        # v3.7.108: 不要 local import pd — 会让函数其他分支用 pd 时 UnboundLocalError
+        # v3.7.109: 期货退出机制 — 5d 持仓 / +3% 止盈 / -2% 止损 / 跟方向性 EXIT trigger
         try:
             asset_key = entry_pricing["legs"][0][1].split("_")[0]
             csv_p = f"/Users/yhdong/Gold/data/raw/market/{asset_key.lower()}.csv"
@@ -592,18 +591,31 @@ def simulate_option_exit(entry_pricing: dict, signal_date: pd.Timestamp,
             sig_d = pd.Timestamp(signal_date).normalize()
             entry_value = entry_pricing["entry_price"]
             later = spot_df.index[spot_df.index > sig_d]
-            if len(later) >= 1:
-                _exit_d = later[0]  # 下一交易日 close
-                if _exit_d <= today_dt:
-                    cur = float(spot_df.loc[_exit_d, "Close"])
-                    return {"is_closed": True, "exit_date": _exit_d,
-                             "exit_value": cur, "exit_reason": "下日 close",
-                             "pnl_pct": (cur / entry_value - 1) * 100,
+            hold = 0
+            for d_x in later:
+                d_ts = pd.Timestamp(d_x)
+                if d_ts > today_dt: break
+                hold += 1
+                cur = float(spot_df.loc[d_x, "Close"])
+                ret = (cur / entry_value - 1) * 100
+                if ret >= 3.0:
+                    return {"is_closed": True, "exit_date": d_ts,
+                             "exit_value": cur, "exit_reason": f"+{ret:.1f}% 止盈",
+                             "pnl_pct": ret,
                              "leg_prices": [("futures_long", cur)]}
-            # 仍持仓 (未到 close 时间)
+                if ret <= -2.0:
+                    return {"is_closed": True, "exit_date": d_ts,
+                             "exit_value": cur, "exit_reason": f"{ret:.1f}% 止损",
+                             "pnl_pct": ret,
+                             "leg_prices": [("futures_long", cur)]}
+                if hold >= 5:
+                    return {"is_closed": True, "exit_date": d_ts,
+                             "exit_value": cur, "exit_reason": "5d 时间出场",
+                             "pnl_pct": ret,
+                             "leg_prices": [("futures_long", cur)]}
+            # 持仓中
             cur = float(spot_df["Close"].iloc[-1])
-            return {"is_closed": False, "current_value": cur,
-                     "hold_days": 0,
+            return {"is_closed": False, "current_value": cur, "hold_days": hold,
                      "pnl_pct": (cur / entry_value - 1) * 100,
                      "leg_prices": [("futures_long", cur)]}
         except Exception:
@@ -624,7 +636,8 @@ def simulate_option_exit(entry_pricing: dict, signal_date: pd.Timestamp,
     # 退出规则
     if is_credit:
         profit_target = entry_value * 0.5  # cur_credit ≤ 0.5 × entry → +50%
-        stop_loss = entry_value * 2.0       # cur_credit ≥ 2 × entry → -100%
+        # v3.7.109: stop 从 2.0× 降到 1.5× (50% 损 = 通常 stop, 100% 太晚)
+        stop_loss = entry_value * 1.5       # cur_credit ≥ 1.5 × entry → -50%
     elif is_long_vol:
         profit_target = entry_value * 2.0   # cur_value ≥ 2 × entry → +100%
         stop_loss = None                      # 长 vol 不主动止损, 等 14d

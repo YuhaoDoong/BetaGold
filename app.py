@@ -2184,6 +2184,61 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                                 marker="v", s=140, color="#F44336",
                                 edgecolors="black", lw=1.2, zorder=7,
                                 label="_nolegend_")
+    # v3.7.109: 加 paper position 模拟平仓 marker (50% profit / stop / 5d / expiry)
+    try:
+        from core.paper_positions import (price_strategy_at as _ps_chart,
+                                             simulate_option_exit as _se_chart)
+        from core.events import (detect_straddle_signal as _dst_ch,
+                                  detect_short_vol_signal as _dsv_ch)
+        _today_ch = pd.Timestamp(today_sgt).normalize()
+        _rv_ch = features.loc[close_d.index, "rv_10d"] if "rv_10d" in features.columns else pd.Series(dtype=float)
+        _vd_ch = list(viz_dates)
+        if _vd_ch:
+            _strad_ch = _dst_ch(_rv_ch, pd.DatetimeIndex(_vd_ch), rv_pctile=rv_pctile, asset=asset_key)
+            _sv_ch = _dsv_ch(_rv_ch, rv_pctile, pd.DatetimeIndex(_vd_ch), regime=regime)
+            _gld_csv_ch = pd.read_csv(
+                f"/Users/yhdong/Gold/data/raw/market/{asset_key.lower()}.csv",
+                index_col=0, parse_dates=True)
+            for _dc in _vd_ch:
+                _strats_c = []
+                if len(_strad_ch) > 0 and _dc in _strad_ch.index and bool(_strad_ch.loc[_dc, "straddle_signal"]):
+                    _strats_c.append("STRADDLE")
+                if len(_sv_ch) > 0 and _dc in _sv_ch.index and bool(_sv_ch.loc[_dc, "short_vol_signal"]):
+                    _strats_c.append("SHORT_VOL")
+                _row_c = sig_df.loc[_dc] if _dc in sig_df.index else None
+                if _row_c is not None and _row_c.get("buy_signal", False):
+                    _bt_c = _row_c.get("buy_type") or ""
+                    if _bt_c and _bt_c not in _strats_c:
+                        _strats_c.append(_bt_c)
+                for _str_c in _strats_c:
+                    if _dc not in _gld_csv_ch.index: continue
+                    _eO_c = float(_gld_csv_ch.loc[_dc, "Open"])
+                    _eC_c = float(_gld_csv_ch.loc[_dc, "Close"])
+                    _eH_c = float(_gld_csv_ch.loc[_dc, "High"])
+                    _eL_c = float(_gld_csv_ch.loc[_dc, "Low"])
+                    _ent_c = _ps_chart(asset_key, _str_c, _dc,
+                                          _dc + pd.Timedelta(hours=9, minutes=30),
+                                          _eO_c, _eO_c, _eC_c, _eH_c, _eL_c,
+                                          dte_target=(14 if _str_c == "STRADDLE" else 30))
+                    if not _ent_c["legs"]: continue
+                    _sim_c = _se_chart(_ent_c, _dc, _str_c, _today_ch)
+                    if not _sim_c.get("is_closed"): continue
+                    _xd_c = _sim_c["exit_date"]
+                    if _xd_c not in _gld_csv_ch.index: continue
+                    _exit_spot_c = float(_gld_csv_ch.loc[_xd_c, "Close"])
+                    if _is_1h_view and len(plot_ts) > 0:
+                        if _xd_c < plot_ts[0].normalize() or _xd_c > plot_ts[-1].normalize():
+                            continue
+                        _x_c = _xi_at(_xd_c + pd.Timedelta(hours=15, minutes=55))
+                    else:
+                        _x_c = xi(_xd_c)
+                    if _x_c is None: continue
+                    ax.scatter([_x_c], [_exit_spot_c * _r],
+                                marker="X", s=110, color="#9C27B0",
+                                edgecolors="black", lw=1.0, zorder=6,
+                                label="_nolegend_")
+    except Exception:
+        pass
     # 始终显示全部 5 类 + MIXED 边框说明 (即使当前窗口没有该类信号)
     ax.legend(loc="upper left", fontsize=8, framealpha=0.85, ncol=2,
                title="信号类型 (紫色边框 = MIXED 组合)")
@@ -3220,15 +3275,29 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         if not _strats_today: continue
         # 对每个策略生成独立 record
         for _strat in _strats_today:
-            _entry_spot_u = float(close_d.get(_du, 0))
-            if _entry_spot_u <= 0: continue
+            # v3.7.109: 各策略用各自触发时刻 spot (双 scale: ETF + GC=F)
+            #   FUTURES → premarket 第一笔 BUY trigger 价
+            #   SHORT_VOL/STRADDLE → 09:30 ET RTH 开盘价 (ETF Open)
+            #   BUY CALL/SELL PUT → RTH 第一笔 BUY trigger 价 (intraday log)
             if _du in _gld_csv_u.index:
                 _eO = float(_gld_csv_u.loc[_du, "Open"])
                 _eC = float(_gld_csv_u.loc[_du, "Close"])
                 _eH = float(_gld_csv_u.loc[_du, "High"])
                 _eL = float(_gld_csv_u.loc[_du, "Low"])
             else:
-                _eO = _eC = _eH = _eL = _entry_spot_u
+                _eO = _eC = _eH = _eL = float(close_d.get(_du, 0))
+            if "FUTURES" in _strat and len(_log_u) and len(_pre_buys):
+                _entry_spot_u = float(_pre_buys.iloc[0]["price"])
+            elif _strat in ("BUY CALL", "SELL PUT") and len(_log_u):
+                _rth = _log_u[(_log_u["date"] == _du) & (_log_u["side"] == "BUY") &
+                              (pd.to_datetime(_log_u["trigger_time"]).dt.hour
+                               + pd.to_datetime(_log_u["trigger_time"]).dt.minute / 60.0 >= 9.5)]
+                _entry_spot_u = float(_rth.iloc[0]["price"]) if len(_rth) else _eO
+            else:  # STRADDLE / SHORT_VOL → 09:30 ET 开盘
+                _entry_spot_u = _eO
+            if _entry_spot_u <= 0: continue
+            # 双 scale: ETF spot 已就绪, 加 GC=F equivalent (× ratio)
+            _entry_gc_u = _entry_spot_u * gc_gld_r if asset_key == "GLD" else _entry_spot_u * gc_gld_r
             _ent_pricing = _price_uni(asset_key, _strat, _du,
                                          _du + pd.Timedelta(hours=9, minutes=30),
                                          _eO, _eO, _eC, _eH, _eL,
@@ -3265,6 +3334,13 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                 _ent_str += f" → 收${_ent_prem:.2f}"
             elif "STRADDLE" in _strat or "SHORT_VOL" in _strat:
                 _ent_str += f" → ${_ent_prem:.2f}"
+            elif "FUTURES" in _strat:
+                # v3.7.109: Binance XAUUSDT 20× 永续 — 加 liq 价 + fee 估算
+                from core.binance_futures import (compute_liquidation_price,
+                                                    estimate_futures_pnl,
+                                                    fetch_xauusdt_realtime)
+                _liq = compute_liquidation_price(_entry_gc_u, leverage=20)
+                _ent_str = f"USDT@${_entry_gc_u:.0f} (20×, Liq ${_liq:.0f})"
             if _is_closed:
                 _exit_d_u = _sim["exit_date"]
                 _ex_val = _sim["exit_value"]
@@ -3284,13 +3360,16 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                 else:
                     _exit_str += f" → 现${_ex_val:.2f}"
                 _exit_spot_u = _cur_spot_u
+            _exit_gc_u = _exit_spot_u * gc_gld_r if asset_key == "GLD" else _exit_spot_u * gc_gld_r
             _rec = {
                 "信号日": _du.strftime("%m-%d"),
                 "策略": _strat,
                 "合约": _ent_pricing.get("source", "—"),
-                "入场Spot": f"${_entry_spot_u:.2f}",
+                "入场ETF": f"${_entry_spot_u:.2f}",
+                "入场GC=F": f"${_entry_gc_u:.0f}",
                 "入场期权": _ent_str,
-                "平/现Spot": f"${_exit_spot_u:.2f}",
+                "平/现ETF": f"${_exit_spot_u:.2f}",
+                "平/现GC=F": f"${_exit_gc_u:.0f}",
                 "平/现期权": _exit_str,
                 "P&L%": f"{_gain_u:+.1f}%",
                 "出场原因": _exit_label,
