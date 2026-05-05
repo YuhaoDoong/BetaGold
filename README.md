@@ -121,6 +121,65 @@ launchctl load ~/Library/LaunchAgents/com.golddash.retune.plist
 | **v3.7.50** | **真实期权 18mo 验证 STRADDLE 通过 (GLD 73%/SLV 70% 胜率), Dashboard sizing 显示, generate_signals 与 strategy_config 切点 unify** |
 | v3.7.51 | kline_db (本地 EOD 累积) 作为 yfinance/Moomoo 第三 fallback |
 | v3.7.52 | 数据腐败检测 (close 重复+量低 → 强制重拉); daily_eod_options.py 每日采集 cron |
+| v3.7.53-83 | UI 大量优化: 时区美东对齐 / 主图 5 子图重排 / K线精度可配 / dirty 数据过滤 / 自动 dedup |
+| v3.7.84-90 | 主图改 GC=F 期货源 (23h 全球夜盘) / 触发 confirm_mode 客观最优 / EXIT marker 单一来源 |
+| v3.7.91 | **kline_db 真实期权 OHLC + spot 比例插值 替代 BS+假IV (单日误差 <5%)** |
+| v3.7.92-95 | sig_df buy_type/vol 信号 detect 重构 / 历史未平仓+期权模拟 OPEN/CLOSED 分表 |
+| v3.7.96 | **真实期权退出规则: SELL PUT +50%/-100%/expiry · BUY CALL ±50%/100% · STRADDLE 14d · SHORT_VOL 30d** |
+| v3.7.97 | BUY CALL 单腿 vs 价差条件选 / SELL PUT 强制 put credit spread / 单腿价格显示 |
+| v3.7.98-101 | 触发 confirm_mode any/dedupe/分桶 (premarket vs RTH 独立) / stale 改交易日判 |
+| v3.7.102 | 全部 "伦敦金/伦敦银" → "纽约金/纽约银" (跟 GC=F/SI=F 数据源对齐) |
+| v3.7.103-105 | ETF live spot 直拉 + ratio 2h TTL + ETF prepost 16h (premarket+aftermarket) |
+| **v3.7.106** | **Range 模型重训用 GC=F 期货 23h 数据替代 GLD ETF 6.5h (tightness 持平 0.11, lower band 更紧)** |
+| v3.7.107-108 | 多策略并行持仓 (5-4 SELL PUT + SHORT_VOL + FUTURES 同日) / 状态栏字体缩小 |
+| **v3.7.109** | **Binance XAUUSDT 永续 20× 接入 (实时 mark/funding/liq 真值) + 双 scale ETF/GC=F + 5 项退出修** |
+
+## v3.7.109 重大变更概览
+
+### 数据源统一 (v3.7.102-106)
+- ❌ **不再用** "伦敦金"/"伦敦银" 称谓 (LBMA spot 没接, 全局换 "纽约金"/"纽约银")
+- ✅ **GC=F (COMEX 黄金期货 23h)** = 价格显示主源 + Range 模型训练源
+- ✅ **GLD ETF (RTH 6.5h + prepost 16h)** = 期权底层 + 触发 detect 用
+- ✅ **Binance XAUUSDT 永续** = 期货策略真实 (公开 API, 无 key)
+- ✅ **kline_db EOD 期权 OHLC** (本地累积 ~48k 行) = 历史期权价插值源
+- ratio 自动 2h TTL 更新 (ETF premium/discount 漂移 ±0.3% 跟得上)
+
+### 期权回测精度提升 (v3.7.91+96)
+| 方法 | 误差 | 说明 |
+|---|---|---|
+| BS + IV=0.20 硬编码 (旧) | 权利金低估 ~20%, Greek 全错 | 不可靠 |
+| **kline_db OHLC + spot 比例插值 (新)** | **单日 spot <2% 移动 误差 <5%** | 接近真实成交 |
+
+退出规则 (simulate_option_exit):
+- SELL PUT credit spread: +50% 早平 / **-50% stop (1.5×entry)** / expiry
+- BUY CALL: +100% / -50% / expiry
+- STRADDLE long vol: +100% / 14d 定时 / expiry
+- SHORT_VOL credit: +50% / -50% / 30d / expiry
+- **FUTURES 期货多头 (新): 5d 持仓 / +3% 止盈 / -2% 止损**
+
+### 多策略并行持仓 (v3.7.107)
+单日可同时持有 5 类:
+1. **期货多头** (Binance XAUUSDT 20× perp, premarket 触发)
+2. **跨式期权 STRADDLE** (long ATM call + put)
+3. **BUY CALL** (单腿 ATM call OR bull call spread, IV 自适应)
+4. **SELL PUT credit spread** (-ATM put / +-5% put)
+5. **铁鹰 SHORT_VOL** (当前简化为 SELL PUT credit spread, 完整 4-leg IC 待后续)
+
+### Binance XAUUSDT 期货模拟 (core/binance_futures.py)
+- 公开 endpoint 无 API key
+- 实测 5-5: mark $4541.87, funding 0.0026%/8h, taker 0.05%
+- 20× long $4540 → margin $227, **liq $4335** (-4.5% 爆仓)
+- 含 funding 累积 + 双边 fee 真实计算
+
+### 持仓管理表新结构
+| 列 | 内容 |
+|---|---|
+| 信号日 / 策略 / 合约 | OCC ticker 或 期货 USDT 标识 |
+| **入场ETF / 入场GC=F** | 双 scale 触发时点 spot |
+| 入场期权 | 单腿价 → 组合 net (e.g. `-P$465@$22 / +P$445@$13 → 收$8.55`) |
+| 平/现ETF / 平/现GC=F | 平仓或 mark-to-market spot |
+| 平/现期权 | 单腿出场价 + 出场总值 |
+| P&L% / 出场原因 | 真实退出规则触发原因 (e.g. `+50% profit` / `-50% stop` / `expiry`) |
 
 ## 用户偏好
 
