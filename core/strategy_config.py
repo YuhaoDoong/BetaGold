@@ -77,6 +77,13 @@ class AssetConfig:
     sp_score_w_stoch_low: float = 0.5    # stoch_k < 40
     sp_score_w_macd_bear: float = 0.5    # macd_hist < -0.5
 
+    # ── v3.7.128: ma_trend (MA20/MA50) 入场过滤 (per-asset grid 最优) ──
+    # ma_trend < threshold → buy_signal 跳过 (下行趋势接飞刀概率高)
+    # GLD: 0.975 (paired sum +3639% vs 0.99 +3598%, +41% 提升, 5-4 边界信号能通过)
+    # SLV: 0.990 (paired sum +934%, 已是 grid 最优)
+    ma_trend_filter_enabled: bool = True
+    ma_trend_threshold: float = 0.99      # 默认严格
+
     # ── STRADDLE 做多波动率 ──
     straddle_rv_threshold: float = 20.0   # RV < 此值 +2 分
     straddle_rv_abs_max: float = 25.0     # RV > 此值不触发
@@ -134,6 +141,7 @@ ASSET_CONFIGS: Dict[str, AssetConfig] = {
         rv_filter_high=0.45,
         sp_score_enabled=True,
         sp_score_threshold=3.5,           # paired chosen sum 最大 (thr=3.5 +3279% vs 3.0 +3164%)
+        ma_trend_threshold=0.975,         # v3.7.128 grid: 0.975-0.985 同分 sum +3640% 最优
         short_vol_rv_pctile_lo=0.45,
         short_vol_rv_pctile_hi=0.80,
         straddle_rv_abs_max=30.0,
@@ -153,6 +161,7 @@ ASSET_CONFIGS: Dict[str, AssetConfig] = {
         rv_filter_high=0.75,
         sp_score_enabled=True,
         sp_score_threshold=2.5,           # paired chosen sum 最大 (thr=2.5 +862% vs 3.0 +738%)
+        ma_trend_threshold=0.99,          # v3.7.128 grid: SLV 0.99 已是峰值 sum +934%
         short_vol_rv_pctile_lo=0.25,
         short_vol_rv_pctile_hi=0.775,
         straddle_rv_abs_max=25.0,

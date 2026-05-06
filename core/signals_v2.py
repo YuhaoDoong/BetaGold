@@ -186,12 +186,23 @@ def generate_daily_signals(close_d, high_d, low_d,
         rv_extreme = (rv < rv_low) or (rv > rv_high)
         if rv_filter and buy_sig and not rv_extreme:
             buy_sig = False
-        # v3.7.127: ma_trend 过滤 — MA20 < MA50 时方向性几乎全输, 必跳过
-        # (实证 GLD wr 0% / SLV wr 12.5% 在 ma_trend < 0.99)
+        # v3.7.127/128: ma_trend (MA20/MA50) 过滤 — 下行趋势接飞刀概率高
+        # 阈值 per-asset grid 最优: GLD 0.975 / SLV 0.99
         ma_trend_skip = False
         if buy_sig and _ma_trend is not None and d in _ma_trend.index:
             mt = float(_ma_trend.get(d, np.nan))
-            if not np.isnan(mt) and mt < 0.99:
+            mt_thr = 0.99
+            if asset is not None:
+                try:
+                    from core.strategy_config import get_config
+                    _ac = get_config(asset)
+                    if getattr(_ac, "ma_trend_filter_enabled", True):
+                        mt_thr = _ac.ma_trend_threshold
+                    else:
+                        mt_thr = -1  # 禁用过滤
+                except Exception:
+                    pass
+            if not np.isnan(mt) and mt < mt_thr:
                 buy_sig = False
                 ma_trend_skip = True
         buy_type = None
