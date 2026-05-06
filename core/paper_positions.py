@@ -351,7 +351,14 @@ def pick_liquid_monthly_option(asset: str, signal_date: pd.Timestamp,
     if db is None: return None
     sig_d = pd.Timestamp(signal_date).normalize()
     day_data = db[db["date"] == sig_d]
-    if not len(day_data): return None
+    # v3.7.145: 没今日 EOD options 数据时, fallback 到最近可用日
+    # 用 user 模型: 信号一触发就该开仓, 即使 kline_db 一两日滞后
+    if not len(day_data):
+        avail_dates = db.loc[db["date"] <= sig_d, "date"]
+        if not len(avail_dates): return None
+        nearest = avail_dates.max()
+        day_data = db[db["date"] == nearest]
+        if not len(day_data): return None
     asset_data = day_data[day_data["code"].str.contains(asset, na=False)]
     if not len(asset_data): return None
     type_str = "CALL" if right.upper() == "C" else "PUT"
