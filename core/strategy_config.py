@@ -141,7 +141,7 @@ ASSET_CONFIGS: Dict[str, AssetConfig] = {
         rv_filter_high=0.45,
         sp_score_enabled=True,
         sp_score_threshold=3.5,           # paired chosen sum 最大 (thr=3.5 +3279% vs 3.0 +3164%)
-        ma_trend_threshold=0.975,         # v3.7.128 grid: 0.975-0.985 同分 sum +3640% 最优
+        ma_trend_threshold=0.975,          # v3.7.146 实证: 滤 7 笔全输 (-290%累计), 真 alpha
         short_vol_rv_pctile_lo=0.45,
         short_vol_rv_pctile_hi=0.80,
         straddle_rv_abs_max=30.0,
