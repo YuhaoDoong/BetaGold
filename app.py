@@ -3157,35 +3157,11 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     # 删除: 盘中触发实盘模拟 / 日线信号模拟持仓 / 实盘持仓手动录入
     # ════════════════════════════════════════════════════════════════
 
-    # ── (1) 今日盘中触发 ──
+    # ── (1) 今日新开仓 ──
+    # v3.7.143: 重写为跟历史表同格式 (合约/strikes/credit/MTM/P&L%)
+    # 之前: banner + 简单 trigger 列表, 没期权合约信息
     st.divider()
-    st.subheader(f"⚡ 今日盘中触发 ({today_sgt})")
-    # v3.7.139: 日级 vol 信号 banner (无论是否有盘中 trigger 都展示)
-    try:
-        from core.events import (detect_straddle_signal as _det_strad_b,
-                                  detect_short_vol_signal as _det_sv_b)
-        _rv_b = features.loc[close_d.index, "rv_10d"]
-        _today_b = pd.Timestamp(today_sgt).normalize()
-        _strad_b = _det_strad_b(_rv_b, pd.DatetimeIndex([_today_b]),
-                                  rv_pctile=rv_pctile,
-                                  close=close_d, high=high_d, low=low_d,
-                                  asset=asset_key)
-        _sv_b = _det_sv_b(_rv_b, rv_pctile, pd.DatetimeIndex([_today_b]),
-                           regime=regime,
-                           close=close_d, high=high_d, low=low_d,
-                           asset=asset_key)
-        _bs = []
-        if len(_strad_b) and bool(_strad_b["straddle_signal"].iloc[0]):
-            _ss = int(_strad_b["straddle_score"].iloc[0])
-            _bs.append(f"🟣 **STRADDLE** (做多波动率, score={_ss})")
-        if len(_sv_b) and bool(_sv_b["short_vol_signal"].iloc[0]):
-            _svs = int(_sv_b["short_vol_score"].iloc[0])
-            _svr = _sv_b["short_vol_reason"].iloc[0]
-            _bs.append(f"🟠 **SHORT_VOL** (做空波动率, score={_svs}) · {_svr}")
-        if _bs:
-            st.info(" · ".join(_bs))
-    except Exception:
-        pass
+    st.subheader(f"⚡ 今日新开仓 ({today_sgt})")
     _today = pd.Timestamp(today_sgt).normalize()
     _today_log = _intra_log_asset[
         pd.to_datetime(_intra_log_asset["date"]).dt.normalize() == _today
@@ -3279,43 +3255,195 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                 _strat = "FUTURES_LONG"  # premarket 走期货 (跟方向性绑定)
             else:
                 _strat = "SPOT"  # 无日级信号 (filtered out)
-            _opt_code = ""; _opt_p = "—"
-            # v3.7.141: SHORT_VOL 加入定价 (4-leg IC) + 显示具体合约/到期/credit
+            # v3.7.143: 同历史表格式 — 合约/strikes/credit/MTM 全显示
+            _opt_code = "—"; _ent_str = "—"; _exit_str = "—"; _gain = 0.0
+            _exit_reason = "OPEN"
+            _ent_pricing = None
             if _strat in ("BUY CALL", "SELL PUT", "STRADDLE", "SHORT_VOL"):
-                _pricing = _price_strat(asset_key, _strat, _today, _t, _ul,
-                                          _O_today, _C_today,
-                                          _H_today, _L_today)
-                if _pricing["legs"]:
-                    _opt_code = _pricing["source"]
-                    if _strat == "SELL PUT" or _strat == "SHORT_VOL":
-                        _opt_p = f"收${_pricing['entry_price']:.2f}"
+                _ent_pricing = _price_strat(asset_key, _strat, _today, _t, _ul,
+                                              _O_today, _C_today,
+                                              _H_today, _L_today)
+                if _ent_pricing["legs"]:
+                    _opt_code = _ent_pricing["source"]
+                    _ent_legs = _ent_pricing.get("leg_prices", [])
+                    _ent_credit = _ent_pricing["entry_price"]
+                    # 单腿明细 (跟历史表 _fmt_legs 一样)
+                    _parts = []
+                    for (lab, code, K, qty), (_lp_lab, p) in zip(
+                            _ent_pricing["legs"], _ent_legs):
+                        _sign = "Short" if qty < 0 else "Long"
+                        _opt_t = "C" if "call" in lab else "P"
+                        _parts.append(f"{_sign} {_opt_t}${K:.0f}: ${p:.2f}")
+                    _ent_str = " / ".join(_parts)
+                    if _strat in ("SELL PUT", "SHORT_VOL"):
+                        _ent_str += f" → 收${_ent_credit:.2f}"
                     else:
-                        _opt_p = f"${_pricing['entry_price']:.2f}"
+                        _ent_str += f" → ${_ent_credit:.2f}"
+                    # MTM via _sim_exit (RTH 内 kline_db, 否则 OPEN entry-value)
+                    try:
+                        from core.paper_positions import simulate_option_exit as _sim_t
+                        _sim_today = _sim_t(_ent_pricing, _today, _strat,
+                                              pd.Timestamp(today_sgt).normalize())
+                        _gain = _sim_today.get("pnl_pct", 0.0)
+                        _exit_legs_t = _sim_today.get("leg_prices", [])
+                        if _sim_today.get("is_closed"):
+                            _exit_reason = _sim_today.get("exit_reason", "")
+                            _ev = _sim_today.get("exit_value", 0)
+                            _exit_str = f"平${_ev:.2f}"
+                        elif _exit_legs_t:
+                            _ep = []
+                            for (lab, code, K, qty), (_l2, p2) in zip(
+                                    _ent_pricing["legs"], _exit_legs_t):
+                                _sign = "Short" if qty < 0 else "Long"
+                                _opt_t = "C" if "call" in lab else "P"
+                                _ep.append(f"{_sign} {_opt_t}${K:.0f}: ${p2:.2f}")
+                            _exit_str = " / ".join(_ep)
+                            _cv = _sim_today.get("current_value", _ent_credit)
+                            _exit_str += f" → 现${_cv:.2f}"
+                        else:
+                            _exit_str = "(RTH 后看)"
+                    except Exception as _e:
+                        _exit_str = f"MTM 错: {_e}"
                 else:
-                    _opt_code = "(kline_db 无)"
+                    _opt_code = "(kline_db 无该日数据)"
+                    _ent_str = "—"; _exit_str = "—"
             elif _strat == "FUTURES_LONG":
-                _opt_code = f"{_futures_ticker} 多头"
-                _opt_p = f"${_ul:.2f}"
+                _opt_code = f"{_futures_ticker} 20× 多头"
+                from core.binance_futures import compute_liquidation_price
+                _liq = compute_liquidation_price(_ul * gc_gld_r, leverage=20)
+                _ent_str = f"USDT@${_ul * gc_gld_r:.0f} (Liq ${_liq:.0f})"
+                # 期货 live MTM
+                _live_etf = float(locals().get("gld_est") or _C_today)
+                if _live_etf > 0 and _ul > 0:
+                    _spot_pct = (_live_etf / _ul - 1) * 100
+                    _gain = _spot_pct * 20  # 20× lev
+                    _exit_str = f"现${_live_etf * gc_gld_r:.0f} (live)"
             elif _strat == "SPOT":
-                _opt_code = "(无日级信号)"
-                _opt_p = "—"
+                _opt_code = "(buy_signal 被 ma_trend/RV/IV 过滤)"
+                _ent_str = "—"; _exit_str = "—"
+
+            _entry_etf = _ul
+            _entry_gc = _ul * gc_gld_r
+            _exit_etf = float(locals().get("gld_est") or _C_today)
             _rows1.append({
                 "时间(ET)": _t.strftime("%m-%d %H:%M"),
                 "信号": r["side"],
                 "策略": _strat,
-                "Underlying": f"${_ul:.2f}",
-                "期权": _opt_code,
-                "入场价": _opt_p,
-                "TF": r.get("timeframe", "?"),
+                "合约": _opt_code,
+                "入场ETF": f"${_entry_etf:.2f}",
+                "入场GC=F": f"${_entry_gc:.0f}",
+                "入场期权": _ent_str,
+                "现ETF": f"${_exit_etf:.2f}",
+                "现期权/状态": _exit_str,
+                "P&L%": f"{_gain:+.1f}%",
+                "状态": _exit_reason,
             })
+        # v3.7.143: 若今日无盘中 BUY trigger 但日级 vol 信号 (STRADDLE/SHORT_VOL) True,
+        #          补一行 synthetic 持仓 (entry @ 09:30 ET RTH 开盘)
+        _has_dir_row = any(r["策略"] in ("BUY CALL", "SELL PUT", "STRADDLE",
+                                            "SHORT_VOL", "FUTURES_LONG")
+                            for r in _rows1)
+        for _vol_strat, _is_vol in [("STRADDLE", _is_strad_today),
+                                       ("SHORT_VOL", _is_sv_today)]:
+            if _is_vol and not any(r["策略"] == _vol_strat for r in _rows1):
+                _t_vol = _today + pd.Timedelta(hours=9, minutes=30)
+                _ent_v = _price_strat(asset_key, _vol_strat, _today, _t_vol, _C_today,
+                                         _O_today, _C_today, _H_today, _L_today)
+                if _ent_v.get("legs"):
+                    _ent_legs_v = _ent_v.get("leg_prices", [])
+                    _credit_v = _ent_v["entry_price"]
+                    _parts_v = []
+                    for (lab, code, K, qty), (_lp, p) in zip(_ent_v["legs"], _ent_legs_v):
+                        _sign = "Short" if qty < 0 else "Long"
+                        _opt_t = "C" if "call" in lab else "P"
+                        _parts_v.append(f"{_sign} {_opt_t}${K:.0f}: ${p:.2f}")
+                    _ent_str_v = " / ".join(_parts_v)
+                    _ent_str_v += (f" → 收${_credit_v:.2f}" if _vol_strat == "SHORT_VOL"
+                                    else f" → ${_credit_v:.2f}")
+                    _rows1.append({
+                        "时间(ET)": _t_vol.strftime("%m-%d %H:%M") + " (日级)",
+                        "信号": "BUY",
+                        "策略": _vol_strat,
+                        "合约": _ent_v["source"],
+                        "入场ETF": f"${_C_today:.2f}",
+                        "入场GC=F": f"${_C_today * gc_gld_r:.0f}",
+                        "入场期权": _ent_str_v,
+                        "现ETF": f"${float(locals().get('gld_est') or _C_today):.2f}",
+                        "现期权/状态": "(RTH 后看)",
+                        "P&L%": "0.0%",
+                        "状态": "OPEN",
+                    })
         st.dataframe(pd.DataFrame(_rows1).iloc[::-1],
                       use_container_width=True, hide_index=True)
-        st.caption(f"raw {len(_today_log)} 笔 → dedupe (BUY 加仓需价跌 0.3%) "
-                   f"留 {len(_today_log_dd)} 笔. "
-                   f"RTH (09:30-16:00 ET) 走 {_today_buy_type or 'SPOT'}; "
-                   f"非 RTH 走期货多头. 期权价 = kline_db OHLC × spot 比例插值.")
+        st.caption(f"raw {len(_today_log)} 笔 → dedupe 留 {len(_today_log_dd)} 笔. "
+                   f"vol 日级信号 (STRADDLE/SHORT_VOL) 自动 09:30 ET 开仓.")
     else:
-        st.caption(f"今日 {today_sgt} 无盘中触发")
+        # 没盘中 trigger 但仍可能有日级 vol 信号
+        _vol_only_rows = []
+        try:
+            _today_buy_type = ((sig_df.loc[_today, "buy_type"] or "")
+                                if (_today in sig_df.index
+                                      and sig_df.loc[_today].get("buy_signal", False))
+                                else "")
+            from core.events import (detect_straddle_signal as _det_strad_b,
+                                       detect_short_vol_signal as _det_sv_b)
+            _rv_b = features.loc[close_d.index, "rv_10d"]
+            _strad_b = _det_strad_b(_rv_b, pd.DatetimeIndex([_today]),
+                                       rv_pctile=rv_pctile,
+                                       close=close_d, high=high_d, low=low_d,
+                                       asset=asset_key)
+            _sv_b = _det_sv_b(_rv_b, rv_pctile, pd.DatetimeIndex([_today]),
+                                regime=regime,
+                                close=close_d, high=high_d, low=low_d,
+                                asset=asset_key)
+            for _vs, _df_v in [("STRADDLE", _strad_b),
+                                  ("SHORT_VOL", _sv_b)]:
+                if not len(_df_v): continue
+                _sig_col = "straddle_signal" if _vs == "STRADDLE" else "short_vol_signal"
+                if not bool(_df_v[_sig_col].iloc[0]): continue
+                from core.paper_positions import price_strategy_at as _ps_v
+                _C_t = float(close_d.iloc[-1])
+                _O_t = _C_t; _H_t = _C_t; _L_t = _C_t
+                if _today in close_d.index:
+                    _O_t = float(close_d.get(_today, _C_t))
+                    _C_t = float(close_d.get(_today, _C_t))
+                    _H_t = float(high_d.get(_today, _C_t))
+                    _L_t = float(low_d.get(_today, _C_t))
+                _t_v = _today + pd.Timedelta(hours=9, minutes=30)
+                _ent_v = _ps_v(asset_key, _vs, _today, _t_v, _C_t,
+                                _O_t, _C_t, _H_t, _L_t)
+                if not _ent_v.get("legs"): continue
+                _credit_v = _ent_v["entry_price"]
+                _parts = []
+                for (lab, code, K, qty), (_lp, p) in zip(
+                        _ent_v["legs"], _ent_v.get("leg_prices", [])):
+                    _sign = "Short" if qty < 0 else "Long"
+                    _opt_t = "C" if "call" in lab else "P"
+                    _parts.append(f"{_sign} {_opt_t}${K:.0f}: ${p:.2f}")
+                _ent_str_v = " / ".join(_parts)
+                _ent_str_v += (f" → 收${_credit_v:.2f}" if _vs == "SHORT_VOL"
+                                else f" → ${_credit_v:.2f}")
+                _vol_only_rows.append({
+                    "时间(ET)": _t_v.strftime("%m-%d %H:%M") + " (日级)",
+                    "信号": "BUY",
+                    "策略": _vs,
+                    "合约": _ent_v["source"],
+                    "入场ETF": f"${_C_t:.2f}",
+                    "入场GC=F": f"${_C_t * gc_gld_r:.0f}",
+                    "入场期权": _ent_str_v,
+                    "现ETF": f"${float(locals().get('gld_est') or _C_t):.2f}",
+                    "现期权/状态": "(RTH 后看)",
+                    "P&L%": "0.0%",
+                    "状态": "OPEN",
+                })
+        except Exception as _e:
+            st.caption(f"vol 信号检测错: {_e}")
+        if _vol_only_rows:
+            st.dataframe(pd.DataFrame(_vol_only_rows),
+                          use_container_width=True, hide_index=True)
+            st.caption(f"今日无盘中 BUY trigger, 但有日级 vol 信号 (RTH 09:30 ET 开仓).")
+        else:
+            st.caption(f"今日 {today_sgt} 无盘中触发 + 无日级 vol 信号")
 
     # ── (2) 历史未平仓信号 + (3) 近一月已平期权模拟 共用单一构建 ──
     # 数据源: sig_df.buy_signal + detect_straddle/short_vol (event-mode 跟主图一致)
