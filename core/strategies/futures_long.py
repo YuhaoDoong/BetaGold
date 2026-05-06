@@ -64,9 +64,16 @@ def simulate_long_position(entry_d: pd.Timestamp,
                               entry_spot: float,
                               ohlc: pd.DataFrame,
                               today: pd.Timestamp,
-                              cfg: FuturesConfig = None) -> dict:
+                              cfg: FuturesConfig = None,
+                              live_spot: float = None,
+                              live_high: float = None,
+                              live_low: float = None) -> dict:
     """模拟期货多头持仓 — 4 层退出: 爆仓 / SL / TP / Timeout.
 
+    v3.7.134: 期货 24h 可交易 (Binance XAUUSDT / GC=F COMEX 23h).
+      live_spot: 当前实时价 (用于 MTM, 不再用上日 close)
+      live_high/low: 今日盘中 high/low (用于检查 SL/TP 是否已被触发)
+                     若 None, 用 live_spot 当 high=low (保守 — 仅 close 检测)
     时间序: bar 内最坏先发 (保守).
     """
     if cfg is None: cfg = FuturesConfig()
@@ -76,6 +83,11 @@ def simulate_long_position(entry_d: pd.Timestamp,
 
     later = ohlc.index[ohlc.index > entry_d]
     if not len(later):
+        # 即使没历史 daily, 仍可用 live spot 检查 (entry 同日紧急触发)
+        if live_spot is not None:
+            return _check_live(entry_spot, live_spot, live_high, live_low,
+                                hold=0, cfg=cfg, sl=sl, liq_pct=liq_pct,
+                                liq_price=liq_price, today=today)
         return {"closed": False, "reason": "no later data"}
 
     hold = 0
@@ -104,10 +116,47 @@ def simulate_long_position(entry_d: pd.Timestamp,
         if hold >= cfg.hold_max_days:
             return _exit(entry_spot, C, hold, cfg, f"{cfg.hold_max_days}d 时间出场", d)
 
-    # 还在持仓中 — MTM
-    last_d = later[min(len(later), 1) - 1] if len(later) else entry_d
+    # daily 循环没触发退出 — 用 live 数据再检查今日盘中 + 实时 MTM
+    if live_spot is not None and live_spot > 0:
+        return _check_live(entry_spot, live_spot, live_high, live_low,
+                             hold=hold, cfg=cfg, sl=sl, liq_pct=liq_pct,
+                             liq_price=liq_price, today=today)
+    # 没 live 数据兜底 — 用上日 close MTM
+    last_d = later[-1] if len(later) else entry_d
     mtm_close = float(ohlc.loc[last_d, "Close"]) if last_d in ohlc.index else entry_spot
-    return _exit(entry_spot, mtm_close, hold, cfg, "持仓中 MTM", last_d, closed=False)
+    return _exit(entry_spot, mtm_close, hold, cfg, "持仓中 MTM (无 live)", last_d, closed=False)
+
+
+def _check_live(entry: float, live_spot: float,
+                  live_high: float, live_low: float,
+                  hold: int, cfg: FuturesConfig, sl: float,
+                  liq_pct: float, liq_price: float,
+                  today: pd.Timestamp) -> dict:
+    """v3.7.134: 用今日 live spot/high/low 检查 SL/TP 是否已触发 (intraday).
+    若没触发, 返回 OPEN with live MTM.
+    """
+    # 用 live_high/low 检查; 若没传, 用 live_spot 当点估
+    H = live_high if live_high and live_high > 0 else live_spot
+    L = live_low if live_low and live_low > 0 else live_spot
+    rL = (L / entry - 1) * 100
+    rH = (H / entry - 1) * 100
+    # 1. 爆仓
+    if rL <= liq_pct:
+        return _exit(entry, liq_price, hold + 1, cfg, "爆仓 (intraday live)",
+                       today, is_liq=True)
+    # 2. SL
+    if rL <= -sl:
+        sl_price = entry * (1 - sl / 100)
+        return _exit(entry, sl_price, hold + 1, cfg, f"-{sl:.1f}% SL (intraday live)",
+                       today)
+    # 3. TP
+    if rH >= cfg.tp_pct:
+        tp_price = entry * (1 + cfg.tp_pct / 100)
+        return _exit(entry, tp_price, hold + 1, cfg,
+                       f"+{cfg.tp_pct:.1f}% TP (intraday live)", today)
+    # 4. OPEN — 用 live_spot 算 MTM
+    return _exit(entry, live_spot, hold, cfg, "持仓中 (live MTM)",
+                   today, closed=False)
 
 
 def _exit(entry: float, exit_price: float, hold: int,

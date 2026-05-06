@@ -3356,8 +3356,13 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                 continue  # kline_db 无该日期权数据
             _ent_prem = _ent_pricing["entry_price"]
             _ent_legs = _ent_pricing.get("leg_prices", [])
-            # v3.7.96: 真实期权退出规则 (50% profit / stop / expiry / 时间)
-            _sim = _sim_exit(_ent_pricing, _du, _strat, _today_dt_u)
+            # v3.7.134: 期货 24h 可交易 → 传 live spot/high/low 让其检查 intraday 退出
+            # 期权仅 RTH 可平 → 用 EOD kline_db (live_spot 不影响期权 leg)
+            _live_high = max(_cur_spot_u, float(locals().get("_H_today") or _cur_spot_u))
+            _live_low = min(_cur_spot_u, float(locals().get("_L_today") or _cur_spot_u))
+            _sim = _sim_exit(_ent_pricing, _du, _strat, _today_dt_u,
+                              live_spot=_cur_spot_u,
+                              live_high=_live_high, live_low=_live_low)
             _is_closed = _sim.get("is_closed", False)
             _gain_u = _sim.get("pnl_pct", 0.0)
             _exit_legs = _sim.get("leg_prices", [])

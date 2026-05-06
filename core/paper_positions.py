@@ -565,7 +565,10 @@ def price_strategy_at(asset: str, strategy: str,
 
 def simulate_option_exit(entry_pricing: dict, signal_date: pd.Timestamp,
                             strategy: str,
-                            today_dt: pd.Timestamp) -> dict:
+                            today_dt: pd.Timestamp,
+                            live_spot: float = None,
+                            live_high: float = None,
+                            live_low: float = None) -> dict:
     """逐日扫 kline_db 真实期权 OHLC, 应用真实退出规则.
 
     SELL PUT credit spread:
@@ -593,7 +596,11 @@ def simulate_option_exit(entry_pricing: dict, signal_date: pd.Timestamp,
             sig_d = pd.Timestamp(signal_date).normalize()
             entry_value = entry_pricing["entry_price"]
             cfg = FuturesConfig(leverage=20)  # Binance XAUUSDT default
-            res = simulate_long_position(sig_d, entry_value, spot_df, today_dt, cfg)
+            # v3.7.134: 期货 24h 可交易, 用 live spot/high/low 检查 intraday 退出
+            res = simulate_long_position(sig_d, entry_value, spot_df, today_dt, cfg,
+                                              live_spot=live_spot,
+                                              live_high=live_high,
+                                              live_low=live_low)
             if res.get("closed"):
                 return {"is_closed": True, "exit_date": res["exit_date"],
                          "exit_value": res["exit_price"],
@@ -601,11 +608,12 @@ def simulate_option_exit(entry_pricing: dict, signal_date: pd.Timestamp,
                          "pnl_pct": res["ret_levered_pct"],  # ROI on margin (lev)
                          "is_liquidation": res.get("is_liquidation", False),
                          "leg_prices": [("futures_long", res["exit_price"])]}
-            # MTM
-            cur = float(spot_df["Close"].iloc[-1])
+            # OPEN — 用 live MTM 而非上日 close
+            cur = res.get("exit_price") or float(spot_df["Close"].iloc[-1])
             return {"is_closed": False, "current_value": cur,
                      "hold_days": res.get("hold_days", 0),
-                     "pnl_pct": (cur / entry_value - 1) * 100 * cfg.leverage,
+                     "pnl_pct": res.get("ret_levered_pct",
+                                          (cur / entry_value - 1) * 100 * cfg.leverage),
                      "leg_prices": [("futures_long", cur)]}
         except Exception as e:
             return {"is_closed": False, "reason": f"futures sim err: {e}"}
