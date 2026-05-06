@@ -482,7 +482,49 @@ def price_strategy_at(asset: str, strategy: str,
                             daily_close_price=c["close"] - sc["close"],
                             kline_codes=[c["code"], sc["code"]],
                             source=f"+C${c['strike']:.0f}/-C${sc['strike']:.0f} ({_e})")
-    elif "SELL PUT" in strategy or "SHORT_VOL" in strategy:
+    elif "SHORT_VOL" in strategy:
+        # v3.7.141: SHORT_VOL 真 Iron Condor 4-leg (-ATM put / +OTM put / -ATM call / +OTM call)
+        # 前版误把 SHORT_VOL 当 SP credit spread (只 put 边). 现在分开:
+        #   put side:  short ~ATM-3%, long ~ATM-7% (wing)
+        #   call side: short ~ATM+3%, long ~ATM+7% (wing)
+        # 收双边 credit, 上下各有保护 wing, 横盘获最大 profit.
+        sp_strike = round(spot_at_trigger * 0.97)  # short put -3%
+        lp_strike = round(spot_at_trigger * 0.93)  # long put -7%
+        sc_strike = round(spot_at_trigger * 1.03)  # short call +3%
+        lc_strike = round(spot_at_trigger * 1.07)  # long call +7%
+        sp = pick_liquid_monthly_option(asset, signal_date, sp_strike, "P", dte_target)
+        lp = pick_liquid_monthly_option(asset, signal_date, lp_strike, "P", dte_target)
+        sc = pick_liquid_monthly_option(asset, signal_date, sc_strike, "C", dte_target)
+        lc = pick_liquid_monthly_option(asset, signal_date, lc_strike, "C", dte_target)
+        if sp and lp and sc and lc:
+            sp_intra = interpolate_option_intraday(sp, daily_O, daily_C,
+                                                        spot_at_trigger, daily_H, daily_L)
+            lp_intra = interpolate_option_intraday(lp, daily_O, daily_C,
+                                                        spot_at_trigger, daily_H, daily_L)
+            sc_intra = interpolate_option_intraday(sc, daily_O, daily_C,
+                                                        spot_at_trigger, daily_H, daily_L)
+            lc_intra = interpolate_option_intraday(lc, daily_O, daily_C,
+                                                        spot_at_trigger, daily_H, daily_L)
+            put_credit = sp_intra - lp_intra
+            call_credit = sc_intra - lc_intra
+            credit = put_credit + call_credit
+            _e = sp["expiry"][5:].replace("-", "/")
+            out.update(legs=[("short_put", sp["code"], sp["strike"], -1),
+                              ("long_put", lp["code"], lp["strike"], 1),
+                              ("short_call", sc["code"], sc["strike"], -1),
+                              ("long_call", lc["code"], lc["strike"], 1)],
+                        entry_price=credit,
+                        leg_prices=[("short_put", sp_intra), ("long_put", lp_intra),
+                                     ("short_call", sc_intra), ("long_call", lc_intra)],
+                        daily_open_price=(sp["open"] - lp["open"]
+                                            + sc["open"] - lc["open"]),
+                        daily_close_price=(sp["close"] - lp["close"]
+                                             + sc["close"] - lc["close"]),
+                        kline_codes=[sp["code"], lp["code"], sc["code"], lc["code"]],
+                        source=(f"IC -P${sp['strike']:.0f}/+P${lp['strike']:.0f}"
+                                 f" -C${sc['strike']:.0f}/+C${lc['strike']:.0f} ({_e})"))
+        return out
+    elif "SELL PUT" in strategy:
         sp = pick_liquid_monthly_option(asset, signal_date, spot_at_trigger,
                                            "P", dte_target)
         # OTM put -5% (流动性容差)

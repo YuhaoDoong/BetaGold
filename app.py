@@ -3266,22 +3266,28 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             _h = _t.hour + _t.minute/60.0
             _is_rth = 9.5 <= _h <= 16.0
             _ul = float(r["price"])
+            # v3.7.141: 期货/期权方向性都尊重 sig_df.buy_signal (ma_trend/RV/IV 过滤)
+            # SLV 今日 ma_trend=0.982<0.99 → buy_type 空 → 期货也不该开 (跟 BC/SP 一致)
+            _has_dir_signal = bool(_today_buy_type)
             if _is_strad_today:
                 _strat = "STRADDLE"
-            elif _is_sv_today and _is_rth:
-                _strat = "SHORT_VOL"  # v3.7.139 RTH 时段 SHORT_VOL 优先于方向性
-            elif _is_rth:
-                _strat = _today_buy_type if _today_buy_type else "SPOT"
+            elif _is_sv_today:
+                _strat = "SHORT_VOL"  # vol 信号优先, 跟 RTH/premarket 无关
+            elif _is_rth and _has_dir_signal:
+                _strat = _today_buy_type  # RTH 走方向性 BC/SP
+            elif (not _is_rth) and _has_dir_signal:
+                _strat = "FUTURES_LONG"  # premarket 走期货 (跟方向性绑定)
             else:
-                _strat = "FUTURES_LONG"
+                _strat = "SPOT"  # 无日级信号 (filtered out)
             _opt_code = ""; _opt_p = "—"
-            if _strat in ("BUY CALL", "SELL PUT", "STRADDLE"):
+            # v3.7.141: SHORT_VOL 加入定价 (4-leg IC) + 显示具体合约/到期/credit
+            if _strat in ("BUY CALL", "SELL PUT", "STRADDLE", "SHORT_VOL"):
                 _pricing = _price_strat(asset_key, _strat, _today, _t, _ul,
                                           _O_today, _C_today,
                                           _H_today, _L_today)
                 if _pricing["legs"]:
                     _opt_code = _pricing["source"]
-                    if _strat == "SELL PUT":
+                    if _strat == "SELL PUT" or _strat == "SHORT_VOL":
                         _opt_p = f"收${_pricing['entry_price']:.2f}"
                     else:
                         _opt_p = f"${_pricing['entry_price']:.2f}"
@@ -3290,6 +3296,9 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             elif _strat == "FUTURES_LONG":
                 _opt_code = f"{_futures_ticker} 多头"
                 _opt_p = f"${_ul:.2f}"
+            elif _strat == "SPOT":
+                _opt_code = "(无日级信号)"
+                _opt_p = "—"
             _rows1.append({
                 "时间(ET)": _t.strftime("%m-%d %H:%M"),
                 "信号": r["side"],
