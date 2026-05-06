@@ -1670,14 +1670,9 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                 if _sizing > 1.0 and _has_open_buy:
                     _sizing_tag = f" | 仓位 {_sizing:.0f}× ({_sizing_reasons})"
                 _bp_tag = f" | bp={bp_est:.2f}" if bp_est is not None else ""
-                # v3.7.123: 显示 sp_score 选 BC vs SP 的依据
-                _sp_score_tag = ""
-                _sp_v = sig_df.loc[last_date].get("sp_score")
-                _sp_bd = sig_df.loc[last_date].get("sp_score_breakdown", "")
-                if _sp_v is not None and not (isinstance(_sp_v, float) and pd.isna(_sp_v)):
-                    _sp_score_tag = f" | score {_sp_v} ({_sp_bd})" if _sp_bd else f" | score {_sp_v}"
+                # v3.7.138: 撤掉 sp_score 显示 — 那是回测分析, 不是盘中信号 (用户指正)
                 _delta_str = (f"Regime: {last_regime}{_bp_tag} | "
-                              f"RV={rv_pctile.get(last_date,0):.0%}{_sp_score_tag}{_sizing_tag}")
+                              f"RV={rv_pctile.get(last_date,0):.0%}{_sizing_tag}")
             else:
                 sig_text = "今日无信号"
                 _delta_str = (f"bp={bp_est:.2f} | RV={rv_pctile.get(last_date,0):.0%} | "
@@ -3476,6 +3471,63 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         "stage2 (kline_db 后, 2025-04-29 起): 全 kline_db EOD OHLC 真实价格 + 真退出规则. "
         "v3.7.117 IV 三阶过滤已生效."
     )
+
+    # v3.7.138: SL 模式 grid (跟金价 spot SL vs 跟策略盈亏 premium/margin SL)
+    with st.expander("🎯 SL 模式 grid — spot vs premium/margin (客观最优)",
+                       expanded=False):
+        st.caption(
+            "实证: scripts/exit_mode_grid.py 跑过 spot SL (跟金价) vs "
+            "premium/margin SL (跟策略盈亏) 各阈值, 找累计 PnL 最大组合.\n\n"
+            "**结论 (per asset, per strategy)**:")
+        st.markdown("""
+| 资产 | BC 最优 SL | sum | SP 最优 SL | sum |
+|---|---|---|---|---|
+| **GLD** | spot 5% | +3583% | spot 10% | +405% |
+| **SLV** | premium 100% (无 SL) | +2547% | spot 3% | +477% |
+
+**洞察**:
+- BC GLD: 跟金价 5% 比 premium% 灵敏 (theta/IV 干扰小)
+- BC SLV: 实质不要 SL — 让到 expiry 或 +100% TP 早平
+- SP: 都偏好 spot SL (margin% 反应慢于实际风险敞口)
+
+**期货 (linear PnL)**: spot SL X% = margin SL (X×lev)% **数学等价**.
+grid 最优 sl=5% spot = margin 100% (= 让爆仓兜底, 不主动 SL).
+""")
+
+    # v3.7.138: sp_score 系统 (移自盘中信号页 — 这是回测分析维度)
+    with st.expander("🔢 sp_score 7 因子系统 (BC vs SP 选择)",
+                       expanded=False):
+        from core.strategy_config import get_config as _gcfg
+        _cfg_disp = _gcfg(asset_key)
+        st.caption(
+            f"sp_score 由 7 个技术因子加权得分, 决定方向性信号走 BC 还是 SP. "
+            f"{asset_key} threshold = {_cfg_disp.sp_score_threshold}.\n"
+            f"(score >= threshold → SELL PUT, 否则 BUY CALL)")
+        st.markdown(f"""
+| 因子 | 权重 | 触发条件 | 物理含义 |
+|---|---|---|---|
+| RSI 14 | **{_cfg_disp.sp_score_w_rsi_oversold}** | < 30 (超卖) | ★最强, paired wr 100% |
+| IV-RV gap | {_cfg_disp.sp_score_w_iv_rv_gap} | > 0 (IV 比 RV 高) | 卖贵 premium |
+| GVZ IV | {_cfg_disp.sp_score_w_gvz_high} | ≥ 28 (高 IV) | 收 premium 替代 |
+| bp_low 深破 | {_cfg_disp.sp_score_w_bp_low_deep} | < 0.05 | 反弹概率高 |
+| bp_close 区间 | {_cfg_disp.sp_score_w_bp_close_low} | < 0.30 | close 在 band 下方 |
+| Stoch %K | {_cfg_disp.sp_score_w_stoch_low} | < 40 | 非超买 |
+| MACD hist | {_cfg_disp.sp_score_w_macd_bear} | < -0.5 | 空头动能 |
+
+**paired 实证 (5y, {asset_key})**: sp_score 决策 vs 单切 RV:
+- GLD acc 42% → **86%** / 累计 +1107% → **+3279%**
+- SLV acc 36% → **67%** / 累计 -90% → **+762%**
+""")
+        # 当前最新信号 score
+        if last_date in sig_df.index:
+            _last = sig_df.loc[last_date]
+            _sp_v = _last.get("sp_score")
+            _sp_bd = _last.get("sp_score_breakdown", "")
+            if _sp_v is not None and not pd.isna(_sp_v):
+                _decision = ("SELL PUT" if _sp_v >= _cfg_disp.sp_score_threshold
+                              else "BUY CALL")
+                st.success(f"**最新 ({last_date.date()}) sp_score = {_sp_v}** "
+                           f"→ 决策 **{_decision}**\n\n命中: {_sp_bd or '(无)'}")
     _bt_csv = (f"/Users/yhdong/Gold/data/backtest_history/"
                 f"backtest_{asset_key.lower()}_"
                 f"{pd.Timestamp(today_sgt).strftime('%Y%m%d')}.csv")

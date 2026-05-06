@@ -32,10 +32,12 @@ class FuturesConfig:
     leverage: int = 20                   # 杠杆 (Binance XAUUSDT 上限 20)
     maintenance_margin_rate: float = 0.005  # MM rate (5y XAUUSDT 实测)
 
-    # 主退出参数 — margin % (策略盈亏视角)
+    # 主退出参数 — margin % (策略盈亏视角, 但客观 grid 最优 = 100% margin = 5% spot)
+    # v3.7.138: 之前 sl_margin=50% 是"心理可控"非客观最优. exit_params_grid 显示
+    #          sl=5% spot (= 100% margin @ 20×) 累计 +571% 是 grid 真最优.
     tp_margin_pct: float = 200.0         # +200% margin = +10% spot @ 20×
-    sl_margin_pct: float = 50.0          # -50% margin = -2.5% spot @ 20×
-    hold_max_days: int = 15              # 最长持仓
+    sl_margin_pct: float = 100.0         # -100% margin = -5% spot @ 20× (客观最优)
+    hold_max_days: int = 15
 
     # 爆仓感知 — 距爆仓价 buffer (默认关, 因 sl_margin 已远高于爆仓)
     auto_sl_from_liq: bool = False       # True=自动收紧到 (爆仓 - buffer) 之内
