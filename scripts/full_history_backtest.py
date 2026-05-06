@@ -91,7 +91,7 @@ def simulate_futures_history(entry_d: pd.Timestamp, entry_spot_etf: float,
         cur_etf = float(asset_csv.loc[d, "Close"])
         cur_gc = cur_etf * ratio
         ret_pct = (cur_gc / entry_gc - 1) * 100
-        if ret_pct >= 8.0:  # v3.7.129 grid: TP 3→8% (sum +170%, 真信号常涨 8-12%)
+        if ret_pct >= 12.0:  # v3.7.130 leverage_grid: TP=12% 跨 lev 最优 (sum 再 +5%)
             return {"closed": True, "exit_date": pd.Timestamp(d),
                      "entry_gc": entry_gc, "exit_gc": cur_gc,
                      "ret_spot_pct": ret_pct,

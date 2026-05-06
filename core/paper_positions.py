@@ -598,7 +598,7 @@ def simulate_option_exit(entry_pricing: dict, signal_date: pd.Timestamp,
                 hold += 1
                 cur = float(spot_df.loc[d_x, "Close"])
                 ret = (cur / entry_value - 1) * 100
-                if ret >= 8.0:  # v3.7.129 grid: TP 3→8% (sum +170%)
+                if ret >= 12.0:  # v3.7.130 leverage_grid: TP=12% 跨 lev 最优
                     return {"is_closed": True, "exit_date": d_ts,
                              "exit_value": cur, "exit_reason": f"+{ret:.1f}% 止盈",
                              "pnl_pct": ret,
