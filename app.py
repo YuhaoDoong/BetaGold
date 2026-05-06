@@ -3373,9 +3373,12 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             _bt = _ru.get("buy_type") or ""
             if _bt and _bt not in _strats_today:
                 _strats_today.append(_bt)
-        # 期货 premarket 触发: 看 intraday log (date == _du, side==BUY, hour < 9.5)
+        # v3.7.142: 期货跟方向性信号绑定 (跟 v3.7.141 今日触发表一致)
+        # 旧 bug: 4 月 ma_trend 过滤掉所有 buy_signal, 但 intraday log 有 premarket BUY
+        #          → 强制标 FUTURES_LONG, 让历史表全是期货, 用户看不到期权
+        # 修: FUTURES 也需 buy_signal=True (跟 BC/SP 同源, 同一信号触发期货 + 期权)
         _has_futures = False
-        if len(_log_u):
+        if len(_log_u) and _ru.get("buy_signal", False):
             _pre_buys = _log_u[
                 (_log_u["date"] == _du) & (_log_u["side"] == "BUY") &
                 (pd.to_datetime(_log_u["trigger_time"]).dt.hour
