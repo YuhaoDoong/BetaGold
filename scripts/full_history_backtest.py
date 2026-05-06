@@ -79,42 +79,30 @@ def stage_for(date: pd.Timestamp, today: pd.Timestamp) -> str:
 
 def simulate_futures_history(entry_d: pd.Timestamp, entry_spot_etf: float,
                                 ratio: float, asset_csv: pd.DataFrame,
-                                today: pd.Timestamp) -> dict:
-    """期货多头模拟 (用 GC=F equivalent + Binance 模型规格)."""
-    entry_gc = entry_spot_etf * ratio
-    later = asset_csv.index[asset_csv.index > entry_d]
-    if not len(later): return {"closed": False, "reason": "no later data"}
-    hold = 0
-    for d in later:
-        if pd.Timestamp(d) > today: break
-        hold += 1
-        cur_etf = float(asset_csv.loc[d, "Close"])
-        cur_gc = cur_etf * ratio
-        ret_pct = (cur_gc / entry_gc - 1) * 100
-        if ret_pct >= 12.0:  # v3.7.130 leverage_grid: TP=12% 跨 lev 最优 (sum 再 +5%)
-            return {"closed": True, "exit_date": pd.Timestamp(d),
-                     "entry_gc": entry_gc, "exit_gc": cur_gc,
-                     "ret_spot_pct": ret_pct,
-                     "ret_levered_pct": ret_pct * 20,  # 20× leverage on margin
-                     "reason": f"+{ret_pct:.2f}% TP",
-                     "hold_days": hold,
-                     "liq_price": compute_liquidation_price(entry_gc, 20)}
-        if ret_pct <= -5.0:  # v3.7.129 grid: SL 3→5% (容忍 noise, 与 TP 8% 配)
-            return {"closed": True, "exit_date": pd.Timestamp(d),
-                     "entry_gc": entry_gc, "exit_gc": cur_gc,
-                     "ret_spot_pct": ret_pct,
-                     "ret_levered_pct": ret_pct * 20,
-                     "reason": f"{ret_pct:.2f}% SL",
-                     "hold_days": hold,
-                     "liq_price": compute_liquidation_price(entry_gc, 20)}
-        if hold >= 15:  # v3.7.129 grid: 5→15d 让真信号跑赢 (sum +170%)
-            return {"closed": True, "exit_date": pd.Timestamp(d),
-                     "entry_gc": entry_gc, "exit_gc": cur_gc,
-                     "ret_spot_pct": ret_pct,
-                     "ret_levered_pct": ret_pct * 20,
-                     "reason": "5d 时间出场", "hold_days": hold,
-                     "liq_price": compute_liquidation_price(entry_gc, 20)}
-    return {"closed": False, "reason": "持仓中", "hold_days": hold}
+                                today: pd.Timestamp,
+                                leverage: int = 20) -> dict:
+    """期货多头模拟 — 委托 core/strategies/futures_long 模块.
+    v3.7.132: 替代内联逻辑, 走独立模块 (爆仓-100% / leverage 参数化 / SL 自动收紧).
+    """
+    from core.strategies.futures_long import simulate_long_position, FuturesConfig
+    cfg = FuturesConfig(leverage=leverage)  # v3.7.130 grid 默认 (TP=12 SL=5 hold=15)
+    res = simulate_long_position(entry_d, entry_spot_etf, asset_csv, today, cfg)
+    if not res.get("closed"):
+        return {"closed": False, "reason": res.get("reason", "持仓中"),
+                 "hold_days": res.get("hold_days", 0)}
+    # 适配旧 API (entry_gc / exit_gc / ret_levered_pct 等)
+    return {
+        "closed": True,
+        "exit_date": res["exit_date"],
+        "entry_gc": entry_spot_etf * ratio,
+        "exit_gc": res["exit_price"] * ratio,
+        "ret_spot_pct": res["ret_spot_pct"],
+        "ret_levered_pct": res["ret_levered_pct"],
+        "reason": res["reason"],
+        "hold_days": res["hold_days"],
+        "liq_price": res["liq_price"] * ratio,
+        "is_liquidation": res.get("is_liquidation", False),
+    }
 
 
 def simulate_stage1_spot_direction(entry_d: pd.Timestamp, entry_spot: float,

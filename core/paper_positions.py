@@ -581,48 +581,55 @@ def simulate_option_exit(entry_pricing: dict, signal_date: pd.Timestamp,
 
     返回 {is_closed, exit_date, exit_value, exit_reason, pnl_pct}
     """
-    # v3.7.107: FUTURES_LONG 无 kline_db, 直接 spot 跟踪
+    # v3.7.132: FUTURES_LONG 委托 core/strategies/futures_long 模块
+    # 替代内联逻辑, 走独立模块 (爆仓-100% / leverage 参数化 / SL 自动收紧)
     if "FUTURES" in strategy:
-        # v3.7.109: 期货退出机制 — 5d 持仓 / +3% 止盈 / -2% 止损 / 跟方向性 EXIT trigger
         try:
+            from core.strategies.futures_long import (
+                simulate_long_position, FuturesConfig)
             asset_key = entry_pricing["legs"][0][1].split("_")[0]
             csv_p = f"/Users/yhdong/Gold/data/raw/market/{asset_key.lower()}.csv"
             spot_df = pd.read_csv(csv_p, index_col=0, parse_dates=True)
             sig_d = pd.Timestamp(signal_date).normalize()
             entry_value = entry_pricing["entry_price"]
-            later = spot_df.index[spot_df.index > sig_d]
-            hold = 0
-            for d_x in later:
-                d_ts = pd.Timestamp(d_x)
-                if d_ts > today_dt: break
-                hold += 1
-                cur = float(spot_df.loc[d_x, "Close"])
-                ret = (cur / entry_value - 1) * 100
-                if ret >= 12.0:  # v3.7.130 leverage_grid: TP=12% 跨 lev 最优
-                    return {"is_closed": True, "exit_date": d_ts,
-                             "exit_value": cur, "exit_reason": f"+{ret:.1f}% 止盈",
-                             "pnl_pct": ret,
-                             "leg_prices": [("futures_long", cur)]}
-                if ret <= -5.0:  # v3.7.129 grid: SL -3→-5% (与 TP 8% 配)
-                    return {"is_closed": True, "exit_date": d_ts,
-                             "exit_value": cur, "exit_reason": f"{ret:.1f}% 止损",
-                             "pnl_pct": ret,
-                             "leg_prices": [("futures_long", cur)]}
-                if hold >= 15:  # v3.7.129 grid: 5→15d
-                    return {"is_closed": True, "exit_date": d_ts,
-                             "exit_value": cur, "exit_reason": "5d 时间出场",
-                             "pnl_pct": ret,
-                             "leg_prices": [("futures_long", cur)]}
-            # 持仓中
+            cfg = FuturesConfig(leverage=20)  # Binance XAUUSDT default
+            res = simulate_long_position(sig_d, entry_value, spot_df, today_dt, cfg)
+            if res.get("closed"):
+                return {"is_closed": True, "exit_date": res["exit_date"],
+                         "exit_value": res["exit_price"],
+                         "exit_reason": res["reason"],
+                         "pnl_pct": res["ret_levered_pct"],  # ROI on margin (lev)
+                         "is_liquidation": res.get("is_liquidation", False),
+                         "leg_prices": [("futures_long", res["exit_price"])]}
+            # MTM
             cur = float(spot_df["Close"].iloc[-1])
-            return {"is_closed": False, "current_value": cur, "hold_days": hold,
-                     "pnl_pct": (cur / entry_value - 1) * 100,
+            return {"is_closed": False, "current_value": cur,
+                     "hold_days": res.get("hold_days", 0),
+                     "pnl_pct": (cur / entry_value - 1) * 100 * cfg.leverage,
                      "leg_prices": [("futures_long", cur)]}
-        except Exception:
-            return {"is_closed": False}
+        except Exception as e:
+            return {"is_closed": False, "reason": f"futures sim err: {e}"}
+    # v3.7.132: 委托给独立模块 (BC / SP / STRADDLE / SHORT_VOL)
     db = _load_kline_db()
     if db is None or not entry_pricing.get("legs"):
         return {"is_closed": False}
+    try:
+        if "BUY CALL" in strategy:
+            from core.strategies.buy_call import simulate_bc_position
+            return simulate_bc_position(entry_pricing, signal_date, today_dt, db)
+        if "SELL PUT" in strategy:
+            from core.strategies.sell_put import simulate_sp_position
+            return simulate_sp_position(entry_pricing, signal_date, today_dt, db)
+        if "STRADDLE" in strategy:
+            from core.strategies.straddle import simulate_straddle_position
+            return simulate_straddle_position(entry_pricing, signal_date, today_dt, db)
+        if "SHORT_VOL" in strategy:
+            from core.strategies.short_vol import simulate_short_vol_position
+            return simulate_short_vol_position(entry_pricing, signal_date, today_dt, db)
+    except Exception as e:
+        # fallback 到旧 inline 逻辑 (debug 用)
+        pass
+    # ── 兜底: 旧 inline 逻辑 (保留作为回退) ──
     entry_value = entry_pricing["entry_price"]
     legs = entry_pricing["legs"]  # [(label, code, K, qty), ...]
     is_credit = "SELL PUT" in strategy or "SHORT_VOL" in strategy
