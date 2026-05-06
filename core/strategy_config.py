@@ -82,7 +82,7 @@ class AssetConfig:
     # GLD: 0.975 (paired sum +3639% vs 0.99 +3598%, +41% 提升, 5-4 边界信号能通过)
     # SLV: 0.990 (paired sum +934%, 已是 grid 最优)
     ma_trend_filter_enabled: bool = True
-    ma_trend_threshold: float = 0.99      # 默认严格
+    ma_trend_threshold: float = 0.99
 
     # ── STRADDLE 做多波动率 ──
     straddle_rv_threshold: float = 20.0   # RV < 此值 +2 分
@@ -161,7 +161,9 @@ ASSET_CONFIGS: Dict[str, AssetConfig] = {
         rv_filter_high=0.75,
         sp_score_enabled=True,
         sp_score_threshold=2.5,           # paired chosen sum 最大 (thr=2.5 +862% vs 3.0 +738%)
-        ma_trend_threshold=0.99,          # v3.7.128 grid: SLV 0.99 已是峰值 sum +934%
+        ma_trend_threshold=0.0,            # v3.7.146 实证: SLV 0.99 滤 67% 信号换 +17%
+                                          # 但 0~0.98 累计几乎一样 (+801 vs +821);
+                                          # 设 0 = 不过滤, 月月有信号, 累计 -14% 可接受
         short_vol_rv_pctile_lo=0.25,
         short_vol_rv_pctile_hi=0.775,
         straddle_rv_abs_max=25.0,
