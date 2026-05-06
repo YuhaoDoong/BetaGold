@@ -99,7 +99,7 @@ def simulate_futures_history(entry_d: pd.Timestamp, entry_spot_etf: float,
                      "reason": f"+{ret_pct:.2f}% TP",
                      "hold_days": hold,
                      "liq_price": compute_liquidation_price(entry_gc, 20)}
-        if ret_pct <= -2.0:
+        if ret_pct <= -3.0:  # v3.7.126 — three_experiments.py: -3% 止损 wr +3-6pp
             return {"closed": True, "exit_date": pd.Timestamp(d),
                      "entry_gc": entry_gc, "exit_gc": cur_gc,
                      "ret_spot_pct": ret_pct,
@@ -217,21 +217,26 @@ def simulate_option_stage23(entry_d: pd.Timestamp, entry_spot: float,
                                 strategy: str, asset_key: str,
                                 asset_csv: pd.DataFrame,
                                 today: pd.Timestamp,
-                                stage_name: str = "stage3_short_options") -> dict:
+                                stage_name: str = "stage3_short_options",
+                                force_dte: int = None) -> dict:
     """阶段 2/3: 用 kline_db 真实期权 OHLC + 真实退出规则.
     v3.7.122: DTE 智能选择 — 信号距今 + buffer (尽可能短的还没过期).
       base DTE: BC/SP 45, STRADDLE 14, SHORT_VOL 30
       若 today - entry_d > 0 (历史信号), DTE = max(base, days_since + buffer)
       buffer = 30d (确保期权今天仍活跃可查 chain)
+    v3.7.126: force_dte 强制 DTE (paired 比较近月 vs LEAPS 用)
     """
     if entry_d not in asset_csv.index: return {"closed": False}
     eO = float(asset_csv.loc[entry_d, "Open"])
     eC = float(asset_csv.loc[entry_d, "Close"])
     eH = float(asset_csv.loc[entry_d, "High"])
     eL = float(asset_csv.loc[entry_d, "Low"])
-    base_dte = 14 if strategy == "STRADDLE" else (30 if strategy == "SHORT_VOL" else 45)
-    days_since = (today - entry_d).days
-    dte = max(base_dte, days_since + 30) if days_since > base_dte - 30 else base_dte
+    if force_dte is not None:
+        dte = force_dte
+    else:
+        base_dte = 14 if strategy == "STRADDLE" else (30 if strategy == "SHORT_VOL" else 45)
+        days_since = (today - entry_d).days
+        dte = max(base_dte, days_since + 30) if days_since > base_dte - 30 else base_dte
     ent = price_strategy_at(asset_key, strategy, entry_d,
                               entry_d + pd.Timedelta(hours=9, minutes=30),
                               entry_spot, eO, eC, eH, eL,

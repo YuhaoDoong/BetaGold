@@ -603,7 +603,7 @@ def simulate_option_exit(entry_pricing: dict, signal_date: pd.Timestamp,
                              "exit_value": cur, "exit_reason": f"+{ret:.1f}% 止盈",
                              "pnl_pct": ret,
                              "leg_prices": [("futures_long", cur)]}
-                if ret <= -2.0:
+                if ret <= -3.0:  # v3.7.126 -3% 止损 (three_experiments wr +3-6pp)
                     return {"is_closed": True, "exit_date": d_ts,
                              "exit_value": cur, "exit_reason": f"{ret:.1f}% 止损",
                              "pnl_pct": ret,

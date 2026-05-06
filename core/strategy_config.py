@@ -133,7 +133,7 @@ ASSET_CONFIGS: Dict[str, AssetConfig] = {
         rv_filter_low=0.45,              # 兜底 (sp_score 关闭时用)
         rv_filter_high=0.45,
         sp_score_enabled=True,
-        sp_score_threshold=3.5,           # GLD 最优 (paired_score_validate: 86% acc, +66% mean)
+        sp_score_threshold=3.5,           # paired chosen sum 最大 (thr=3.5 +3279% vs 3.0 +3164%)
         short_vol_rv_pctile_lo=0.45,
         short_vol_rv_pctile_hi=0.80,
         straddle_rv_abs_max=30.0,
@@ -152,7 +152,7 @@ ASSET_CONFIGS: Dict[str, AssetConfig] = {
         rv_filter_low=0.75,               # 兜底
         rv_filter_high=0.75,
         sp_score_enabled=True,
-        sp_score_threshold=2.5,           # SLV 最优 (paired_score_validate: 67.6% acc, +862%/sum)
+        sp_score_threshold=2.5,           # paired chosen sum 最大 (thr=2.5 +862% vs 3.0 +738%)
         short_vol_rv_pctile_lo=0.25,
         short_vol_rv_pctile_hi=0.775,
         straddle_rv_abs_max=25.0,
