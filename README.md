@@ -143,6 +143,44 @@ launchctl load ~/Library/LaunchAgents/com.golddash.retune.plist
 | v3.7.125 retune | 月度 grid (5y, GLD/SLV 全维度) — 当前配置接近最优, 不切换. paired sp_score thr=3.5/2.5 仍最优 |
 | v3.7.126 | 三实验: 期货止损 -2%→-3% (wr +6-8pp), bp_low 不需更深破, sp_score 阈值维持 |
 | **v3.7.127** | **方向性入场加 ma_trend (MA20/MA50) 过滤 — 全链路累计 PnL +1400%** |
+| v3.7.128 | ma_trend 阈值 per-asset grid: GLD 0.99→0.975 (留边界信号 sum +41%), SLV 0.99 维持 |
+| **v3.7.129** | **期货 TP/SL/hold 3D grid: 3%/3%/5d → 8%/5%/15d, 杠杆累计 +4300% → +11220% (×2.6)** |
+
+## v3.7.129 期货退出参数全网格优化 (核心)
+
+### 问题
+现行 TP=3% / SL=-3% / hold=5d 是 v3.7.109 拍脑袋值, 没做 grid. 实证发现:
+- 真信号常涨 8-12% (3% 止盈太早, 错过主升段)
+- 5d 太短 (好趋势会持续 10-15d)
+- -3% 止损过紧 (容忍 noise 能力弱)
+
+### 3D Grid 结果 (TP × SL × hold)
+
+| 资产 | 现行 (3/3/5) | 最优 (8/5/15) | 提升 |
+|---|---|---|---|
+| GLD spot sum | +203% / wr 70.9% | **+554% / wr 78.2%** | spot **+170%** |
+| GLD 20× lev sum | +4059% | **+11078%** | **×2.7** |
+| SLV spot sum | +157% / wr 61.4% | **+479% / wr 61.4%** | spot **+204%** |
+| SLV 20× lev sum | +3148% | **+9574%** | **×3.0** |
+
+### 实施
+
+```python
+# core/paper_positions.py + scripts/full_history_backtest.py
+if ret >= 8.0:  # +8% 止盈 (旧 3%)
+if ret <= -5.0:  # -5% 止损 (旧 -3%)
+if hold >= 15:  # 15d 持仓上限 (旧 5d)
+```
+
+### 加仓机制 (维持现状)
+
+`min_drop_pct=0.3%` 已经过 v3.7.81/83 grid 验证, 是平均 16 笔/日 → 2.18 笔/日 (压缩 7×) 的合理点. 改 0.5% 略稀但 PnL 影响小, 不调.
+
+### 期权退出 (维持)
+
+- BC SL=-50% 触发率 9-19%, 不大改
+- SP profit_target=+50% credit 实证: 仅 30% 笔在 TP 早平区, 维持不变
+- BC SL grid 难重现 (没逐日期权 OHLC)
 
 ## v3.7.127 ma_trend 入场过滤 (核心方向性优化)
 

@@ -598,17 +598,17 @@ def simulate_option_exit(entry_pricing: dict, signal_date: pd.Timestamp,
                 hold += 1
                 cur = float(spot_df.loc[d_x, "Close"])
                 ret = (cur / entry_value - 1) * 100
-                if ret >= 3.0:
+                if ret >= 8.0:  # v3.7.129 grid: TP 3→8% (sum +170%)
                     return {"is_closed": True, "exit_date": d_ts,
                              "exit_value": cur, "exit_reason": f"+{ret:.1f}% 止盈",
                              "pnl_pct": ret,
                              "leg_prices": [("futures_long", cur)]}
-                if ret <= -3.0:  # v3.7.126 -3% 止损 (three_experiments wr +3-6pp)
+                if ret <= -5.0:  # v3.7.129 grid: SL -3→-5% (与 TP 8% 配)
                     return {"is_closed": True, "exit_date": d_ts,
                              "exit_value": cur, "exit_reason": f"{ret:.1f}% 止损",
                              "pnl_pct": ret,
                              "leg_prices": [("futures_long", cur)]}
-                if hold >= 5:
+                if hold >= 15:  # v3.7.129 grid: 5→15d
                     return {"is_closed": True, "exit_date": d_ts,
                              "exit_value": cur, "exit_reason": "5d 时间出场",
                              "pnl_pct": ret,

@@ -91,7 +91,7 @@ def simulate_futures_history(entry_d: pd.Timestamp, entry_spot_etf: float,
         cur_etf = float(asset_csv.loc[d, "Close"])
         cur_gc = cur_etf * ratio
         ret_pct = (cur_gc / entry_gc - 1) * 100
-        if ret_pct >= 3.0:
+        if ret_pct >= 8.0:  # v3.7.129 grid: TP 3→8% (sum +170%, 真信号常涨 8-12%)
             return {"closed": True, "exit_date": pd.Timestamp(d),
                      "entry_gc": entry_gc, "exit_gc": cur_gc,
                      "ret_spot_pct": ret_pct,
@@ -99,7 +99,7 @@ def simulate_futures_history(entry_d: pd.Timestamp, entry_spot_etf: float,
                      "reason": f"+{ret_pct:.2f}% TP",
                      "hold_days": hold,
                      "liq_price": compute_liquidation_price(entry_gc, 20)}
-        if ret_pct <= -3.0:  # v3.7.126 — three_experiments.py: -3% 止损 wr +3-6pp
+        if ret_pct <= -5.0:  # v3.7.129 grid: SL 3→5% (容忍 noise, 与 TP 8% 配)
             return {"closed": True, "exit_date": pd.Timestamp(d),
                      "entry_gc": entry_gc, "exit_gc": cur_gc,
                      "ret_spot_pct": ret_pct,
@@ -107,7 +107,7 @@ def simulate_futures_history(entry_d: pd.Timestamp, entry_spot_etf: float,
                      "reason": f"{ret_pct:.2f}% SL",
                      "hold_days": hold,
                      "liq_price": compute_liquidation_price(entry_gc, 20)}
-        if hold >= 5:
+        if hold >= 15:  # v3.7.129 grid: 5→15d 让真信号跑赢 (sum +170%)
             return {"closed": True, "exit_date": pd.Timestamp(d),
                      "entry_gc": entry_gc, "exit_gc": cur_gc,
                      "ret_spot_pct": ret_pct,
