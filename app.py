@@ -1892,10 +1892,13 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         gridspec_kw={"height_ratios": [3, 2, 1, 1, 1], "hspace": 0.08})
 
     # ── 价位换算: 主图用纽约金/纽约银 (现货/期货), 不再用 ETF 价位 ──
+    # v3.7.133: 用 live ETF (gld_est) 而非 last_close 防 ratio 膨胀
+    # (last_close 是日线 ETF 上日收盘, GC=F 是 live, 比例不一致 → 历史 marker 悬浮)
     _viz_ticker = "GC=F" if asset_key == "GLD" else "SI=F"
     _viz_rt = _get_realtime_prices(_viz_ticker)
-    if _viz_rt and _viz_rt.get("gc_price", 0) > 0 and last_close > 0:
-        _viz_ratio = _viz_rt["gc_price"] / last_close
+    _live_etf_for_r = float(locals().get("gld_est") or 0) or last_close
+    if _viz_rt and _viz_rt.get("gc_price", 0) > 0 and _live_etf_for_r > 0:
+        _viz_ratio = _viz_rt["gc_price"] / _live_etf_for_r
     elif gc_gld_ratio:
         _viz_ratio = gc_gld_ratio
     else:
@@ -3274,7 +3277,10 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     )
     _kdb_u = _kdb_uni()
     _today_dt_u = pd.Timestamp(today_sgt).normalize()
-    _cur_spot_u = float(close_d.iloc[-1])
+    # v3.7.133: 用 live spot (gld_est) 而非 last close, 让 OPEN MTM 实时
+    _cur_spot_u = float(locals().get("gld_est") or close_d.iloc[-1])
+    if _cur_spot_u <= 0:
+        _cur_spot_u = float(close_d.iloc[-1])
     _gld_csv_u = pd.read_csv(
         f"/Users/yhdong/Gold/data/raw/market/{asset_key.lower()}.csv",
         index_col=0, parse_dates=True)
