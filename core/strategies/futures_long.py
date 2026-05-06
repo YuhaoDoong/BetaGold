@@ -113,8 +113,31 @@ def simulate_long_position(entry_d: pd.Timestamp,
 def _exit(entry: float, exit_price: float, hold: int,
             cfg: FuturesConfig, reason: str, exit_d, is_liq: bool = False,
             closed: bool = True) -> dict:
-    """统一退出包装 (含 funding + fee 净 PnL)."""
+    """统一退出包装 (含 funding + fee 净 PnL).
+
+    爆仓: ROI on margin = -100% (保证金归零, 含强平滑点 + 保险金).
+    """
     spot_pct = (exit_price / entry - 1) * 100
+    if is_liq:
+        # 爆仓: 保证金全损, ROI = -100%
+        lev_pct = -100.0
+        net_lev = -100.0
+        funding_cost_pct = 0.0
+        fee_pct = 0.0
+        return {
+            "closed": True, "exit_date": pd.Timestamp(exit_d),
+            "entry_price": entry, "exit_price": exit_price,
+            "hold_days": hold,
+            "ret_spot_pct": spot_pct,
+            "ret_levered_pct": -100.0,
+            "net_pnl_pct": -100.0,
+            "leverage": cfg.leverage,
+            "liq_price": exit_price,
+            "effective_sl_pct": effective_sl_pct(cfg),
+            "reason": "爆仓 (保证金归零)",
+            "is_liquidation": True,
+            "pnl_pct": -100.0,
+        }
     lev_pct = spot_pct * cfg.leverage
     # 资金费 (long 持仓时若 funding > 0 付费)
     n_funding = max(0, int(hold * 24 / 8))  # 每 8h 一次
