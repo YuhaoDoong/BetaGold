@@ -141,6 +141,69 @@ launchctl load ~/Library/LaunchAgents/com.golddash.retune.plist
 | v3.7.124 | dashboard 当日信号 metric 显示 sp_score 各因子命中明细 |
 | **v3.7.125** | **修今日触发表空 bug — detect+upsert 提前到 kline 加载即跑, 不再依赖 1h chart 视图** |
 | v3.7.125 retune | 月度 grid (5y, GLD/SLV 全维度) — 当前配置接近最优, 不切换. paired sp_score thr=3.5/2.5 仍最优 |
+| v3.7.126 | 三实验: 期货止损 -2%→-3% (wr +6-8pp), bp_low 不需更深破, sp_score 阈值维持 |
+| **v3.7.127** | **方向性入场加 ma_trend (MA20/MA50) 过滤 — 全链路累计 PnL +1400%** |
+
+## v3.7.127 ma_trend 入场过滤 (核心方向性优化)
+
+### 因子分析驱动 (entry_signal_factor_analysis.py)
+
+跑 13 个候选因子的 winner-vs-loser 分析, 发现 `ma_trend = MA20/MA50` 是最强单因子分化器:
+
+| 资产 | ma_trend < 0.99 (下行趋势) BC 胜率 |
+|---|---|
+| GLD | **0% (0/8 笔, 全输)** |
+| SLV | **12.5% (3/24 笔)** |
+
+### 原理
+
+**ma_trend 三档**:
+
+| 值 | 状态 | 价位结构 |
+|---|---|---|
+| `> 1.01` | 上行趋势 | 短均价 > 长均价 (多头排列) |
+| `0.99 ~ 1.01` | 横盘震荡 | 两均线缠绕 |
+| `< 0.99` | 下行趋势 | 死叉后 (空头排列) |
+
+**为什么下行趋势 BC 几乎全输**:
+1. **结构性下跌** — MA20 跌破 MA50 是趋势反转的滞后确认. 反弹概率 < 继续跌概率.
+2. **接飞刀效应** — `bp_low<0.30` 在下行趋势中只是"价格创新低", 不是 mean-revert 信号. Range 模型下沿会跟着下移.
+3. **vs 上行 pullback** — 同样的 `bp_low<0.30`, 在 `ma_trend > 1.01` 是健康回调, 80%+ 反弹; 在下行中是趋势延续, 多数继续跌.
+
+**阈值 0.99 而非 1.0** — 横盘 (0.99-1.01) 不过滤 (mean-revert 仍有效), 仅过滤明确下行 (MA20 比 MA50 低超过 1%).
+
+### 实施
+
+```python
+# core/signals_v2.py: generate_daily_signals 内
+ma_trend = close.rolling(20).mean() / close.rolling(50).mean()
+
+if buy_sig and ma_trend.get(d) < 0.99:
+    buy_sig = False  # MA20 < MA50 时跳过方向性入场
+```
+
+### 全链路回测对比
+
+| 资产 | 策略 | 改前 wr / 累计 | 改后 wr / 累计 | Δ累计 |
+|---|---|---|---|---|
+| GLD | BUY CALL | 64.0% / +2997% | **76.2% / +3421%** | +14% |
+| GLD | SELL PUT | 72.0% / +34% | **83.3% / +493%** | **+1349%** |
+| SLV | BUY CALL | 51.1% / +1611% | **91.3% / +2437%** | **+51%** |
+| SLV | SELL PUT | 52.8% / +289% | **83.3% / +449%** | +55% |
+
+**合计累计 PnL 提升 ~+1400%**, 单一过滤产生质变. sp_score 在 ma_trend 过滤后 GLD chosen wr **88.1%** / 累 **+3598%** (距完美上限 90.5% / +3945% 仅 2.4pp).
+
+### 五层过滤体系 (BC 入场完整链路)
+
+```
+1. bp_low < 0.30           — Range 模型下沿 (Range-bound 触发器)
+2. Bull regime             — 长期方向性环境 (年级)
+3. RV 极值过滤             — 排除中位温水区 (避免噪音方向)
+4. ma_trend ≥ 0.99 (新)    — 中期趋势方向 (5-10 周, 过滤接飞刀)
+5. sp_score 决定 BC vs SP  — 多因子选择最优工具
+```
+
+各层互补 — Bull regime 是年级方向, ma_trend 是中期 (5-10w), 触发器是日内. ma_trend 填补了 Bull regime 与日内触发之间的中间层.
 
 ### 完整重测 2026-05-06 结果
 
