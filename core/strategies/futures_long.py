@@ -28,14 +28,26 @@ class FuturesConfig:
     leverage: int = 20                   # 杠杆 (Binance XAUUSDT 上限 20)
     maintenance_margin_rate: float = 0.005  # MM rate (5y XAUUSDT 实测)
 
-    # 退出参数 (v3.7.129 grid 最优)
-    tp_pct: float = 8.0                  # spot % 止盈
+    # 主退出参数
+    tp_pct: float = 12.0                 # spot % 主止盈 (v3.7.130 grid)
     sl_pct: float = 5.0                  # spot % 止损 (相对 entry)
     hold_max_days: int = 15              # 最长持仓
 
     # 爆仓感知 SL — 距爆仓价 buffer
     auto_sl_from_liq: bool = True        # True=自动收紧 SL 到爆仓 - buffer
     liq_buffer_pct: float = 1.0          # 距爆仓 buffer (%)
+
+    # v3.7.135: 早平 (持仓 N 天后, 利润 ≥ M% 即平 — 防被反向拖死回亏)
+    # 实务: 持 3-5d 已 +5% 应当锁利, 不该贪等 +12% 回吐到 -70%
+    early_tp_locks: tuple = (
+        (3, 5.0),   # 持 3d, 利润 ≥ 5% → 平 (= +100% margin @ 20×)
+        (7, 3.0),   # 持 7d, 利润 ≥ 3% → 平 (= +60% margin)
+        (10, 1.0),  # 持 10d, 利润 ≥ 1% → 平 (= +20% margin)
+    )
+
+    # v3.7.135: 信号反转退出 (bp_high > 阈值时即使没到 TP 也平)
+    signal_reversal_bp_high: float = 0.85  # 区间上沿即视反转
+    signal_reversal_min_profit: float = 0.0  # 反转 + 至少 0% 利润才平
 
     # 费用
     taker_fee: float = 0.0005            # 单边 0.05% (Binance regular)
@@ -67,7 +79,8 @@ def simulate_long_position(entry_d: pd.Timestamp,
                               cfg: FuturesConfig = None,
                               live_spot: float = None,
                               live_high: float = None,
-                              live_low: float = None) -> dict:
+                              live_low: float = None,
+                              bp_high_series: pd.Series = None) -> dict:
     """模拟期货多头持仓 — 4 层退出: 爆仓 / SL / TP / Timeout.
 
     v3.7.134: 期货 24h 可交易 (Binance XAUUSDT / GC=F COMEX 23h).
@@ -112,6 +125,19 @@ def simulate_long_position(entry_d: pd.Timestamp,
         if rH >= cfg.tp_pct:
             tp_price = entry_spot * (1 + cfg.tp_pct / 100)
             return _exit(entry_spot, tp_price, hold, cfg, f"+{cfg.tp_pct:.1f}% TP", d)
+        # 3b. v3.7.135: 早平 (利润随持仓时间递减阈值, 防被反向拖死)
+        rC = (C / entry_spot - 1) * 100
+        for _hold_d, _min_profit in cfg.early_tp_locks:
+            if hold >= _hold_d and rC >= _min_profit:
+                return _exit(entry_spot, C, hold, cfg,
+                              f"{_hold_d}d+{_min_profit:.0f}% 早平锁利", d)
+        # 3c. v3.7.135: 信号反转 (bp_high > 0.85 + 已盈利 → 平)
+        if bp_high_series is not None and pd.Timestamp(d) in bp_high_series.index:
+            bph = float(bp_high_series.get(pd.Timestamp(d), 0))
+            if bph > cfg.signal_reversal_bp_high \
+               and rC >= cfg.signal_reversal_min_profit:
+                return _exit(entry_spot, C, hold, cfg,
+                              f"bp_high {bph:.2f} 反转 +{rC:.1f}% 平", d)
         # 4. Hold timeout
         if hold >= cfg.hold_max_days:
             return _exit(entry_spot, C, hold, cfg, f"{cfg.hold_max_days}d 时间出场", d)

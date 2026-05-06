@@ -4329,11 +4329,14 @@ def main():
     _ex = locals().get("exit_sig_viz", exit_sig)
 
     # 价位换算: 主图改用纽约金/纽约银
+    # v3.7.135: 用 live ETF (gld_est) 而非 last_close 防 ratio 膨胀
+    # (last_close 是日线 ETF 上日收盘, GC=F 是 live, 比例不一致 → marker 悬浮)
     _gc_ticker_for_chart = "GC=F" if asset_key == "GLD" else "SI=F"
     _gc_rt_chart = _get_realtime_prices(_gc_ticker_for_chart)
+    _live_etf_for_chart = float(locals().get("gld_est") or 0) or last_close
     if _gc_rt_chart and _gc_rt_chart.get("gc_price", 0) > 0 \
-            and last_close > 0:
-        _spot_ratio_chart = _gc_rt_chart["gc_price"] / last_close
+            and _live_etf_for_chart > 0:
+        _spot_ratio_chart = _gc_rt_chart["gc_price"] / _live_etf_for_chart
     elif gc_gld_ratio:
         _spot_ratio_chart = gc_gld_ratio
     else:
