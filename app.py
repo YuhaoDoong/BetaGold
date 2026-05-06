@@ -1861,9 +1861,14 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                                             _interval_code,
                                             _intraday_days)
         if _intraday_data is not None and len(_intraday_data) > 0:
-            # 计算 ratio: 用最近 close 推算 (避免 _viz_ratio 还没初始化)
+            # v3.7.136: ratio_probe 用 live ETF (gld_est) 而非 last_close
+            # 旧 bug: ratio_probe = GC=F_live / last_close($418) = 11.32 (膨胀)
+            #         candle plot 再 × _r (live = 4730/431 = 10.97) 不抵消
+            #         → candle 被压低 ~3%, marker 显得在 candle 之上
+            # 修: ratio_probe 与 _r 用同一基准 (live ETF), 完美抵消
+            _live_etf_probe = float(locals().get("gld_est") or 0) or last_close
             _ratio_probe = (_intraday_data["Close"].iloc[-1]
-                              / last_close if last_close > 0 else 1.0)
+                              / _live_etf_probe if _live_etf_probe > 0 else 1.0)
             _intraday_data = _intraday_data.copy()
             for _col in ["Open", "High", "Low", "Close"]:
                 _intraday_data[_col] = _intraday_data[_col] / _ratio_probe
