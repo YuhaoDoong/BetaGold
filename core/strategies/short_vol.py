@@ -33,18 +33,25 @@ def simulate_short_vol_position(entry_pricing: dict,
     if abs(entry_value) < 0.01:
         return {"is_closed": False, "reason": "entry~0"}
     legs = entry_pricing["legs"]
-    # v3.7.141: SHORT_VOL 真 Iron Condor 4-leg
-    # max_risk = max(put_spread_width, call_spread_width) - credit (双边只算最大单边)
+    ent_leg_prices = entry_pricing.get("leg_prices", [])
+    # v3.7.141/148: SHORT_VOL 真 Iron Condor 4-leg
+    # 修正 v3.7.148 max_risk bug: 之前用 max_spread - total_credit (错!)
+    # IC 只能一边 max-lose, max_risk = max(put_width - put_credit, call_width - call_credit)
+    # 这才是券商保证金 (Reg-T) 算法
     if len(legs) == 4:
-        # 4-leg IC: short_put / long_put / short_call / long_call
         sp_k = next((l[2] for l in legs if l[0] == "short_put"), 0)
         lp_k = next((l[2] for l in legs if l[0] == "long_put"), 0)
         sc_k = next((l[2] for l in legs if l[0] == "short_call"), 0)
         lc_k = next((l[2] for l in legs if l[0] == "long_call"), 0)
         put_width = abs(sp_k - lp_k) if sp_k and lp_k else 0
         call_width = abs(lc_k - sc_k) if sc_k and lc_k else 0
-        max_spread = max(put_width, call_width)
-        max_risk = max(0.01, max_spread - entry_value)
+        # 单边 credit (从入场 leg prices 重算)
+        ent_dict = {lab: p for lab, p in ent_leg_prices}
+        put_credit = ent_dict.get("short_put", 0) - ent_dict.get("long_put", 0)
+        call_credit = ent_dict.get("short_call", 0) - ent_dict.get("long_call", 0)
+        max_loss_put = max(0, put_width - put_credit)
+        max_loss_call = max(0, call_width - call_credit)
+        max_risk = max(0.01, max_loss_put, max_loss_call)
     else:
         # 兼容 2-leg 旧实现 (put credit spread only)
         spread_width = 0.0
