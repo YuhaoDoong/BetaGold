@@ -125,6 +125,19 @@ def generate_daily_signals(close_d, high_d, low_d,
             _ind_stoch_k, _ = _stoch_fn(high_d, low_d, close_d)
         except Exception:
             _sp_cfg = None  # 拿不到指标就退回单切
+
+    # v3.7.127: ma_trend (MA20/MA50) 入场过滤 — 实证最强单因子分化
+    # bc_entry_filter_test.py: ma_trend >= 0.99 单一过滤
+    #   GLD wr 64% → 76% / 累计 +2997% → +3421%
+    #   SLV wr 51% → 91% / 累计 +1611% → +2437%
+    # 触发: ma_trend < 0.99 (MA20 < MA50, 下行趋势) 时 BC wr ~0-12%, 必跳过
+    _ma_trend = None
+    try:
+        _ma20 = close_d.rolling(20).mean()
+        _ma50 = close_d.rolling(50).mean()
+        _ma_trend = _ma20 / _ma50
+    except Exception:
+        pass
     """日线级别信号: v1.0 Band + H/L 触发 + RV 极值过滤.
 
     rv_filter=True 时只在 RV %tile < rv_low 或 > rv_high 时触发方向性.
@@ -173,6 +186,14 @@ def generate_daily_signals(close_d, high_d, low_d,
         rv_extreme = (rv < rv_low) or (rv > rv_high)
         if rv_filter and buy_sig and not rv_extreme:
             buy_sig = False
+        # v3.7.127: ma_trend 过滤 — MA20 < MA50 时方向性几乎全输, 必跳过
+        # (实证 GLD wr 0% / SLV wr 12.5% 在 ma_trend < 0.99)
+        ma_trend_skip = False
+        if buy_sig and _ma_trend is not None and d in _ma_trend.index:
+            mt = float(_ma_trend.get(d, np.nan))
+            if not np.isnan(mt) and mt < 0.99:
+                buy_sig = False
+                ma_trend_skip = True
         buy_type = None
         iv_filter_reason = ""  # v3.7.117 透明记录 IV 过滤原因
         sp_score = None
@@ -293,6 +314,10 @@ def generate_daily_signals(close_d, high_d, low_d,
             "iv_filter_reason": iv_filter_reason,
             "sp_score": sp_score,
             "sp_score_breakdown": sp_score_breakdown,
+            "ma_trend": float(_ma_trend.get(d, np.nan))
+                         if (_ma_trend is not None and d in _ma_trend.index)
+                         else np.nan,
+            "ma_trend_skip": ma_trend_skip,
         })
 
     return pd.DataFrame(records).set_index("date")
