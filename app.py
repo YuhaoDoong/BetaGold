@@ -2053,8 +2053,12 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         dedupe_unified as _dedupe,
     )
 
-    _straddle_viz = _dst(rv_s, viz_dates, rv_pctile=rv_pctile, asset=asset_key)
-    _short_vol_viz = _dsv(rv_s, rv_pctile, viz_dates, regime=regime)
+    # v3.7.139: 传 close/high/low → tech 模式 (跟 sb3 metric 一致)
+    # 旧 bug: chart 用旧 rv-only 模式, metric 用 tech 模式 → 同信号不同结果
+    _straddle_viz = _dst(rv_s, viz_dates, rv_pctile=rv_pctile,
+                          close=close_d, high=high_d, low=low_d, asset=asset_key)
+    _short_vol_viz = _dsv(rv_s, rv_pctile, viz_dates, regime=regime,
+                            close=close_d, high=high_d, low=low_d, asset=asset_key)
     _unified_viz_raw = _bus(sig_df, _straddle_viz, close_d, high_d, low_d,
                              short_vol_df=_short_vol_viz)
 
@@ -2203,8 +2207,15 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         _rv_ch = features.loc[close_d.index, "rv_10d"] if "rv_10d" in features.columns else pd.Series(dtype=float)
         _vd_ch = list(viz_dates)
         if _vd_ch:
-            _strad_ch = _dst_ch(_rv_ch, pd.DatetimeIndex(_vd_ch), rv_pctile=rv_pctile, asset=asset_key)
-            _sv_ch = _dsv_ch(_rv_ch, rv_pctile, pd.DatetimeIndex(_vd_ch), regime=regime)
+            # v3.7.139: 传 close/high/low → tech 模式 (跟 metric 一致)
+            _strad_ch = _dst_ch(_rv_ch, pd.DatetimeIndex(_vd_ch),
+                                 rv_pctile=rv_pctile,
+                                 close=close_d, high=high_d, low=low_d,
+                                 asset=asset_key)
+            _sv_ch = _dsv_ch(_rv_ch, rv_pctile, pd.DatetimeIndex(_vd_ch),
+                              regime=regime,
+                              close=close_d, high=high_d, low=low_d,
+                              asset=asset_key)
             _gld_csv_ch = pd.read_csv(
                 f"/Users/yhdong/Gold/data/raw/market/{asset_key.lower()}.csv",
                 index_col=0, parse_dates=True)
@@ -3149,6 +3160,32 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     # ── (1) 今日盘中触发 ──
     st.divider()
     st.subheader(f"⚡ 今日盘中触发 ({today_sgt})")
+    # v3.7.139: 日级 vol 信号 banner (无论是否有盘中 trigger 都展示)
+    try:
+        from core.events import (detect_straddle_signal as _det_strad_b,
+                                  detect_short_vol_signal as _det_sv_b)
+        _rv_b = features.loc[close_d.index, "rv_10d"]
+        _today_b = pd.Timestamp(today_sgt).normalize()
+        _strad_b = _det_strad_b(_rv_b, pd.DatetimeIndex([_today_b]),
+                                  rv_pctile=rv_pctile,
+                                  close=close_d, high=high_d, low=low_d,
+                                  asset=asset_key)
+        _sv_b = _det_sv_b(_rv_b, rv_pctile, pd.DatetimeIndex([_today_b]),
+                           regime=regime,
+                           close=close_d, high=high_d, low=low_d,
+                           asset=asset_key)
+        _bs = []
+        if len(_strad_b) and bool(_strad_b["straddle_signal"].iloc[0]):
+            _ss = int(_strad_b["straddle_score"].iloc[0])
+            _bs.append(f"🟣 **STRADDLE** (做多波动率, score={_ss})")
+        if len(_sv_b) and bool(_sv_b["short_vol_signal"].iloc[0]):
+            _svs = int(_sv_b["short_vol_score"].iloc[0])
+            _svr = _sv_b["short_vol_reason"].iloc[0]
+            _bs.append(f"🟠 **SHORT_VOL** (做空波动率, score={_svs}) · {_svr}")
+        if _bs:
+            st.info(" · ".join(_bs))
+    except Exception:
+        pass
     _today = pd.Timestamp(today_sgt).normalize()
     _today_log = _intra_log_asset[
         pd.to_datetime(_intra_log_asset["date"]).dt.normalize() == _today
@@ -3159,16 +3196,24 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                             if (_today in sig_df.index
                                   and sig_df.loc[_today].get("buy_signal", False))
                             else "")
-        # 4-29 STRADDLE 等 vol 信号: 不在 sig_df 列, 走 events.detect_straddle_signal
-        # 简化: 这里假设 sig_df 没 vol 列, 不查 (避免 KeyError)
+        # v3.7.139: 同时检测 STRADDLE + SHORT_VOL (旧只检测 STRADDLE)
+        # 用 NEW tech 模式 (传 close/high/low) — 跟 sb3 metric 一致
         _is_strad_today = False
+        _is_sv_today = False
         try:
-            from core.events import detect_straddle_signal as _det_strad_today
+            from core.events import (detect_straddle_signal as _det_strad_today,
+                                       detect_short_vol_signal as _det_sv_today)
+            _rv_today = features.loc[close_d.index, "rv_10d"]
             _strad_today_df = _det_strad_today(
-                features.loc[close_d.index, "rv_10d"],
-                pd.DatetimeIndex([_today]), rv_pctile=rv_pctile, asset=asset_key)
+                _rv_today, pd.DatetimeIndex([_today]), rv_pctile=rv_pctile,
+                close=close_d, high=high_d, low=low_d, asset=asset_key)
             if len(_strad_today_df):
                 _is_strad_today = bool(_strad_today_df["straddle_signal"].iloc[0])
+            _sv_today_df = _det_sv_today(
+                _rv_today, rv_pctile, pd.DatetimeIndex([_today]), regime=regime,
+                close=close_d, high=high_d, low=low_d, asset=asset_key)
+            if len(_sv_today_df):
+                _is_sv_today = bool(_sv_today_df["short_vol_signal"].iloc[0])
         except Exception:
             pass
         # v3.7.100: dedupe 今日触发 — 策略 BUY 加仓需价跌 0.3%, 否则 419>418 不该加.
@@ -3223,6 +3268,8 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             _ul = float(r["price"])
             if _is_strad_today:
                 _strat = "STRADDLE"
+            elif _is_sv_today and _is_rth:
+                _strat = "SHORT_VOL"  # v3.7.139 RTH 时段 SHORT_VOL 优先于方向性
             elif _is_rth:
                 _strat = _today_buy_type if _today_buy_type else "SPOT"
             else:
