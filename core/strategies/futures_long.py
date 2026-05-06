@@ -24,18 +24,22 @@ import numpy as np
 
 @dataclass
 class FuturesConfig:
-    """期货策略参数 (paper_positions + backtest 共用)."""
+    """期货策略参数 (paper_positions + backtest 共用).
+
+    v3.7.137: 统一用 margin % 表示 TP/SL (与 BC/SP/IC 对齐, 跟"策略盈亏"挂钩).
+              spot % 通过 leverage 换算: spot_pct = margin_pct / leverage
+    """
     leverage: int = 20                   # 杠杆 (Binance XAUUSDT 上限 20)
     maintenance_margin_rate: float = 0.005  # MM rate (5y XAUUSDT 实测)
 
-    # 主退出参数
-    tp_pct: float = 12.0                 # spot % 主止盈 (v3.7.130 grid)
-    sl_pct: float = 5.0                  # spot % 止损 (相对 entry)
+    # 主退出参数 — margin % (策略盈亏视角)
+    tp_margin_pct: float = 200.0         # +200% margin = +10% spot @ 20×
+    sl_margin_pct: float = 50.0          # -50% margin = -2.5% spot @ 20×
     hold_max_days: int = 15              # 最长持仓
 
-    # 爆仓感知 SL — 距爆仓价 buffer
-    auto_sl_from_liq: bool = True        # True=自动收紧 SL 到爆仓 - buffer
-    liq_buffer_pct: float = 1.0          # 距爆仓 buffer (%)
+    # 爆仓感知 — 距爆仓价 buffer (默认关, 因 sl_margin 已远高于爆仓)
+    auto_sl_from_liq: bool = False       # True=自动收紧到 (爆仓 - buffer) 之内
+    liq_buffer_pct: float = 1.0          # 距爆仓 buffer (% spot)
 
     # v3.7.135: 早平 (持仓 N 天后, 利润 ≥ M% 即平 — 防被反向拖死回亏)
     # 实务: 持 3-5d 已 +5% 应当锁利, 不该贪等 +12% 回吐到 -70%
@@ -55,21 +59,29 @@ class FuturesConfig:
 
 
 def liquidation_distance_pct(cfg: FuturesConfig, side: str = "long") -> float:
-    """相对 entry 的爆仓价距离 (%, long 为负, short 为正)."""
+    """相对 entry 的爆仓价距离 (% spot, long 为负, short 为正)."""
     base = 1.0 / cfg.leverage - cfg.maintenance_margin_rate
     return -base * 100 if side == "long" else base * 100
 
 
-def effective_sl_pct(cfg: FuturesConfig, side: str = "long") -> float:
-    """实际止损 % (考虑爆仓: 取 sl_pct 与 liq_buffer 的较紧者).
+def sl_spot_pct(cfg: FuturesConfig, side: str = "long") -> float:
+    """实际止损 spot % (从 sl_margin_pct 换算)."""
+    sl_spot = cfg.sl_margin_pct / cfg.leverage
+    if cfg.auto_sl_from_liq:
+        liq_dist = abs(liquidation_distance_pct(cfg, side))
+        safe_sl = liq_dist - cfg.liq_buffer_pct
+        sl_spot = min(sl_spot, max(0.5, safe_sl))
+    return sl_spot
 
-    用户配置 sl=5% 但 lev=50 (爆仓 1.5%) → 自动收紧到 0.5% SL.
-    """
-    if not cfg.auto_sl_from_liq:
-        return cfg.sl_pct
-    liq_dist = abs(liquidation_distance_pct(cfg, side))
-    safe_sl = liq_dist - cfg.liq_buffer_pct
-    return min(cfg.sl_pct, max(0.5, safe_sl))  # 至少 0.5% (避免 lev=100 时 SL=0)
+
+def tp_spot_pct(cfg: FuturesConfig) -> float:
+    """实际止盈 spot % (从 tp_margin_pct 换算)."""
+    return cfg.tp_margin_pct / cfg.leverage
+
+
+# 兼容旧 API
+def effective_sl_pct(cfg: FuturesConfig, side: str = "long") -> float:
+    return sl_spot_pct(cfg, side)
 
 
 def simulate_long_position(entry_d: pd.Timestamp,
@@ -90,7 +102,8 @@ def simulate_long_position(entry_d: pd.Timestamp,
     时间序: bar 内最坏先发 (保守).
     """
     if cfg is None: cfg = FuturesConfig()
-    sl = effective_sl_pct(cfg)
+    sl = sl_spot_pct(cfg)        # spot % SL (= sl_margin_pct / leverage)
+    tp = tp_spot_pct(cfg)        # spot % TP (= tp_margin_pct / leverage)
     liq_pct = liquidation_distance_pct(cfg, "long")  # 负值
     liq_price = entry_spot * (1 + liq_pct / 100)
 
@@ -117,14 +130,16 @@ def simulate_long_position(entry_d: pd.Timestamp,
         if rL <= liq_pct:
             return _exit(entry_spot, liq_price, hold, cfg, "爆仓",
                          d, is_liq=True)
-        # 2. SL (主动止损, 距爆仓 buffer)
+        # 2. SL (主动止损 — margin % 视角)
         if rL <= -sl:
             sl_price = entry_spot * (1 - sl / 100)
-            return _exit(entry_spot, sl_price, hold, cfg, f"-{sl:.1f}% SL", d)
-        # 3. TP
-        if rH >= cfg.tp_pct:
-            tp_price = entry_spot * (1 + cfg.tp_pct / 100)
-            return _exit(entry_spot, tp_price, hold, cfg, f"+{cfg.tp_pct:.1f}% TP", d)
+            return _exit(entry_spot, sl_price, hold, cfg,
+                          f"-{cfg.sl_margin_pct:.0f}% margin SL (spot -{sl:.1f}%)", d)
+        # 3. TP (margin % 视角)
+        if rH >= tp:
+            tp_price = entry_spot * (1 + tp / 100)
+            return _exit(entry_spot, tp_price, hold, cfg,
+                          f"+{cfg.tp_margin_pct:.0f}% margin TP (spot +{tp:.1f}%)", d)
         # 3b. v3.7.135: 早平 (利润随持仓时间递减阈值, 防被反向拖死)
         rC = (C / entry_spot - 1) * 100
         for _hold_d, _min_profit in cfg.early_tp_locks:
@@ -170,16 +185,19 @@ def _check_live(entry: float, live_spot: float,
     if rL <= liq_pct:
         return _exit(entry, liq_price, hold + 1, cfg, "爆仓 (intraday live)",
                        today, is_liq=True)
-    # 2. SL
+    # 2. SL (margin % 视角)
     if rL <= -sl:
         sl_price = entry * (1 - sl / 100)
-        return _exit(entry, sl_price, hold + 1, cfg, f"-{sl:.1f}% SL (intraday live)",
+        return _exit(entry, sl_price, hold + 1, cfg,
+                       f"-{cfg.sl_margin_pct:.0f}% margin SL (live spot -{sl:.1f}%)",
                        today)
-    # 3. TP
-    if rH >= cfg.tp_pct:
-        tp_price = entry * (1 + cfg.tp_pct / 100)
+    # 3. TP (margin % 视角)
+    tp = tp_spot_pct(cfg)
+    if rH >= tp:
+        tp_price = entry * (1 + tp / 100)
         return _exit(entry, tp_price, hold + 1, cfg,
-                       f"+{cfg.tp_pct:.1f}% TP (intraday live)", today)
+                       f"+{cfg.tp_margin_pct:.0f}% margin TP (live spot +{tp:.1f}%)",
+                       today)
     # 4. OPEN — 用 live_spot 算 MTM
     return _exit(entry, live_spot, hold, cfg, "持仓中 (live MTM)",
                    today, closed=False)
@@ -242,13 +260,16 @@ def _exit(entry: float, exit_price: float, hold: int,
     }
 
 
-# ── 配置预设 (用户常见 leverage 选择) ──
+# ── 配置预设 (各杠杆下的统一 margin %) ──
+# v3.7.137: TP/SL 用 margin % (与 BC/SP 对齐). spot % = margin / leverage 自动换算.
 LEVERAGE_PRESETS = {
-    "Conservative_5x":  FuturesConfig(leverage=5,   tp_pct=8, sl_pct=5,  hold_max_days=15),
-    "Moderate_10x":     FuturesConfig(leverage=10,  tp_pct=8, sl_pct=5,  hold_max_days=15),
-    "Binance_20x":      FuturesConfig(leverage=20,  tp_pct=8, sl_pct=5,  hold_max_days=15),  # default
-    "Aggressive_50x":   FuturesConfig(leverage=50,  tp_pct=5, sl_pct=1.0, hold_max_days=10),
-    "Extreme_100x":     FuturesConfig(leverage=100, tp_pct=3, sl_pct=0.5, hold_max_days=5),
+    "Conservative_5x":  FuturesConfig(leverage=5,   tp_margin_pct=200, sl_margin_pct=50,  hold_max_days=15),
+    "Moderate_10x":     FuturesConfig(leverage=10,  tp_margin_pct=200, sl_margin_pct=50,  hold_max_days=15),
+    "Binance_20x":      FuturesConfig(leverage=20,  tp_margin_pct=200, sl_margin_pct=50,  hold_max_days=15),  # default
+    "Aggressive_50x":   FuturesConfig(leverage=50,  tp_margin_pct=200, sl_margin_pct=50,  hold_max_days=10,
+                                         auto_sl_from_liq=True),  # lev 高时强制爆仓 buffer
+    "Extreme_100x":     FuturesConfig(leverage=100, tp_margin_pct=200, sl_margin_pct=50,  hold_max_days=5,
+                                         auto_sl_from_liq=True),
 }
 
 
