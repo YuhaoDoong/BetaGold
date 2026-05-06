@@ -3522,8 +3522,17 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                 _eL = float(_gld_csv_u.loc[_du, "Low"])
             else:
                 _eO = _eC = _eH = _eL = float(close_d.get(_du, 0))
-            if "FUTURES" in _strat and len(_log_u) and len(_pre_buys):
-                _entry_spot_u = float(_pre_buys.iloc[0]["price"])
+            # v3.7.144: 期货入场价 — 优先用 intraday log premarket BUY 价, fallback Open
+            _pre_buys_u = pd.DataFrame()
+            if "FUTURES" in _strat and len(_log_u):
+                _pre_buys_u = _log_u[
+                    (_log_u["date"] == _du) & (_log_u["side"] == "BUY") &
+                    (pd.to_datetime(_log_u["trigger_time"]).dt.hour
+                     + pd.to_datetime(_log_u["trigger_time"]).dt.minute / 60.0 < 9.5)]
+            if "FUTURES" in _strat and len(_pre_buys_u):
+                _entry_spot_u = float(_pre_buys_u.iloc[0]["price"])
+            elif "FUTURES" in _strat:
+                _entry_spot_u = _eO  # 无 premarket trigger fallback 用 daily Open
             elif _strat in ("BUY CALL", "SELL PUT") and len(_log_u):
                 _rth = _log_u[(_log_u["date"] == _du) & (_log_u["side"] == "BUY") &
                               (pd.to_datetime(_log_u["trigger_time"]).dt.hour
