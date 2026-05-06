@@ -3242,19 +3242,21 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             _h = _t.hour + _t.minute/60.0
             _is_rth = 9.5 <= _h <= 16.0
             _ul = float(r["price"])
-            # v3.7.141: 期货/期权方向性都尊重 sig_df.buy_signal (ma_trend/RV/IV 过滤)
-            # SLV 今日 ma_trend=0.982<0.99 → buy_type 空 → 期货也不该开 (跟 BC/SP 一致)
+            # v3.7.144: 信号触发 = 期货 + 期权方向性并行 (用户模型)
+            # 一笔盘中 BUY trigger 同时映射到: 期货 (premarket 价) + 期权方向性 (RTH 价)
+            # 这里 raw triggers 表保持原 1:1 映射 (每个 trigger 一种主策略),
+            # 真正的并行持仓在历史表 (line 3370+) — 一日多 _strats_today
             _has_dir_signal = bool(_today_buy_type)
             if _is_strad_today:
                 _strat = "STRADDLE"
             elif _is_sv_today:
-                _strat = "SHORT_VOL"  # vol 信号优先, 跟 RTH/premarket 无关
+                _strat = "SHORT_VOL"
             elif _is_rth and _has_dir_signal:
-                _strat = _today_buy_type  # RTH 走方向性 BC/SP
+                _strat = _today_buy_type  # RTH BUY → BC/SP (同信号也开期货, 见历史表)
             elif (not _is_rth) and _has_dir_signal:
-                _strat = "FUTURES_LONG"  # premarket 走期货 (跟方向性绑定)
+                _strat = "FUTURES_LONG"  # premarket → 期货
             else:
-                _strat = "SPOT"  # 无日级信号 (filtered out)
+                _strat = "SPOT"  # 无信号
             # v3.7.143: 同历史表格式 — 合约/strikes/credit/MTM 全显示
             _opt_code = "—"; _ent_str = "—"; _exit_str = "—"; _gain = 0.0
             _exit_reason = "OPEN"
@@ -3501,18 +3503,10 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             _bt = _ru.get("buy_type") or ""
             if _bt and _bt not in _strats_today:
                 _strats_today.append(_bt)
-        # v3.7.142: 期货跟方向性信号绑定 (跟 v3.7.141 今日触发表一致)
-        # 旧 bug: 4 月 ma_trend 过滤掉所有 buy_signal, 但 intraday log 有 premarket BUY
-        #          → 强制标 FUTURES_LONG, 让历史表全是期货, 用户看不到期权
-        # 修: FUTURES 也需 buy_signal=True (跟 BC/SP 同源, 同一信号触发期货 + 期权)
-        _has_futures = False
-        if len(_log_u) and _ru.get("buy_signal", False):
-            _pre_buys = _log_u[
-                (_log_u["date"] == _du) & (_log_u["side"] == "BUY") &
-                (pd.to_datetime(_log_u["trigger_time"]).dt.hour
-                  + pd.to_datetime(_log_u["trigger_time"]).dt.minute / 60.0 < 9.5)]
-            _has_futures = len(_pre_buys) > 0
-        if _has_futures:
+        # v3.7.144: 信号触发 = 期货 + 期权方向性自动并行开仓 (用户核心模型)
+        # 不再依赖 intraday log premarket trigger — 信号 buy_signal=True 即自动开
+        # FUTURES + BC/SP 同时进入 _strats_today (一次信号 → 多策略并行持仓)
+        if _ru.get("buy_signal", False):
             _strats_today.append("FUTURES_LONG")
         if not _strats_today: continue
         # 对每个策略生成独立 record
