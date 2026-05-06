@@ -133,6 +133,60 @@ launchctl load ~/Library/LaunchAgents/com.golddash.retune.plist
 | **v3.7.106** | **Range 模型重训用 GC=F 期货 23h 数据替代 GLD ETF 6.5h (tightness 持平 0.11, lower band 更紧)** |
 | v3.7.107-108 | 多策略并行持仓 (5-4 SELL PUT + SHORT_VOL + FUTURES 同日) / 状态栏字体缩小 |
 | **v3.7.109** | **Binance XAUUSDT 永续 20× 接入 (实时 mark/funding/liq 真值) + 双 scale ETF/GC=F + 5 项退出修** |
+| v3.7.110-115 | 全历史回测三阶段路由 + 真实期权回测 only + paired BC/SP 比较 (用户方法论) + SP PnL 改 margin 分母 |
+| v3.7.116-117 | IV × bp_low 深破过滤 grid + GVZ IV 三阶过滤 (低/中/高 IV 不同处理, 高 IV 强制 SP) |
+| v3.7.118-121 | dashboard 回测分析重写 + 多维 paired grid (9 维) + 4 个强力 SP 选择条件实证 |
+| v3.7.122 | 智能 DTE (尽量短期权代替 LEAPS, dte = max(base, days_since+30)) + 日线技术指标特征 (MACD/RSI/Stoch) |
+| **v3.7.123** | **sp_score 多因子选 BC vs SP — paired 验证: GLD acc 42% → 86%, SLV +725% 累计 PnL** |
+| v3.7.124 | dashboard 当日信号 metric 显示 sp_score 各因子命中明细 |
+| **v3.7.125** | **修今日触发表空 bug — detect+upsert 提前到 kline 加载即跑, 不再依赖 1h chart 视图** |
+| v3.7.125 retune | 月度 grid (5y, GLD/SLV 全维度) — 当前配置接近最优, 不切换. paired sp_score thr=3.5/2.5 仍最优 |
+
+### 完整重测 2026-05-06 结果
+
+跑 `monthly_retune.py` (5y 全维度 grid, 步长 0.025) + `full_history_backtest.py` + `paired_score_validate.py`:
+
+**Grid search 结论**: 当前 SHORT_VOL / STRADDLE / 方向性配置 **接近最优 (改进 < 5%)**, 不切换.
+- GLD SHORT_VOL: 0.45/0.80 → n=69 wr **91%** Sharpe **1.27**
+- SLV SHORT_VOL: 0.25/0.775 → n=81 wr **86%** Sharpe **0.72**
+
+**Stage 路由实证** (最有价值发现):
+
+| Stage | GLD wr / avg | SLV wr / avg | 备注 |
+|---|---|---|---|
+| stage2_leaps_aux (90-365d) | **79.8% / +36.3%** | **82.3% / +32.0%** | LEAPS 主力 |
+| stage1_spot_only (>1y) | 61.1% / +0.5% | 53.4% / +0.4% | 仅期货代理 |
+| stage2_main_3m (<90d) | 27.6% / -24% | 36.3% / -6% | ⚠️ 近月波动大 |
+
+→ **LEAPS (90-365d) 是收益主源**, 近月期权风险/收益比最差. 智能 DTE 系统已自动倾向 LEAPS.
+
+**sp_score 在新 CSV (20260506) 验证仍稳定**: GLD acc 86% 累 +3279% / SLV acc 67% 累 +762%.
+
+
+## v3.7.123 sp_score 系统 (核心 BC vs SP 决策)
+
+替代单切 RV 阈值, 用 7 因子加权打分决定 BUY CALL 或 SELL PUT. **paired 同信号实证**:
+
+| 资产 | 单切 RV 准确率 | sp_score 准确率 | 平均 PnL/笔 (RV → score) | 累计 PnL |
+|---|---|---|---|---|
+| GLD | 42% | **86%** (thr=3.5) | +22.2% → **+65.7%** | +1112% → +3284% |
+| SLV | 38% | **68%** (thr=2.5) | +3.1% → **+22.7%** | +113% → +862% |
+
+**因子权重** (paired_grid_multi 9 维实证后):
+
+| 因子 | 权重 | 触发条件 | 说明 |
+|---|---|---|---|
+| RSI < 30 | **2.0** | 超卖 | ★最强 (paired 100% wr) |
+| IV-RV gap > 0 | 1.5 | IV > 实际波动率 | 卖贵 premium |
+| bp_low < 0.05 | 1.0 | 深破下沿 | 反弹概率高 |
+| bp_close < 0.30 | 1.0 | close 在 band 下沿 | 区间预测 |
+| GVZ ≥ 28 | 1.0 | 高 IV | 收 premium 替代 |
+| Stoch %K < 40 | 0.5 | 非超买 | 辅助确认 |
+| MACD hist < -0.5 | 0.5 | 空头动能 | 辅助确认 |
+
+`sp_score >= threshold` → SELL PUT (credit spread), 否则 BUY CALL.
+
+dashboard 信号 metric 实时显示 breakdown: `score 4.5 (RSI28*2.0 + IV-RV+5*1.5 + bp_low0.04*1.0)`.
 
 ## v3.7.109 重大变更概览
 

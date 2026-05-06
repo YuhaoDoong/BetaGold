@@ -1670,8 +1670,14 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                 if _sizing > 1.0 and _has_open_buy:
                     _sizing_tag = f" | 仓位 {_sizing:.0f}× ({_sizing_reasons})"
                 _bp_tag = f" | bp={bp_est:.2f}" if bp_est is not None else ""
+                # v3.7.123: 显示 sp_score 选 BC vs SP 的依据
+                _sp_score_tag = ""
+                _sp_v = sig_df.loc[last_date].get("sp_score")
+                _sp_bd = sig_df.loc[last_date].get("sp_score_breakdown", "")
+                if _sp_v is not None and not (isinstance(_sp_v, float) and pd.isna(_sp_v)):
+                    _sp_score_tag = f" | score {_sp_v} ({_sp_bd})" if _sp_bd else f" | score {_sp_v}"
                 _delta_str = (f"Regime: {last_regime}{_bp_tag} | "
-                              f"RV={rv_pctile.get(last_date,0):.0%}{_sizing_tag}")
+                              f"RV={rv_pctile.get(last_date,0):.0%}{_sp_score_tag}{_sizing_tag}")
             else:
                 sig_text = "今日无信号"
                 _delta_str = (f"bp={bp_est:.2f} | RV={rv_pctile.get(last_date,0):.0%} | "
@@ -2454,6 +2460,44 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     _kline_interval = locals().get("_interval_code", "1h") if _is_1h_view else "1h"
     _kline_data = gld_1h if gld_1h is not None else _fetch_futures_kline(_futures_ticker, "1h")
     _kline_label = f"{_futures_name} {_kline_interval}"  # v3.7.85: 跟实际 interval
+
+    # v3.7.125: detect+upsert 提前到 kline 一加载就跑 — 不再仅在 1h chart 视图触发.
+    # 之前 bug: 用户切换到非 1h 视图时, 今日触发检测被跳过, dash header
+    # "已触发" (基于 daily Low) vs 持仓表 "今日触发" (空) 不一致.
+    if _kline_data is not None and len(_kline_data) > 0:
+        try:
+            from core.intraday_triggers import (
+                detect_triggers as _ig_detect_now,
+                TriggerConfig as _IG_Cfg_now,
+                DEFAULT_BUY_RULES as _IG_BUY_now,
+                DEFAULT_EXIT_RULES as _IG_EXIT_now,
+                upsert_log as _ig_upsert_now,
+            )
+            _interval_min_now = {"1h": 60, "30m": 30, "15m": 15,
+                                   "5m": 5}.get(_kline_interval, 60)
+            _log_path_now = os.path.join(_intra_cfg["data_root"],
+                                            "intraday_signal_log.parquet")
+            _thr_now = sig_df[["bp030_price", "bp090_price"]]
+            _b = _ig_detect_now(_kline_data, _thr_now,
+                _IG_Cfg_now(timeframe_minutes=_interval_min_now, side="BUY",
+                              rule_set=_IG_BUY_now, confirm_mode="any"),
+                asset=asset_key, daily_low=low_d, daily_high=high_d)
+            _e = _ig_detect_now(_kline_data, _thr_now,
+                _IG_Cfg_now(timeframe_minutes=_interval_min_now, side="EXIT",
+                              rule_set=_IG_EXIT_now, confirm_mode="any"),
+                asset=asset_key, daily_low=low_d, daily_high=high_d)
+            if len(_b) > 0:
+                _ig_upsert_now(_b, _log_path_now)
+            if len(_e) > 0:
+                _ig_upsert_now(_e, _log_path_now)
+            # 重新加载 log 让本次会话后续读到今日触发
+            from core.intraday_triggers import load_log as _ig_load_now
+            _intra_log_full = _ig_load_now(_log_path_now)
+            _intra_log_asset = _intra_log_full[
+                _intra_log_full["asset"] == asset_key
+            ] if len(_intra_log_full) else _intra_log_full
+        except Exception as _e_d:
+            st.caption(f"⚠️ 盘中检测失败: {_e_d}")
 
     if _kline_data is not None and len(_kline_data) > 0 and _is_1h_view:
         # v3.7.25: 强制与主图同窗口 (plot_dates), 共享整数 x

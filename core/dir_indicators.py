@@ -34,6 +34,18 @@ def macd(close: pd.Series, fast: int = 12, slow: int = 26,
     return macd_line, sig_line, hist
 
 
+def stoch_kd(high: pd.Series, low: pd.Series, close: pd.Series,
+              n: int = 14, k_smooth: int = 3, d_smooth: int = 3
+              ) -> Tuple[pd.Series, pd.Series]:
+    """Stochastic %K (smoothed) and %D."""
+    ll = low.rolling(n).min()
+    hh = high.rolling(n).max()
+    raw_k = 100 * (close - ll) / (hh - ll).replace(0, np.nan)
+    k = raw_k.rolling(k_smooth).mean()
+    d = k.rolling(d_smooth).mean()
+    return k, d
+
+
 def atr_ratio_5_20(high: pd.Series, low: pd.Series,
                       close: pd.Series) -> pd.Series:
     """短/长 ATR 比 (复用 vol_indicators.atr_ratio 但内嵌避免循环导入)."""

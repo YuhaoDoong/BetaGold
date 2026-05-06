@@ -98,6 +98,7 @@ def generate_daily_signals(close_d, high_d, low_d,
     v3.7.117: gvz_series (可选) 接入 IV 三阶过滤.
     """
     _iv_cfg = None
+    _sp_cfg = None
     if asset is not None:
         try:
             from core.strategy_config import get_config
@@ -108,8 +109,22 @@ def generate_daily_signals(close_d, high_d, low_d,
             exit_bp = _ac.exit_bp
             if getattr(_ac, "iv_filter_enabled", False):
                 _iv_cfg = _ac
+            if getattr(_ac, "sp_score_enabled", False):
+                _sp_cfg = _ac
         except Exception:
             pass
+
+    # v3.7.123: 预算技术指标 (MACD hist / RSI 14 / Stoch %K) — 喂 sp_score
+    _ind_macd = _ind_rsi = _ind_stoch_k = None
+    if _sp_cfg is not None:
+        try:
+            from core.dir_indicators import rsi as _rsi_fn, macd as _macd_fn, \
+                stoch_kd as _stoch_fn
+            _ind_rsi = _rsi_fn(close_d, n=14)
+            _, _, _ind_macd = _macd_fn(close_d)
+            _ind_stoch_k, _ = _stoch_fn(high_d, low_d, close_d)
+        except Exception:
+            _sp_cfg = None  # 拿不到指标就退回单切
     """日线级别信号: v1.0 Band + H/L 触发 + RV 极值过滤.
 
     rv_filter=True 时只在 RV %tile < rv_low 或 > rv_high 时触发方向性.
@@ -160,12 +175,53 @@ def generate_daily_signals(close_d, high_d, low_d,
             buy_sig = False
         buy_type = None
         iv_filter_reason = ""  # v3.7.117 透明记录 IV 过滤原因
+        sp_score = None
+        sp_score_breakdown = ""
         if buy_sig:
             if rv_filter:
                 # 低 RV → BUY CALL (期权便宜), 高 RV → SELL PUT (收 IV)
                 buy_type = "BUY CALL" if rv < rv_low else "SELL PUT"
             else:
                 buy_type = "BUY CALL" if rv <= 0.85 else "SELL PUT"
+            # v3.7.123: SP score 多因子打分覆盖单切 (paired-grid 验证强信号)
+            if _sp_cfg is not None:
+                gvz_v = float(gvz_series.get(d, np.nan)) \
+                    if (gvz_series is not None and d in gvz_series.index) else np.nan
+                # 用 GVZ - RV(年化) 近似 IV-RV gap
+                rv_abs = rv * 30.0  # rv_pctile 0-1 不等于绝对 IV; 仅启发用
+                iv_rv_gap = (gvz_v - rv_abs) if not np.isnan(gvz_v) else 0.0
+                rsi_v = float(_ind_rsi.get(d, np.nan)) if _ind_rsi is not None else np.nan
+                macd_v = float(_ind_macd.get(d, np.nan)) if _ind_macd is not None else np.nan
+                stoch_v = float(_ind_stoch_k.get(d, np.nan)) \
+                    if _ind_stoch_k is not None else np.nan
+
+                hits = []
+                score = 0.0
+                if iv_rv_gap > 0:
+                    score += _sp_cfg.sp_score_w_iv_rv_gap
+                    hits.append(f"IV-RV+{iv_rv_gap:.1f}*{_sp_cfg.sp_score_w_iv_rv_gap}")
+                if bp_low < 0.05:
+                    score += _sp_cfg.sp_score_w_bp_low_deep
+                    hits.append(f"bp_low{bp_low:.2f}*{_sp_cfg.sp_score_w_bp_low_deep}")
+                if bp_close < 0.30:
+                    score += _sp_cfg.sp_score_w_bp_close_low
+                    hits.append(f"bp_cl{bp_close:.2f}*{_sp_cfg.sp_score_w_bp_close_low}")
+                if not np.isnan(gvz_v) and gvz_v >= 28:
+                    score += _sp_cfg.sp_score_w_gvz_high
+                    hits.append(f"GVZ{gvz_v:.0f}*{_sp_cfg.sp_score_w_gvz_high}")
+                if not np.isnan(rsi_v) and rsi_v < 30:
+                    score += _sp_cfg.sp_score_w_rsi_oversold
+                    hits.append(f"RSI{rsi_v:.0f}*{_sp_cfg.sp_score_w_rsi_oversold}")
+                if not np.isnan(stoch_v) and stoch_v < 40:
+                    score += _sp_cfg.sp_score_w_stoch_low
+                    hits.append(f"K{stoch_v:.0f}*{_sp_cfg.sp_score_w_stoch_low}")
+                if not np.isnan(macd_v) and macd_v < -0.5:
+                    score += _sp_cfg.sp_score_w_macd_bear
+                    hits.append(f"MACD{macd_v:+.1f}*{_sp_cfg.sp_score_w_macd_bear}")
+
+                sp_score = round(score, 2)
+                sp_score_breakdown = " + ".join(hits) if hits else "无命中"
+                buy_type = "SELL PUT" if score >= _sp_cfg.sp_score_threshold else "BUY CALL"
             # v3.7.117: GVZ IV 三阶过滤 (实证 BC 高 IV 全错向)
             if _iv_cfg is not None and gvz_series is not None and d in gvz_series.index:
                 gvz = float(gvz_series.get(d, 0))
@@ -235,6 +291,8 @@ def generate_daily_signals(close_d, high_d, low_d,
             "sizing": round(sizing, 1),
             "sizing_reasons": ", ".join(sizing_reasons) if sizing_reasons else "",
             "iv_filter_reason": iv_filter_reason,
+            "sp_score": sp_score,
+            "sp_score_breakdown": sp_score_breakdown,
         })
 
     return pd.DataFrame(records).set_index("date")

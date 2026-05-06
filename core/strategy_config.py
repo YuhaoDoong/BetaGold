@@ -58,6 +58,25 @@ class AssetConfig:
     iv_high_force_sp: bool = True        # 高 IV 时强制 SELL PUT (BC 全错)
     iv_mid_dual_confirm: bool = True     # 22-28 中 IV 需二次确认 (技术指标 align)
 
+    # ── v3.7.123: SP score 多因子选 BC vs SP (paired-grid 验证) ──
+    # 替代单一 RV 切点 — 综合 IV/区间/技术指标决定 BC vs SP.
+    # 实证 (paired_grid_multi.py):
+    #   RSI < 30 (超卖):     SP wr 100% (n=13, 跨 GLD/SLV) ★最强
+    #   IV-RV gap > 0:       SP 优于 BC 跨多区间稳定
+    #   bp_close < 0.30:     SP 优 (close 在 band 下方)
+    #   GVZ IV >= 28:        SP 优
+    #   Stoch %K 40-60:      SP 优
+    #   MACD hist 中位空头:  SP 优
+    sp_score_enabled: bool = True
+    sp_score_threshold: float = 3.0      # score >= 此值 → SELL PUT, 否则 BUY CALL
+    sp_score_w_iv_rv_gap: float = 1.5    # iv_rv_gap_pct > 0
+    sp_score_w_bp_low_deep: float = 1.0  # bp_low < 0.05
+    sp_score_w_bp_close_low: float = 1.0 # bp_close < 0.30
+    sp_score_w_gvz_high: float = 1.0     # gvz >= 28
+    sp_score_w_rsi_oversold: float = 2.0 # rsi_14 < 30 (最强)
+    sp_score_w_stoch_low: float = 0.5    # stoch_k < 40
+    sp_score_w_macd_bear: float = 0.5    # macd_hist < -0.5
+
     # ── STRADDLE 做多波动率 ──
     straddle_rv_threshold: float = 20.0   # RV < 此值 +2 分
     straddle_rv_abs_max: float = 25.0     # RV > 此值不触发
@@ -109,19 +128,18 @@ ASSET_CONFIGS: Dict[str, AssetConfig] = {
     # GLD: v3.7.29 网格搜索最优
     # 5y 数据, 38 笔 BUY/SELL, 胜 82%, 总 +48.9%, Sharpe 0.638
     "GLD": AssetConfig(
-        # v3.7.46 — 0.05 步长扫描后改回单切
-        # 双切 0.55/0.75 胜率 60.4% 但损失 25% 信号 (期望胜次降低)
-        # 单切 th=0.45: 8 BC (75% 胜) + 56 SP (57%), 合成 59.4%, 全覆盖
-        # 单切期望胜次=38 > 双切=29 → 选单切
+        # v3.7.123 — sp_score 替代单切 (paired 验证 acc 42% → 86%, mean +22% → +66%)
         rv_filter_enabled=True,
-        rv_filter_low=0.45,              # rv<0.45 → BUY_CALL (低 IV)
-        rv_filter_high=0.45,             # rv≥0.45 → SELL_PUT (中-高 IV 替代)
+        rv_filter_low=0.45,              # 兜底 (sp_score 关闭时用)
+        rv_filter_high=0.45,
+        sp_score_enabled=True,
+        sp_score_threshold=3.5,           # GLD 最优 (paired_score_validate: 86% acc, +66% mean)
         short_vol_rv_pctile_lo=0.45,
         short_vol_rv_pctile_hi=0.80,
         straddle_rv_abs_max=30.0,
         straddle_rv_pctile_max=1.00,
-        last_tuned="2026-04-30",
-        notes="v3.7.46 单切 0.45 (合成 59.4%, 64/64 全覆盖, 期望胜次最大)",
+        last_tuned="2026-05-06",
+        notes="v3.7.123 sp_score thr=3.5 (paired 86% acc / 76% wr / +66%/笔)",
     ),
 
     # SLV: v3.7.30 SLV 单独 grid search
@@ -129,20 +147,19 @@ ASSET_CONFIGS: Dict[str, AssetConfig] = {
     # SHORT_VOL 5y, 0.25/0.775: 77 笔 88% +73.7% Sharpe 0.848
     # 与 GLD 显著不同 — SLV 笔数翻倍, 单笔波动更大
     "SLV": AssetConfig(
-        # v3.7.46 — 单切优于双切 (期望胜次)
-        # 单切 th=0.75: 36 BC (67%) + 33 SP (67%), 合成 66.7%, 全覆盖
-        # 双切 0.30/0.80: 71.1% 但损失 35% 信号
-        # 单切期望胜次=46 > 双切=32 → 选单切
+        # v3.7.123 — sp_score 替代单切 (paired 验证 acc 38% → 68%, sum +113% → +862%)
         rv_filter_enabled=True,
-        rv_filter_low=0.75,
+        rv_filter_low=0.75,               # 兜底
         rv_filter_high=0.75,
+        sp_score_enabled=True,
+        sp_score_threshold=2.5,           # SLV 最优 (paired_score_validate: 67.6% acc, +862%/sum)
         short_vol_rv_pctile_lo=0.25,
         short_vol_rv_pctile_hi=0.775,
         straddle_rv_abs_max=25.0,
         straddle_rv_pctile_max=1.00,
         straddle_priority_score=6,
-        last_tuned="2026-04-30",
-        notes="v3.7.46 SLV 单切 0.75 (合成 66.7%, 全覆盖, 期望胜次最大)",
+        last_tuned="2026-05-06",
+        notes="v3.7.123 sp_score thr=2.5 (paired 68% acc / 54% wr / +23%/笔)",
     ),
 
     # 未来扩展示例 (留位):
