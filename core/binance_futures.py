@@ -44,6 +44,44 @@ def fetch_realtime_for_asset(asset: str) -> Optional[dict]:
     return fetch_perp_realtime(sym)
 
 
+def fetch_perp_klines(symbol: str, start_ms: int, end_ms: int,
+                          interval: str = "1d") -> list:
+    """拉 Binance 永续 kline (历史 OHLCV).
+
+    Args:
+        symbol: 'XAUUSDT' / 'XAGUSDT'
+        start_ms / end_ms: Unix ms timestamp
+        interval: '1m' / '1h' / '1d' / etc.
+    Returns: list of [open_ms, open, high, low, close, volume, ...] (raw Binance format)
+    """
+    try:
+        r = requests.get(f"{_FAPI}/klines",
+                          params={"symbol": symbol, "interval": interval,
+                                   "startTime": start_ms, "endTime": end_ms,
+                                   "limit": 1000},
+                          timeout=15)
+        r.raise_for_status()
+        return r.json()
+    except Exception:
+        return []
+
+
+def fetch_perp_price_at_date(symbol: str, target_date) -> Optional[dict]:
+    """拉 Binance 永续在 target_date 当日的 OHLC.
+    target_date: pd.Timestamp 或 date (UTC日界).
+    Returns: {'open', 'high', 'low', 'close', 'volume', 'date'} 或 None.
+    """
+    import pandas as pd
+    d = pd.Timestamp(target_date).normalize()
+    start_ms = int(d.timestamp() * 1000)
+    end_ms = int((d + pd.Timedelta(days=1)).timestamp() * 1000)
+    klines = fetch_perp_klines(symbol, start_ms, end_ms, "1d")
+    if not klines: return None
+    k = klines[0]
+    return {"date": d, "open": float(k[1]), "high": float(k[2]),
+             "low": float(k[3]), "close": float(k[4]), "volume": float(k[5])}
+
+
 # 兼容旧 API
 def fetch_xauusdt_realtime() -> Optional[dict]:
     """旧 API — 仅黄金 XAUUSDT (兼容). 新代码用 fetch_realtime_for_asset(asset)."""

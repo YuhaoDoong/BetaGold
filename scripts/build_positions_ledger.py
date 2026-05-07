@@ -29,6 +29,8 @@ from core.signals_v2 import generate_daily_signals
 from core.events import detect_short_vol_signal, detect_straddle_signal
 from core.regime import RegimeClassifier
 from core.paper_positions import (price_strategy_at, simulate_option_exit)
+from core.binance_futures import (fetch_perp_price_at_date,
+                                       fetch_realtime_for_asset, ASSET_SYMBOL)
 
 
 LEDGER_PARQUET = "/Users/yhdong/Gold/data/positions_ledger.parquet"
@@ -72,6 +74,14 @@ def build_for_asset(asset: str, days_back: int, today_dt: pd.Timestamp,
                                           close=close_d, high=high_d, low=low_d,
                                           asset=asset)
 
+    # v3.7.164: 期货模块独立 — 用 Binance 历史 OHLC, 不再用 ETF × ratio
+    binance_sym = ASSET_SYMBOL.get(asset)  # XAUUSDT / XAGUSDT
+    binance_live = fetch_realtime_for_asset(asset)
+    binance_live_mark = binance_live.get("mark_price") if binance_live else None
+    print(f"[ledger] {asset} → Binance {binance_sym} live mark = "
+          f"${binance_live_mark:.2f}" if binance_live_mark else
+          f"[ledger] {asset} → Binance {binance_sym} live: 拿不到")
+
     rows = []
     for _du, _ru in sig_df.loc[u_dates].iterrows():
         is_strad = (_du in strad_df.index
@@ -94,23 +104,83 @@ def build_for_asset(asset: str, days_back: int, today_dt: pd.Timestamp,
         eL = float(ohlc.loc[_du, "Low"])
 
         for strat in strats:
+            # v3.7.164: 期货模块 — 用 Binance OHLC 算 PnL (跟 ETF × ratio 完全分开)
+            if strat == "FUTURES_LONG":
+                # 入场: 信号日 Binance Open (09:30 ET ≈ Binance 当日 13:30 UTC, 用 daily Open 近似)
+                _bin_entry = fetch_perp_price_at_date(binance_sym, _du)
+                if not _bin_entry:
+                    continue  # Binance 没该日数据 (XAU/XAG 永续上线前)
+                _entry_perp = _bin_entry["open"]
+                # 找退出: simulate 基于 spot ETF 给的退出 reason 借用, 但 PnL 重算
+                # 简化: 历史 closed 用 Binance close@exit_date, 否则 OPEN
+                _spot_sim = simulate_option_exit(
+                    {"legs": [("futures_long", f"{asset}_FUT", _entry_perp, 1)],
+                      "entry_price": _entry_perp},
+                    _du, strat, today_dt, live_spot=eC,
+                    live_high=eH, live_low=eL)
+                is_closed = _spot_sim.get("is_closed", False)
+                if is_closed and _spot_sim.get("exit_date"):
+                    _bin_exit = fetch_perp_price_at_date(
+                        binance_sym, _spot_sim["exit_date"])
+                    if _bin_exit:
+                        _exit_v = _bin_exit["close"]
+                    else:
+                        _exit_v = binance_live_mark or _entry_perp
+                    _ret_lev = (_exit_v / _entry_perp - 1) * 100 * 20
+                    row = {
+                        "asset": asset, "signal_date": _du.isoformat(),
+                        "strategy": "FUTURES_LONG",
+                        "entry_etf": eO,  # 仅记录用
+                        "entry_perp": _entry_perp,  # Binance 真实价
+                        "binance_symbol": binance_sym,
+                        "source": f"{binance_sym} 多头 @ ${_entry_perp:.2f}",
+                        "entry_credit_or_premium": _entry_perp,
+                        "legs": [], "entry_leg_prices": [], "exit_legs": [],
+                        "is_closed": True,
+                        "exit_date": _spot_sim["exit_date"].isoformat(),
+                        "exit_value": _exit_v,
+                        "exit_reason": _spot_sim.get("exit_reason", ""),
+                        "current_value": _exit_v,
+                        "pnl_pct": _ret_lev,
+                        "hold_days": _spot_sim.get("hold_days", 0),
+                    }
+                else:
+                    # OPEN — current = Binance live mark
+                    _cur_v = binance_live_mark or _entry_perp
+                    _ret_lev = (_cur_v / _entry_perp - 1) * 100 * 20
+                    _hd = max(0, (today_dt - _du).days)
+                    row = {
+                        "asset": asset, "signal_date": _du.isoformat(),
+                        "strategy": "FUTURES_LONG",
+                        "entry_etf": eO,
+                        "entry_perp": _entry_perp,
+                        "binance_symbol": binance_sym,
+                        "source": f"{binance_sym} 多头 @ ${_entry_perp:.2f}",
+                        "entry_credit_or_premium": _entry_perp,
+                        "legs": [], "entry_leg_prices": [], "exit_legs": [],
+                        "is_closed": False,
+                        "exit_date": None, "exit_value": 0.0,
+                        "exit_reason": "",
+                        "current_value": _cur_v, "pnl_pct": _ret_lev,
+                        "hold_days": _hd,
+                    }
+                rows.append(row)
+                continue
+            # 期权模块 — 仅 ETF 价 + kline_db (跟期货模块完全独立)
             ent = price_strategy_at(asset, strat, _du,
                                        _du + pd.Timedelta(hours=9, minutes=30),
                                        eO, eO, eC, eH, eL,
                                        dte_target=(14 if strat == "STRADDLE" else 30))
             legs = ent.get("legs", [])
-            if not legs and strat != "FUTURES_LONG":
-                continue  # kline_db 没数据
+            if not legs:
+                continue
             sim = simulate_option_exit(ent, _du, strat, today_dt,
                                             live_spot=eC, live_high=eH, live_low=eL)
             is_closed = sim.get("is_closed", False)
             row = {
-                "asset": asset,
-                "signal_date": _du.isoformat(),
+                "asset": asset, "signal_date": _du.isoformat(),
                 "strategy": strat,
-                "entry_etf": eO,
-                "entry_open": eO,
-                "entry_close": eC,
+                "entry_etf": eO, "entry_open": eO, "entry_close": eC,
                 "source": ent.get("source", "—"),
                 "entry_credit_or_premium": float(ent.get("entry_price", 0) or 0),
                 "legs": [list(l) for l in legs],

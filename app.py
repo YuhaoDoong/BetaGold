@@ -3751,28 +3751,33 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             _ent_str = _fmt_legs_l(r["legs"], r["entry_leg_prices"])
             _credit = r["entry_credit_or_premium"]
             _is_futures = r["strategy"] == "FUTURES_LONG"
-            # v3.7.163: gc_gld_r 已 per-asset 调整 (line 1364-1368)
-            # GLD: gc_gld_r ≈ 10.97 (GC=F / GLD)
-            # SLV: gc_gld_r ≈ 1.18 (SI=F / SLV, 跟 Binance XAGUSDT/SLV 接近)
-            _asset_ratio = gc_gld_r
-            if r["strategy"] in ("SELL PUT", "SHORT_VOL"):
+            # v3.7.164: 期货跟期权完全独立 — 期货用 Binance 价 (ledger 已存),
+            # 期权用 ETF (合约/credit). 不再用 ratio 推算.
+            if _is_futures:
+                _entry_perp = r.get("entry_perp", 0)  # ledger v3.7.164 存 Binance 真实价
+                _liq = _entry_perp * 0.955  # 20× liq buffer
+                _ent_str = (f"{r.get('binance_symbol','PERP')}@${_entry_perp:.2f} "
+                             f"(20×, Liq ${_liq:.2f})")
+            elif r["strategy"] in ("SELL PUT", "SHORT_VOL"):
                 _ent_str += f" → 收${_credit:.2f}"
-            elif _is_futures:
-                _entry_perp = r["entry_etf"] * _asset_ratio
-                _liq = _entry_perp * 0.955  # 20× lev liq buffer
-                _ent_str = f"USDT@${_entry_perp:.2f} (20×, Liq ${_liq:.2f})"
             else:
                 _ent_str += f" → ${_credit:.2f}"
 
-            # v3.7.162: 期货 OPEN 用 Binance live mark 一致跨 row
+            # 期货 OPEN: Binance live mark 跨 row 一致
             if _is_futures and not r["is_closed"] and _binance_mark and _binance_mark > 0:
-                _entry_gc = r["entry_etf"] * _asset_ratio
-                _ret_spot = (_binance_mark / _entry_gc - 1) * 100
-                _ret_lev = _ret_spot * 20  # ROI on margin
+                _entry_perp = r.get("entry_perp", 0)
+                _ret_lev = (_binance_mark / _entry_perp - 1) * 100 * 20 if _entry_perp else 0
                 _exit_str = (f"Binance {_binance_symbol or 'PERP'} ${_binance_mark:.2f} "
                               f"(funding {_binance_funding*100:.4f}%/8h)")
                 _gain_str = f"{_ret_lev:+.1f}%"
                 _exit_label = f'OPEN ({r["hold_days"]}d, live)'
+            # 期货 CLOSED: 用 ledger 存的 Binance 出场价
+            elif _is_futures and r["is_closed"]:
+                _ex_d = pd.Timestamp(r["exit_date"]).strftime("%m-%d") if r["exit_date"] else "?"
+                _exit_v = r.get("exit_value", 0)
+                _exit_str = (f"{r.get('binance_symbol','PERP')} 平@${_exit_v:.2f}")
+                _gain_str = f"{r['pnl_pct']:+.1f}%"
+                _exit_label = f'{_ex_d} ({r["exit_reason"]})'
             elif r["is_closed"]:
                 _ex_d = pd.Timestamp(r["exit_date"]).strftime("%m-%d") if r["exit_date"] else "?"
                 _exit_str = _fmt_legs_l(r["legs"], r["exit_legs"])
@@ -3785,17 +3790,29 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                 _gain_str = f"{r['pnl_pct']:+.1f}%"
                 _exit_label = f'OPEN ({r["hold_days"]}d)'
 
-            _rec = {
-                "信号日": _du.strftime("%m-%d"),
-                "策略": r["strategy"],
-                "合约": r["source"],
-                "入场ETF": f"${r['entry_etf']:.2f}",
-                "入场GC=F": f"${r['entry_etf']*gc_gld_r:.0f}",
-                "入场详情": _ent_str,            # v3.7.162: 改名 (期权+期货)
-                "现/平价": _exit_str,             # v3.7.162: 改名 (期权 leg / 期货 mark)
-                "P&L%": _gain_str,
-                "状态": _exit_label,
-            }
+            # v3.7.164: 期货行不显示"入场ETF/GC=F" (跟 ETF 解耦)
+            if _is_futures:
+                _rec = {
+                    "信号日": _du.strftime("%m-%d"),
+                    "策略": r["strategy"],
+                    "合约": r["source"],
+                    "Binance 入场": f"${r.get('entry_perp', 0):.2f}",
+                    "入场详情": _ent_str,
+                    "现/平价": _exit_str,
+                    "P&L%": _gain_str,
+                    "状态": _exit_label,
+                }
+            else:
+                _rec = {
+                    "信号日": _du.strftime("%m-%d"),
+                    "策略": r["strategy"],
+                    "合约": r["source"],
+                    "入场ETF": f"${r['entry_etf']:.2f}",
+                    "入场详情": _ent_str,
+                    "现/平价": _exit_str,
+                    "P&L%": _gain_str,
+                    "状态": _exit_label,
+                }
             if r["is_closed"]:
                 _ledger_closed.append(_rec)
             else:
