@@ -96,10 +96,10 @@ def build_for_asset(asset: str, days_back: int, today_dt: pd.Timestamp,
         if _ru.get("buy_signal", False):
             bt = _ru.get("buy_type") or ""
             if bt: strats.append(bt)
-            # v3.7.175: 期货只在 buy_type=BC (sp_score 判定上涨期) 时开
-            # 避免 SP-flagged 信号 (下跌/震荡期) 强制做多导致 wick 爆仓
-            if bt == "BUY CALL":
-                strats.append("FUTURES_LONG")
+            # v3.7.176: 期货所有 buy 信号都打, 靠 lev=5×/3× wick-safe 保护
+            # 5y grid 实测: lev=5× 无 filter wr=86% n=151, 优于 BC-filter wr=89% n=133
+            # 频次 +14% 远抵 WR -2.6pp, 用户原则: 胜率 + 频次都重要
+            strats.append("FUTURES_LONG")
         if not strats: continue
 
         if _du not in ohlc.index: continue

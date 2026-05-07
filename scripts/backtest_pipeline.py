@@ -215,10 +215,8 @@ def stage2_simulate_real(asset: str):
         "Low": float(k[3]), "Close": float(k[4])} for k in klines]
         ).set_index("Date").sort_index()
     rows_fut = []
-    # v3.7.175: 期货只在 buy_type=BC (sp_score 上涨期) 时打
-    fut_mask = (sigs_df.get("buy_signal", False) == True) & \
-                (sigs_df.get("buy_type", "") == "BUY CALL")
-    for d in sigs_df.index[fut_mask]:
+    # v3.7.176: 撤销 BC filter, 所有 buy 信号都打期货 (lev wick-safe 保护)
+    for d in sigs_df.index[sigs_df.get("buy_signal", False) == True]:
         if d not in df_perp.index: continue
         entry = float(df_perp.loc[d, "Open"])
         res = simulate_long_position(d, entry, df_perp, today, fut_cfg)
@@ -314,10 +312,8 @@ def stage2_simulate_sim(asset: str):
     df_perp = df_perp[["Open", "High", "Low", "Close"]].dropna()
     fut_cfg = get_futures_config(asset)
     rows_fut = []
-    # v3.7.175: 期货只在 buy_type=BC (sp_score 上涨期) 时打
-    fut_mask = (sigs_df.get("buy_signal", False) == True) & \
-                (sigs_df.get("buy_type", "") == "BUY CALL")
-    for d in sigs_df.index[fut_mask]:
+    # v3.7.176: 撤销 BC filter, 所有 buy 信号都打期货 (lev wick-safe 保护)
+    for d in sigs_df.index[sigs_df.get("buy_signal", False) == True]:
         if d not in df_perp.index: continue
         entry = float(df_perp.loc[d, "Open"])
         res = simulate_long_position(d, entry, df_perp, today, fut_cfg)
