@@ -72,12 +72,15 @@ FUTURES_SLV = FuturesConfig(
 )
 
 # ── SHORT_VOL Iron Condor ──
+# v3.7.177: 当前实战 WR=6% (n=16), 大波动期失效. 建议停用直到 GVZ < 22 重启.
+# 入场逻辑应加: GVZ 低 + RV 低 + 无重大事件日 三条件.
 SHORT_VOL_DEFAULT = ShortVolConfig(
     profit_target_credit_pct=50.0,
     stop_loss_pct=50.0,
     hold_max_days=30,
     base_dte=30,
 )
+SHORT_VOL_DISABLED = True  # ★ v3.7.177: 当前默认停用
 
 # ── SELL_PUT credit spread ──
 SELL_PUT_DEFAULT = SPConfig()

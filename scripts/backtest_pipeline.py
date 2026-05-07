@@ -51,7 +51,8 @@ STAGES = {
     "stage2": PIPE / "stage2_simulated",
     "stage3": PIPE / "stage3_summary",
 }
-for p in STAGES.values():
+VERSIONS = PIPE / "versions"  # v3.7.177: 版本归档 (per git commit)
+for p in list(STAGES.values()) + [VERSIONS]:
     p.mkdir(parents=True, exist_ok=True)
 
 WEIGHT_REAL = 0.7
@@ -424,6 +425,37 @@ def main():
             stage2_simulate_sim(asset)
     if args.which in ("stage3", "all"):
         stage3_summary()
+    if args.which == "all":
+        archive_version()
+
+
+def archive_version():
+    """v3.7.177: 归档当前 stage0-3 输出到 versions/<git_commit>_<date>/."""
+    import subprocess, shutil
+    try:
+        commit = subprocess.check_output(
+            ["git", "-C", str(Path(__file__).parent.parent), "rev-parse", "--short", "HEAD"],
+            text=True).strip()
+    except Exception:
+        commit = "unknown"
+    today_str = pd.Timestamp.now().strftime('%Y%m%d')
+    archive_dir = VERSIONS / f"{commit}_{today_str}"
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    for stage_name, src in STAGES.items():
+        dst = archive_dir / stage_name
+        if dst.exists(): shutil.rmtree(dst)
+        shutil.copytree(src, dst)
+    # cfg snapshot
+    try:
+        from core.strategy_configs import summary as cfg_summary
+        with open(archive_dir / "cfg_snapshot.txt", "w") as f:
+            f.write(f"# git commit: {commit}\n")
+            f.write(f"# date: {pd.Timestamp.now().isoformat()}\n")
+            f.write(f"# real window: {REAL_WINDOW_DAYS}d, sim window: {SIM_WINDOW_DAYS}d\n\n")
+            f.write(cfg_summary())
+    except Exception as e:
+        pass
+    print(f"\n[ARCHIVE] {archive_dir}")
 
 
 if __name__ == "__main__":

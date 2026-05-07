@@ -1,134 +1,174 @@
-# 系统架构
+# GoldDash 系统模块架构 (v3.7.177)
 
-## 三层模型
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│ 日线层 (今日预测)                                                │
-│   LSTM+Transformer Ensemble → 5 日 High/Low % 预测              │
-│   Conformal 校准 → 80% 覆盖区间                                  │
-│   Hybrid Band: upper(lag1) + lower(lag1,2,3 平均)                │
-│   bp030 / bp090 = 阈值价位 (开窗信号, 不是入场价)                │
-└─────────────────────────────────────────────────────────────────┘
-                            ↓
-┌─────────────────────────────────────────────────────────────────┐
-│ 盘中层 (盘中信号)                                                │
-│   实时盘中价格 + Stoch RSI(14,14,3,3) / MACD(12,26,9) / KDJ(9,3,3) │
-│   触发条件: 价格在阈值外侧 AND 至少 N 个规则确认                 │
-│   时段过滤: US 期权时段 / 24h 期货 / 自定义                      │
-│   写入 data/intraday_signal_log.parquet (持久化)                 │
-└─────────────────────────────────────────────────────────────────┘
-                            ↓
-┌─────────────────────────────────────────────────────────────────┐
-│ 固化层 (历史代表价)                                              │
-│   每日所有触发取 worst-of-day:                                   │
-│     BUY:  max(price) — 当日最坏可能买入价                        │
-│     EXIT: min(price) — 当日最坏可能卖出价                        │
-│   持仓管理 / 近期信号 / 回测交易记录全部读这里                   │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-阈值线 (bp030 蓝 / bp090 红) **只是信号开关，从不作为入场价**。所有历史 marker、入场价、回测记录都来自 log 中的真实盘中触发价；没记录的日子退到收盘 (close) 兜底，并标 `收盘` 让用户看清来源。
-
-## 数据流
-
-```
-yfinance / FRED / CBOE
-    ↓
-config.yaml 启动检测
-    ↓ (缺天 → 增量下载)
-原始数据 → 全量特征重建 (64 列 GLD / 53 列 SLV)
-    ↓
-模型在线推理 (加载权重 + 新日期预测 + 追加 OOS)
-    ↓
-Hybrid Band → Daily 信号 (build_unified_signals)
-    ↓
-盘中层 (1h K 线 + Stoch RSI/MACD/KDJ 触发)
-    ↓
-持久 log → Dashboard 渲染
-```
-
-### 数据源 (24+ 个因子)
-- **yfinance**: GLD / SLV / GC=F / SI=F / DXY / VIX / 原油 / 铜 / 美债 / CNY
-- **FRED**: 实际利率 (5y/10y) / 联邦基金利率 / CPI / M2 / 联邦债务 / 贸易加权美元
-- **CBOE**: GVZ (黄金 VIX)
-
-启动时自动检测 → 缺天即增量更新 → 全量重建特征 → 在线推理。
-
-## Dashboard 4 种模式
-
-### 1. 盘中信号 (主操作模式)
-- **状态栏 5 列**: 今日窗口 / 盘中实时 / 波动率信号 / Regime / RV %tile
-- **顶部交易价位** (蓝色框) + **实时价格** (紫色框): 1/3/5/10 分钟自动刷新
-- **市场分析**: 事件倒计时 (FOMC/OPEX/NFP/期货交割) + 宏观指标 + Straddle/Short_Vol 预警
-- **主图**: Band + 信号 marker (落在 log 真实触发价) + 止盈 marker + 事件竖线 + 5 日预测区间
-- **日线 Stoch RSI** (主图正下方, 与主图同 x 轴)
-- **盘中 K 线 + 多周期 Stoch RSI** (1h/15m + Squeeze Momentum)
-- **今日盘中触发表** (临时, 第二天清零, worst 沉淀到持仓管理)
-- **持仓管理**: 方向性 + STRADDLE + SHORT_VOL Iron Condor (含状态/盈亏/早平/止损建议)
-- **近期信号** + **统一策略回测** + **波动率交易历史**
-- **回测交易记录** (双视图 ETF + 期货价位)
-
-### 2. 今日预测 (分析)
-- 顶部 metrics: 伦敦金/银实时价 + ETF 价 (delta)
-- 主图: 伦敦金/银 + Band + 5 日预测 + 阈线 + Straddle ★
-- 日线 Stoch RSI
-- 5 日区间预测表 (双列: ETF $ + 伦敦金/银 $/oz)
-- 跨市场价位换算 (ETF + 伦敦现货 + COMEX 期货 + 沪金/沪银)
-- OI 微观结构 (Max Pain / Call Wall / Put Wall / PCR / Net GEX)
-- **波动率走势图 (近 6 个月)**: RV + 阈值线 + 信号窗口着色
-- 前瞻分析: 未来 10 天事件 + Straddle/Short_Vol 信号
-- **交易工具推荐**: 按信号类型给出首选 + 备选 + 禁用项
-- 期权策略详情
-
-### 3. 历史回看
-v1.0 vs v2.2 净值并排 + 近 6 月 / 1 年 / 2 年
-
-### 4. 回测分析
-ETF + 期货 双视图 + 4 种入场价模式 + 退出分布
-
-## 项目结构
+## 顶层结构
 
 ```
 GoldDash/
-├── app.py                              # Streamlit Dashboard
-├── core/
-│   ├── data.py                         # 数据加载 + 全量刷新 + 在线推理
-│   ├── training_status.py              # 模型训练状态 + 后台启动
-│   ├── dl_range.py                     # LSTM+Transformer Ensemble
-│   ├── regime.py                       # Regime 7 因子分类器
-│   ├── signals.py                      # v1.0 收盘信号 + Hybrid Band
-│   ├── signals_v2.py                   # 方向性 + RV 极值过滤
-│   ├── intraday_triggers.py            # 盘中触发模块 (规则可配置)
-│   ├── events.py                       # 事件日历 + STRADDLE + SHORT_VOL Iron Condor
-│   ├── strategy_selector.py            # 三方竞争统一策略 (vega 兼容矩阵)
-│   ├── strategies/                     # 策略子模块 (v3.7 模块化)
-│   │   ├── __init__.py
-│   │   ├── win_metrics.py              # 各策略胜率定义 (vega/delta-aware)
-│   │   └── futures_pnl.py              # 期货 P&L (与期权对比)
-│   ├── options.py                      # 期权策略推荐 (Moomoo live + EOD)
-│   ├── options_pnl.py                  # 双套盈亏 (金价 + 期权)
-│   └── oi_factors.py                   # OI 微观结构修正
-├── scripts/
-│   ├── setup_data.py                   # 数据下载 + 特征构建 + 训练
-│   └── backfill_intraday_signals.py    # 盘中触发回填
-├── data/
-│   └── intraday_signal_log.parquet     # 盘中触发持久 log
-├── docs/
-│   ├── ARCHITECTURE.md                 # 本文件
-│   ├── MODELS.md                       # 模型架构
-│   ├── STRATEGIES.md                   # 策略详解
-│   └── EXPERIMENTS.md                  # 实验记录
-├── config.yaml
-├── requirements.txt
-└── README.md                           # 顶层 summary + 链接
+├── app.py                      # Streamlit dashboard 入口
+├── core/                       # 核心业务模块
+├── scripts/                    # CLI 工具 (回测/grid/数据/部署)
+├── docs/                       # 文档 (ARCHITECTURE / STRATEGIES / MODELS / EXPERIMENTS)
+└── /Users/yhdong/Gold/data/    # 数据 (跨项目共享, Gold/GoldDash 同时读)
+    ├── raw/market/             ETF + 期货 daily OHLC (gld.csv, slv.csv)
+    ├── processed/              模型 features / labels parquet
+    ├── kline_db/               EOD 期权 OHLC (Moomoo daily)
+    ├── backtest_pipeline/      回测多级输出 + 版本归档
+    │   ├── stage0_raw_signals/  无过滤 detect 输出
+    │   ├── stage1_filtered/     IV/regime/sp_score 过滤后
+    │   ├── stage2_simulated/    分源 PnL parquet (real_klinedb / sim_comex)
+    │   ├── stage3_summary/      加权 scoreB 汇总
+    │   └── versions/            按 git commit 归档 (v3.7.177+)
+    ├── intraday_signal_log.parquet
+    └── positions_ledger.json   单一持仓真理 (dashboard 读)
 ```
 
-## 核心设计原则
+## core/ 模块映射
 
-1. **Regime-aware**: 不同宏观区间用不同工具 (Bull→做多 / Mixed→IC / Bear→空仓)
-2. **Vega/delta-aware**: 胜率定义按各策略真实 P&L 模型, 不用一刀切阈值
-3. **数据透明**: 所有历史价格 / 信号 marker / 回测记录都标明来源 (盘中×N / 收盘)
-4. **参数化**: 触发规则、时段、阈值全部可配置, 不硬编码
-5. **持久化优先**: 盘中触发写 parquet log, 历史可回填 + 跨重启恢复
-6. **质量 > 数量**: 严格过滤 (RV 极值 / 事件缓冲 / regime) 减少交易频率换更高胜率
+### 信号层 (signals)
+| 文件 | 职责 |
+|---|---|
+| `signals_v2.py` | 日级 directional (BC/SP) 信号 + sp_score 智能选 |
+| `signals.py` | Band 计算 + RV pctile (旧版底层) |
+| `events.py` | STRADDLE / SHORT_VOL / 事件日历 detect |
+| `regime.py` | 市场状态 (Bull/Bear/Neutral) 分类 |
+| `intraday_triggers.py` | 实时盘中信号 log + dedupe |
+
+### 数据接入层 (data)
+| 文件 | 职责 |
+|---|---|
+| `binance_futures.py` | Binance USDT-M perp API (XAUUSDT/XAGUSDT) |
+| `data.py` | features/labels parquet 加载 |
+| `paper_positions.py` | kline_db loader + price_strategy_at + simulate dispatcher |
+
+### 策略层 (strategies/)
+| 文件 | 职责 |
+|---|---|
+| `futures_long.py` | 期货多头 sim (lev/TP/SL/早平/爆仓) |
+| `buy_call.py` | BC long call 模拟 (BCConfig) |
+| `sell_put.py` | SP credit spread 模拟 (SPConfig) |
+| `short_vol.py` | Iron Condor 模拟 (4-leg max_risk) |
+| `straddle.py` | Long ATM call+put 模拟 |
+| `options_exit.py` | 现代化 exit (DTE-cliff + signal-reversal) |
+| `win_metrics.py` | 各策略胜率 (vega/delta) 定义 |
+| `futures_pnl.py` | 期货 P&L 计算工具 |
+
+### 配置中心 ★
+| 文件 | 职责 |
+|---|---|
+| **`strategy_configs.py`** | **所有 TP/SL/lev/DTE 集中管理** (单点改) |
+
+### 部署 / 守护
+| 文件 | 职责 |
+|---|---|
+| `ledger_daemon.py` | 后台守护进程 (5min 重建 ledger.json) |
+
+## scripts/ 关键工具
+
+| 脚本 | 用途 |
+|---|---|
+| `build_positions_ledger.py` | 一键生成 `positions_ledger.json` (Dashboard 单一数据源) |
+| **`backtest_pipeline.py`** ★ | **多级回测主流程** (stage0-3 + 版本归档) |
+| `exit_grid_v2.py` | TP/SL/lev/DTE 4D grid search (scoreB 评分) |
+| `full_history_backtest.py` | 5y/10y 全历史回测 (LEAPS BS proxy) |
+| `daily_eod_options.py` | Moomoo 期权 OHLC daily download → kline_db |
+| `monthly_retune.py` | 月度模型重训 (LSTM + Transformer) |
+| `paired_grid_multi.py` | BC vs SP 配对 grid search |
+
+## 评分指标 (v3.7.170)
+
+```python
+scoreA = WR × n × avg                      # 直观线性
+scoreB = WR² × log(1+n) × avg              # ★ 高杠杆首要 (WR 平方放大)
+scoreC = Kelly_f × √n × avg                # 含 win/loss 比, 数学最优
+profit_factor = sum_wins / |sum_losses|    # 纯金额比
+```
+
+**决策规则**: WR ≥ 75% 内挑 max scoreB.
+
+## 数据流 (信号 → 持仓 → Dashboard)
+
+```
+features.parquet (Gold/data/processed)
+         ↓
+signals_v2.generate_daily_signals  → BC/SP/sp_score
+events.detect_*                    → STRADDLE/SHORT_VOL/事件日
+         ↓                                          ↓
+         └────── stage0 raw_signals ───────────────┘
+                          ↓
+                  IV/regime 过滤
+                          ↓
+                stage1 filtered_signals
+                          ↓
+              ┌───────────────────────┐
+              ↓                       ↓
+     strategies/* simulate_*    Binance/COMEX kline
+              └───── stage2 ──────────┘
+                   pnl parquet
+                          ↓
+              scoreB 加权 (real 0.7 + sim 0.3)
+                          ↓
+                stage3 summary parquet
+                          ↓
+       ⇒ versions/<git_commit>_<date>/  归档
+
+build_positions_ledger.py (5min daemon, 实时)
+         ↓
+positions_ledger.json (单一真理)
+         ↓
+app.py (Dashboard 读 JSON 渲染)
+```
+
+## 当前推荐配置 (v3.7.177)
+
+基于 5y COMEX grid + 1y kline_db + Binance 实测:
+
+| 策略 | Asset | cfg | 5y WR | 备注 |
+|---|---|---|---|---|
+| FUTURES_LONG | GLD | lev=5× TP200/SL100/h20 | 86% | sharpe=0.56, 1.3% 爆仓 |
+| FUTURES_LONG | SLV | lev=3× TP200/SL100/h20 | 77% | sharpe=0.28, 1% 爆仓 |
+| BUY CALL | both | pt=1.5x sl=0.5x DTE=30 | 100%* | *上涨期触发 (sp_score 智能筛) |
+| SELL PUT | both | pt=50% sl=100% DTE=30 | 75-80% | 跨期最稳 ★ |
+| STRADDLE | both | pt=2x hold=21d DTE=30 | 68% | 月度 expiry |
+| SHORT_VOL | both | pt=50% sl=50% hold=30d | **6%** ⚠ | 当前波动期失效, 建议停用 |
+
+## 信号频率 (1y / 5y)
+
+| Asset | 策略 | 1y | 5y/yr 平均 |
+|---|---|---|---|
+| GLD | BC | 29 | 26 |
+| GLD | SP | 14 | 3 (5y 偏少) |
+| GLD | FUT | 15 (Binance 窗口内) | 30 (5y sim) |
+| SLV | BC | 27 | 24 |
+| SLV | SP | 46 | 22 |
+| SLV | FUT | 30 | 45 (5y sim) |
+
+## 期货杠杆 grid (5y, lev vs WR vs sB)
+
+GLD (n=151):
+- lev=2-3×: WR 86% sharpe 0.67 ★ 最优 risk-adjusted
+- **lev=5×** ✓ 当前: WR 86% sharpe 0.56 sB +35
+- lev=10×: WR 85% avg+18% sB +63 (5% 爆仓)
+- lev=20×: WR 82% avg+32% sB +107 (14% 爆仓 ⚠)
+
+SLV (n=234):
+- lev=2-3×: WR 77% sharpe 0.30 ★
+- **lev=3×** ✓ 当前: WR 77% sharpe 0.28 sB +18
+- lev=10×: WR 73% sB +36 (19% 爆仓 ⚠)
+- lev=20×: WR **54%** sB +17 (45% 爆仓 ⚠⚠)
+
+## 开发规范
+
+1. **修参数**: 只在 `core/strategy_configs.py` 改, 不动各策略 Config dataclass 默认
+2. **加策略**: 新建 `core/strategies/<name>.py` + Config dataclass + simulate function, strategy_configs 注册
+3. **改信号**: 改 `signals_v2.py` 或 `events.py`, 注意 stage0 输出列保持向后兼容
+4. **回测**: 跑 `scripts/backtest_pipeline.py all`, 自动归档版本可对比
+5. **commit**: 改 strategy 后跑 grid 验证 + 重建 ledger 再 commit
+
+## 关键版本演进
+
+- v3.7.166-167: 集中配置 + 模块化重构 (FuturesConfig 统一)
+- v3.7.168-170: WR-first scoreB 评分, lev=5×/3× wick-safe
+- v3.7.171: 多级 backtest_pipeline.py (stage0-3)
+- v3.7.172: STRADDLE detect 调用修 + dte 14→30
+- v3.7.174-176: lev/filter 平衡, 频次 + WR 双优
+- **v3.7.177**: ★ 版本归档 + 模块文档化
