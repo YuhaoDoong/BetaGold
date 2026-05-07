@@ -42,6 +42,10 @@ from core.training_status import (get_model_age_days, is_stale, is_training,
                                   start_training, stop_training,
                                   get_training_log, get_training_elapsed,
                                   DEFAULT_MAX_AGE_DAYS)
+try:
+    from core.strategy_configs import SHORT_VOL_DISABLED  # v3.7.182
+except ImportError:
+    SHORT_VOL_DISABLED = False
 
 # ── 中文字体 ──
 plt.rcParams["font.family"] = ["Arial Unicode MS", "PingFang HK",
@@ -692,7 +696,8 @@ def generate_chart(close, high, dates_all, upper_band, lower_band,
             # 也触发了 — 额外加 marker (e.g. 4-27 chosen=SELL PUT 但 STRADDLE 也 True)
             if row.get("straddle_signal", False) and "STRADDLE" not in parts:
                 parts.append("STRADDLE")
-            if row.get("short_vol_signal", False) and "SHORT_VOL" not in parts:
+            if (row.get("short_vol_signal", False) and "SHORT_VOL" not in parts
+                  and not SHORT_VOL_DISABLED):
                 parts.append("SHORT_VOL")
             for j, part in enumerate(parts):
                 color, marker = _SIG_PAL.get(part, ("gray", "o"))
@@ -1532,8 +1537,9 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                                          asset=asset_key)
         _vlong_sig = (_vol_long_today["straddle_signal"].iloc[0]
                       if len(_vol_long_today) > 0 else False)
-        _vshort_sig = (_vol_short_today["short_vol_signal"].iloc[0]
-                       if len(_vol_short_today) > 0 else False)
+        _vshort_sig = ((_vol_short_today["short_vol_signal"].iloc[0]
+                          if len(_vol_short_today) > 0 else False)
+                          and not SHORT_VOL_DISABLED)  # v3.7.182 disabled 时不触发
         _vlong_score = (_vol_long_today["straddle_score"].iloc[0]
                         if len(_vol_long_today) > 0 else 0)
         _vshort_score = (_vol_short_today["short_vol_score"].iloc[0]
@@ -2079,6 +2085,9 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                           close=close_d, high=high_d, low=low_d, asset=asset_key)
     _short_vol_viz = _dsv(rv_s, rv_pctile, viz_dates, regime=regime,
                             close=close_d, high=high_d, low=low_d, asset=asset_key)
+    if SHORT_VOL_DISABLED:  # v3.7.182: 主图不画 SHORT_VOL marker
+        _short_vol_viz = _short_vol_viz.copy()
+        _short_vol_viz["short_vol_signal"] = False
     _unified_viz_raw = _bus(sig_df, _straddle_viz, close_d, high_d, low_d,
                              short_vol_df=_short_vol_viz)
 
@@ -2279,7 +2288,9 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                 _strats_c = []
                 if len(_strad_ch) > 0 and _dc in _strad_ch.index and bool(_strad_ch.loc[_dc, "straddle_signal"]):
                     _strats_c.append("STRADDLE")
-                if len(_sv_ch) > 0 and _dc in _sv_ch.index and bool(_sv_ch.loc[_dc, "short_vol_signal"]):
+                if (len(_sv_ch) > 0 and _dc in _sv_ch.index
+                      and bool(_sv_ch.loc[_dc, "short_vol_signal"])
+                      and not SHORT_VOL_DISABLED):  # v3.7.182
                     _strats_c.append("SHORT_VOL")
                 _row_c = sig_df.loc[_dc] if _dc in sig_df.index else None
                 if _row_c is not None and _row_c.get("buy_signal", False):
@@ -3244,7 +3255,7 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             _sv_today_df = _det_sv_today(
                 _rv_today, rv_pctile, pd.DatetimeIndex([_today]), regime=regime,
                 close=close_d, high=high_d, low=low_d, asset=asset_key)
-            if len(_sv_today_df):
+            if len(_sv_today_df) and not SHORT_VOL_DISABLED:  # v3.7.182
                 _is_sv_today = bool(_sv_today_df["short_vol_signal"].iloc[0])
         except Exception:
             pass
@@ -4663,6 +4674,9 @@ def main():
                                             regime=regime,
                                             close=close, high=high, low=low,
                                             asset=asset_key)
+            if SHORT_VOL_DISABLED:  # v3.7.182: 今日预测主图同步屏蔽
+                _short_vol_chart = _short_vol_chart.copy()
+                _short_vol_chart["short_vol_signal"] = False
             _sig_chart = _gds_chart(close, high, low,
                                      upper_band, lower_band,
                                      regime, rv_pctile, asset=asset_key)
