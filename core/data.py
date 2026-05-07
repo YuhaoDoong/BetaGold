@@ -150,6 +150,8 @@ def auto_refresh_market_data(cfg: dict):
                     last_bday = ref
                 # v3.7.52: 防腐校验 — 末行 Close == 前一日 Close 且 Volume<10% 均量
                 # = yfinance 美股开盘时返回了不完整 bar, 需重拉
+                # v3.7.150: 加 Open 防腐校验 — last_open == prev_open
+                # = yfinance 增量返回错 Open, 需重拉今日
                 if last_date >= last_bday:
                     is_corrupt = False
                     try:
@@ -158,11 +160,18 @@ def auto_refresh_market_data(cfg: dict):
                             last_close_v = float(existing.iloc[-1]["Close"])
                             last_vol = float(existing.iloc[-1].get("Volume", 0))
                             avg_vol = existing.iloc[-30:]["Volume"].mean()
+                            prev_open = float(existing.iloc[-2].get("Open", 0))
+                            last_open = float(existing.iloc[-1].get("Open", 0))
                             if (last_close_v == prev_close
                                   and last_vol < avg_vol * 0.1):
                                 is_corrupt = True
                                 results.append((_label,
                                     f"末行损坏 (close 重复+量低), 强制重拉"))
+                            elif prev_open == last_open and prev_open > 0:
+                                # v3.7.150: Open 跟昨日 Open 完全相同 = 数据未更新
+                                is_corrupt = True
+                                results.append((_label,
+                                    f"末行 Open 重复昨日值 ({last_open:.2f}), 强制重拉"))
                     except Exception:
                         pass
                     if not is_corrupt:
