@@ -3349,7 +3349,8 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                                        ("SHORT_VOL", _is_sv_today)]:
             if _is_vol and not any(r["策略"] == _vol_strat for r in _rows1):
                 _t_vol = _today + pd.Timedelta(hours=9, minutes=30)
-                _ent_v = _price_strat(asset_key, _vol_strat, _today, _t_vol, _C_today,
+                # v3.7.149: spot_at_trigger 用 Open (09:30 RTH 开盘) — 跟历史 section 一致
+                _ent_v = _price_strat(asset_key, _vol_strat, _today, _t_vol, _O_today,
                                          _O_today, _C_today, _H_today, _L_today)
                 if _ent_v.get("legs"):
                     _ent_legs_v = _ent_v.get("leg_prices", [])
@@ -3367,8 +3368,8 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                         "信号": "BUY",
                         "策略": _vol_strat,
                         "合约": _ent_v["source"],
-                        "入场ETF": f"${_C_today:.2f}",
-                        "入场GC=F": f"${_C_today * gc_gld_r:.0f}",
+                        "入场ETF": f"${_O_today:.2f}",  # v3.7.149: Open (09:30 入场)
+                        "入场GC=F": f"${_O_today * gc_gld_r:.0f}",
                         "入场期权": _ent_str_v,
                         "现ETF": f"${float(locals().get('gld_est') or _C_today):.2f}",
                         "现期权/状态": "(RTH 后看)",
@@ -3404,15 +3405,22 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                 _sig_col = "straddle_signal" if _vs == "STRADDLE" else "short_vol_signal"
                 if not bool(_df_v[_sig_col].iloc[0]): continue
                 from core.paper_positions import price_strategy_at as _ps_v
+                # v3.7.149: 从 csv 读真 Open (不是用 close_d)
                 _C_t = float(close_d.iloc[-1])
                 _O_t = _C_t; _H_t = _C_t; _L_t = _C_t
-                if _today in close_d.index:
-                    _O_t = float(close_d.get(_today, _C_t))
-                    _C_t = float(close_d.get(_today, _C_t))
-                    _H_t = float(high_d.get(_today, _C_t))
-                    _L_t = float(low_d.get(_today, _C_t))
+                try:
+                    _csv_path = f"/Users/yhdong/Gold/data/raw/market/{asset_key.lower()}.csv"
+                    _csv_d = pd.read_csv(_csv_path, index_col=0, parse_dates=True)
+                    if _today in _csv_d.index:
+                        _O_t = float(_csv_d.loc[_today, "Open"])
+                        _C_t = float(_csv_d.loc[_today, "Close"])
+                        _H_t = float(_csv_d.loc[_today, "High"])
+                        _L_t = float(_csv_d.loc[_today, "Low"])
+                except Exception:
+                    pass
                 _t_v = _today + pd.Timedelta(hours=9, minutes=30)
-                _ent_v = _ps_v(asset_key, _vs, _today, _t_v, _C_t,
+                # spot_at_trigger = Open (09:30 RTH 入场, 跟历史 section 一致)
+                _ent_v = _ps_v(asset_key, _vs, _today, _t_v, _O_t,
                                 _O_t, _C_t, _H_t, _L_t)
                 if not _ent_v.get("legs"): continue
                 _credit_v = _ent_v["entry_price"]
@@ -3430,8 +3438,8 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                     "信号": "BUY",
                     "策略": _vs,
                     "合约": _ent_v["source"],
-                    "入场ETF": f"${_C_t:.2f}",
-                    "入场GC=F": f"${_C_t * gc_gld_r:.0f}",
+                    "入场ETF": f"${_O_t:.2f}",  # v3.7.149: Open
+                    "入场GC=F": f"${_O_t * gc_gld_r:.0f}",
                     "入场期权": _ent_str_v,
                     "现ETF": f"${float(locals().get('gld_est') or _C_t):.2f}",
                     "现期权/状态": "(RTH 后看)",
