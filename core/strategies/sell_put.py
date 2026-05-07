@@ -25,11 +25,12 @@ class SPConfig:
     SL 50%→100% margin: 不主动止损, 让 spread 走到 expiry (premium decay 帮我们).
     profit_target 30 vs 50: SLV 短取 30%, GLD 50% 留空间.
     """
-    profit_target_credit_pct: float = 50.0   # 保持 50% (GLD 优于 30%)
-    stop_loss_margin_pct: float = 100.0      # v3.7.169: 50→100% margin (= 不主动 SL)
-                                              # SP credit spread 最大风险 = max_risk,
-                                              # SL 50% 提前锁亏, expiry 反而能收 part credit
-    base_dte: int = 30                       # v3.7.169: 45→30 (近 DTE theta 优势)
+    # v3.7.170 WR-first: SLV grid wr=92% (n=24, 30/100/30d) — 极优.
+    # GLD: 50/100/30d wr=78% sum=+70% — 选 50 让 GLD 留更多收益.
+    # 折中 pt=50 (两 asset 兼容), SL=100 (= 不主动止损, expiry 收 partial credit)
+    profit_target_credit_pct: float = 50.0   # +50% credit 早平 (GLD 优于 30)
+    stop_loss_margin_pct: float = 100.0      # = 等价无主动 SL, 让 spread 走完
+    base_dte: int = 30
 
 
 def simulate_sp_position(entry_pricing: dict,

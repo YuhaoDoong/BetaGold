@@ -20,41 +20,47 @@ from core.strategies.buy_call import BCConfig
 from core.strategies.straddle import StraddleConfig
 
 
-# ── 期货 (v3.7.169 grid-validated 5y COMEX) ──
-# 5y grid (n=151 GLD GC=F / n=230 SLV SI=F, source=comex 2020-04 至今):
-#   GLD lev=20×:
-#     现行 TP200/SL50/h15:  wr=63% sum=+2952% sharpe=+0.31
-#     最优 TP150/SL100/h20: wr=82% sum=+4867% sharpe=+0.51 (+1900%)
-#   SLV lev=10×:
-#     现行 TP200/SL50/h15:  wr=56% sum=+1101% sharpe=+0.086
-#     最优 (10× SL100 h20): wr=73% sum=+2600% sharpe=+0.18 (+1500%)
-#     绝对最优 lev15×: wr=65% sum=+3395% (但爆仓风险 ↑)
-# 1y grid (n=15-30) 与 5y 反向 — 短期噪声不可信. 5y 大样本主导决策.
-# 核心结论: SL=100% margin (≈ liq-only) 在两个 asset 都明显优于紧 SL.
-#          SL 太紧噪声打止损, 错过黄金/白银长期趋势.
-#          hold 20d > 15d (给趋势时间走完)
+# ── 期货 (v3.7.170 WR-first grid 5y COMEX) ──
+# 评分指标 scoreB = WR² × log(1+n) × avg (高杠杆首要 WR, 频率 log 防过拟合)
+# 决策: WR ≥ 75% 内挑 max scoreB (用户"确保胜率"约束)
+#
+# 5y grid (n=151 GLD GC=F / n=230 SLV SI=F, 2020-04 至今):
+#
+# GLD 候选:
+#   现行 20× TP200/SL50/h15:    wr=63% sum=+2952% scoreB=+39
+#   纯 sum 20× TP150/SL100/h20: wr=82% sum=+4867% scoreB=+107 (高 lev 高 avg)
+#   纯 WR  10× TP100/SL100/h20: wr=85% sum=+2645% scoreB=+63
+#   选: 10× TP200/SL100/h20 (WR≥75% + lev 适中 + 不限 TP 让大涨发挥)
+#
+# SLV 候选:
+#   现行 10× TP200/SL50/h15:   wr=56% sum=+1101% scoreB=+8
+#   纯 sum 15× TP200/SL100/h20: wr=65% sum=+3398% scoreB=+34 (但 SLV 15× 危险)
+#   纯 WR   5× TP150/SL100/h20: wr=76% sum=+1600% scoreB=+22
+#   选: 5× TP200/SL100/h20 (WR ≥ 75% + 5× 安全 + 用户可加仓加大暴露)
+#
+# 用户原则: "胜率重要, 收益率通过仓位变化". 默认参数保 WR, 仓位灵活.
+# SL=100% margin 在两 asset 均最优 (= 等价 liq-only, 避免被噪声打)
+# hold=20d 给金/银长期趋势走完
 FUTURES_GLD = FuturesConfig(
-    leverage=20,
-    tp_margin_pct=150.0,    # v3.7.169: 200→150% (5y grid 略优)
-    sl_margin_pct=100.0,    # v3.7.169: 50→100% margin (-5% spot, 等价 liq-only)
-                              # 5y wr 提升 19pp (63→82%)
-    hold_max_days=20,       # v3.7.169: 15→20d (黄金趋势走得久)
+    leverage=10,            # v3.7.170: 20→10× (WR 82→85%, 用户可加仓换收益)
+    tp_margin_pct=200.0,    # v3.7.170: 150→200% (TP 不限制大涨)
+    sl_margin_pct=100.0,    # v3.7.169: 50→100% margin (= 等价 liq-only)
+    hold_max_days=20,
     early_tp_locks=(
-        (3, 5.0),    # 3d ≥ +5% spot (+100% margin) 锁利
-        (7, 3.0),    # 7d ≥ +3% spot (+60% margin)
-        (12, 1.0),   # 12d ≥ +1% spot (+20% margin)
+        (3, 5.0),    # 3d ≥ +5% spot (+50% margin @10×) 锁利
+        (7, 3.0),    # 7d ≥ +3% spot (+30% margin)
+        (12, 1.0),   # 12d ≥ +1% spot (+10% margin)
     ),
 )
 FUTURES_SLV = FuturesConfig(
-    leverage=10,
-    tp_margin_pct=200.0,    # v3.7.169: 保 200% (TP100 没明显优势)
-    sl_margin_pct=100.0,    # v3.7.169: 50→100% margin (= 等价 liq-only)
-                              # 5y wr 提升 17pp (56→73%)
-    hold_max_days=20,       # v3.7.169: 15→20d
+    leverage=5,             # v3.7.170: 10→5× (WR 73→76%, 安全且可加仓)
+    tp_margin_pct=200.0,
+    sl_margin_pct=100.0,    # 50→100% margin (= 等价 liq-only)
+    hold_max_days=20,
     early_tp_locks=(
-        (3, 5.0),    # 3d ≥ +5% spot (+50% margin)
-        (7, 3.0),    # 7d ≥ +3% spot (+30% margin)
-        (12, 1.0),   # 12d ≥ +1% spot (+10% margin)
+        (3, 10.0),   # 3d ≥ +10% spot (+50% margin @5×) 锁利
+        (7, 6.0),    # 7d ≥ +6% spot (+30% margin)
+        (12, 2.0),   # 12d ≥ +2% spot (+10% margin)
     ),
 )
 

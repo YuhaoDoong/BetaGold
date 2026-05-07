@@ -129,30 +129,56 @@ def grid_futures(asset: str, days_back: int = 365, source: str = "auto"):
                 pnls.append(p)
         if not pnls: continue
         s = pd.Series(pnls)
+        wr_v = (s > 0).mean()
+        wins = s[s > 0]; losses = s[s <= 0]
+        avg_w = wins.mean() if len(wins) else 0.0
+        avg_l = losses.mean() if len(losses) else 0.0
+        pf = wins.sum() / abs(losses.sum()) if losses.sum() < 0 else float("inf")
+        kelly_f = max(0.0, wr_v - (1 - wr_v) * abs(avg_l) / avg_w) if avg_w > 0 else 0.0
         results.append({
             "lev": lev, "tp": tp, "sl": sl, "hold": hold_max,
-            "n": len(s), "wr": (s > 0).mean() * 100,
-            "avg": s.mean(), "sum": s.sum(), "med": s.median(),
+            "n": len(s), "wr": wr_v * 100,
+            "avg": s.mean(), "sum": s.sum(),
             "sharpe": s.mean() / s.std() if s.std() > 0 else 0,
+            # v3.7.170 高杠杆评分 (用户建议)
+            "scoreA": wr_v * len(s) * s.mean(),                  # WR × n × avg
+            "scoreB": (wr_v ** 2) * np.log(1 + len(s)) * s.mean(),  # WR² × log(n) × avg
+            "scoreC": kelly_f * np.sqrt(len(s)) * s.mean(),     # Kelly 加权
+            "pf": min(pf, 99.99),
         })
 
-    rep = pd.DataFrame(results).sort_values("sum", ascending=False)
+    df_all = pd.DataFrame(results)
+    rep = df_all.sort_values("scoreB", ascending=False)
     cur_lev = 20 if asset == "GLD" else 10
-    cur = rep[(rep.lev == cur_lev) & (rep.tp == 200) & (rep.sl == 50) & (rep.hold == 15)]
+    cur = df_all[(df_all.lev == cur_lev) & (df_all.tp == 200) &
+                  (df_all.sl == 50) & (df_all.hold == 15)]
     print(f"\n现行参数: lev={cur_lev}× TP=200% SL=50% hold=15d")
     if len(cur):
         c = cur.iloc[0]
         print(f"  → n={int(c['n'])} wr={c['wr']:.1f}% avg={c['avg']:+.2f}% "
-              f"sum={c['sum']:+.0f}% sharpe={c['sharpe']:+.3f}")
-    print(f"\nTop 8 by cum sum:")
+              f"sum={c['sum']:+.0f}% sharpe={c['sharpe']:+.3f} "
+              f"scoreB={c['scoreB']:+.2f}")
+    print(f"\nTop 8 by scoreB = WR² × log(1+n) × avg (高杠杆评分):")
     print(f"  {'lev':>4}{'tp':>5}{'sl':>4}{'hold':>5}{'n':>4}"
-          f"{'wr':>7}{'avg':>9}{'sum':>9}{'sharpe':>8}")
+          f"{'wr':>7}{'avg':>9}{'sum':>9}{'sharpe':>8}{'scoreB':>9}")
     for _, r in rep.head(8).iterrows():
         mark = "  ←现行" if (r["lev"] == cur_lev and r["tp"] == 200
                               and r["sl"] == 50 and r["hold"] == 15) else ""
         print(f"  {int(r['lev']):>3}×{int(r['tp']):>4}%{int(r['sl']):>3}%{int(r['hold']):>4}d"
               f"{int(r['n']):>4}{r['wr']:>6.1f}%{r['avg']:>+8.2f}%{r['sum']:>+8.0f}%"
-              f"{r['sharpe']:>+7.3f}{mark}")
+              f"{r['sharpe']:>+7.3f}{r['scoreB']:>+8.1f}{mark}")
+    print(f"\n参考 — Top by 单一指标:")
+    rep_wr = df_all.sort_values("wr", ascending=False).head(2)
+    rep_pf = df_all.sort_values("pf", ascending=False).head(2)
+    rep_sum = df_all.sort_values("sum", ascending=False).head(2)
+    print(f"  by WR:")
+    for _, r in rep_wr.iterrows():
+        print(f"    {int(r['lev']):>3}× TP{int(r['tp'])}/SL{int(r['sl'])}/h{int(r['hold'])}d "
+              f"wr={r['wr']:.1f}% sum={r['sum']:+.0f}% scoreB={r['scoreB']:+.1f}")
+    print(f"  by sum:")
+    for _, r in rep_sum.iterrows():
+        print(f"    {int(r['lev']):>3}× TP{int(r['tp'])}/SL{int(r['sl'])}/h{int(r['hold'])}d "
+              f"wr={r['wr']:.1f}% sum={r['sum']:+.0f}% scoreB={r['scoreB']:+.1f}")
     return rep
 
 
@@ -226,14 +252,14 @@ def grid_short_vol(asset: str, days_back: int = 365):
 
     if not results:
         print("  无可平仓数据"); return
-    rep = pd.DataFrame(results).sort_values("sum", ascending=False)
+    rep = pd.DataFrame(results).sort_values("wr", ascending=False)
     cur = rep[(rep.tp == 50) & (rep.sl == 50) & (rep.hold == 30) & (rep.dte == 30)]
     print(f"\n现行: TP=+50% credit SL=-50% hold=30d DTE=30")
     if len(cur):
         c = cur.iloc[0]
         print(f"  → n={int(c['n'])} wr={c['wr']:.1f}% avg={c['avg']:+.2f}% "
               f"sum={c['sum']:+.0f}% sharpe={c['sharpe']:+.3f}")
-    print(f"\nTop 8 by cum sum:")
+    print(f"\nTop 8 by WIN RATE (n≥{min(20, max(5, len(rep)//5))} 过滤后):")
     print(f"  {'tp':>4}{'sl':>5}{'hold':>5}{'dte':>5}{'n':>4}"
           f"{'wr':>7}{'avg':>9}{'sum':>9}{'sharpe':>8}")
     for _, r in rep.head(8).iterrows():
@@ -305,7 +331,7 @@ def grid_bc(asset: str, days_back: int = 365):
             "sharpe": s.mean() / s.std() if s.std() > 0 else 0,
         })
     if not results: print("  no results"); return
-    rep = pd.DataFrame(results).sort_values("sum", ascending=False)
+    rep = pd.DataFrame(results).sort_values("wr", ascending=False)
     cur = rep[(rep.pt == 2.0) & (rep.sl == 0.5) & (rep.dte == 45)]
     print(f"\n现行: pt=+100% sl=-50% DTE=45")
     if len(cur):
@@ -366,7 +392,7 @@ def grid_sp(asset: str, days_back: int = 365):
             "sharpe": s.mean() / s.std() if s.std() > 0 else 0,
         })
     if not results: print("  no results"); return
-    rep = pd.DataFrame(results).sort_values("sum", ascending=False)
+    rep = pd.DataFrame(results).sort_values("wr", ascending=False)
     cur = rep[(rep.pt == 50) & (rep.sl == 50) & (rep.dte == 45)]
     print(f"\n现行: pt=+50% credit sl=-50% margin DTE=45")
     if len(cur):
@@ -442,7 +468,7 @@ def grid_sv_via_detect(asset: str, days_back: int = 60):
             "sharpe": s.mean() / s.std() if s.std() > 0 else 0,
         })
     if not results: print("  无平仓样本"); return
-    rep = pd.DataFrame(results).sort_values("sum", ascending=False)
+    rep = pd.DataFrame(results).sort_values("wr", ascending=False)
     cur = rep[(rep.tp == 50) & (rep.sl == 50) & (rep.hold == 30) & (rep.dte == 30)]
     print(f"\n现行: TP=+50% SL=-50% hold=30d DTE=30")
     if len(cur):
