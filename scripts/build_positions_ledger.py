@@ -33,6 +33,10 @@ from core.binance_futures import (fetch_perp_price_at_date, fetch_perp_klines,
                                        fetch_realtime_for_asset, ASSET_SYMBOL)
 from core.strategies.futures_long import simulate_long_position
 from core.strategy_configs import get_futures_config
+try:
+    from core.strategy_configs import SHORT_VOL_DISABLED
+except ImportError:
+    SHORT_VOL_DISABLED = False
 
 
 LEDGER_PARQUET = "/Users/yhdong/Gold/data/positions_ledger.parquet"
@@ -92,7 +96,8 @@ def build_for_asset(asset: str, days_back: int, today_dt: pd.Timestamp,
                   and bool(sv_df.loc[_du, "short_vol_signal"]))
         strats = []
         if is_strad: strats.append("STRADDLE")
-        if is_sv: strats.append("SHORT_VOL")
+        # v3.7.178: SHORT_VOL_DISABLED 真生效 (实战 24% WR, IC 大波动期失效)
+        if is_sv and not SHORT_VOL_DISABLED: strats.append("SHORT_VOL")
         if _ru.get("buy_signal", False):
             bt = _ru.get("buy_type") or ""
             if bt: strats.append(bt)

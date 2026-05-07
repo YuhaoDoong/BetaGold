@@ -41,6 +41,10 @@ from core.strategies.straddle import simulate_straddle_position
 from core.strategy_configs import (get_futures_config, SHORT_VOL_DEFAULT,
                                        SELL_PUT_DEFAULT, BUY_CALL_DEFAULT,
                                        STRADDLE_DEFAULT)
+try:
+    from core.strategy_configs import SHORT_VOL_DISABLED
+except ImportError:
+    SHORT_VOL_DISABLED = False
 from core.paper_positions import price_strategy_at, _load_kline_db
 
 
@@ -264,7 +268,7 @@ def stage2_simulate_real(asset: str):
                                       "pnl_pct": max(-100, min(150, float(res.get("pnl_pct", 0)))),
                                       "hold_days": int(res.get("hold_days", 0)),
                                       "exit_reason": str(res.get("exit_reason", ""))})
-        if sigs_df.loc[d, "short_vol_signal"]:
+        if sigs_df.loc[d, "short_vol_signal"] and not SHORT_VOL_DISABLED:
             ent = price_strategy_at(asset, "SHORT_VOL", d,
                                        d + pd.Timedelta(hours=9, minutes=30),
                                        eO, eO, eC, eH, eL,
