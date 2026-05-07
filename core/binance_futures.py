@@ -1,4 +1,4 @@
-"""Binance USDT-M Futures 数据接入 (XAUUSDT 永续, 20× 杠杆模拟).
+"""Binance USDT-M Futures 数据接入 (XAUUSDT 黄金 + XAGUSDT 白银, 20× 杠杆模拟).
 
 不需 API key (公开 endpoints): mark price, funding rate, exchange info.
 """
@@ -10,25 +10,44 @@ import time
 
 _FAPI = "https://fapi.binance.com/fapi/v1"
 
+# v3.7.163: asset → Binance 永续合约 symbol 映射
+ASSET_SYMBOL = {
+    "GLD": "XAUUSDT",   # 黄金永续
+    "SLV": "XAGUSDT",   # 白银永续
+}
 
-def fetch_xauusdt_realtime() -> Optional[dict]:
-    """拉 XAUUSDT 永续实时数据.
-    返回 {'mark_price', 'index_price', 'funding_rate', 'next_funding_time'}.
+
+def fetch_perp_realtime(symbol: str) -> Optional[dict]:
+    """通用拉 Binance 永续实时数据.
+    symbol 可以 'XAUUSDT' / 'XAGUSDT' / 任意 Binance USDT-M 永续 symbol.
     """
     try:
         r = requests.get(f"{_FAPI}/premiumIndex",
-                          params={"symbol": "XAUUSDT"}, timeout=8)
+                          params={"symbol": symbol}, timeout=8)
         r.raise_for_status()
         d = r.json()
         return {
             "symbol": d["symbol"],
             "mark_price": float(d["markPrice"]),
             "index_price": float(d["indexPrice"]),
-            "funding_rate": float(d["lastFundingRate"]),     # 8h 资金费率
+            "funding_rate": float(d["lastFundingRate"]),
             "next_funding_ms": int(d["nextFundingTime"]),
         }
     except Exception:
         return None
+
+
+def fetch_realtime_for_asset(asset: str) -> Optional[dict]:
+    """根据 asset (GLD/SLV) 拉对应 Binance 永续 (XAU/XAGUSDT)."""
+    sym = ASSET_SYMBOL.get(asset.upper())
+    if not sym: return None
+    return fetch_perp_realtime(sym)
+
+
+# 兼容旧 API
+def fetch_xauusdt_realtime() -> Optional[dict]:
+    """旧 API — 仅黄金 XAUUSDT (兼容). 新代码用 fetch_realtime_for_asset(asset)."""
+    return fetch_perp_realtime("XAUUSDT")
 
 
 @lru_cache(maxsize=1)

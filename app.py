@@ -3714,12 +3714,14 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     _ledger_open = []
     _ledger_closed = []
 
-    # v3.7.162: 期货用 Binance live 真实价 (跨 row 一致, 不再用 ledger 的 EOD snapshot)
+    # v3.7.163: 期货用 Binance live (per-asset: GLD=XAUUSDT, SLV=XAGUSDT)
     _binance_mark = None
     _binance_funding = 0.0
+    _binance_symbol = None
     try:
-        from core.binance_futures import fetch_xauusdt_realtime
-        _b_rt = fetch_xauusdt_realtime()
+        from core.binance_futures import fetch_realtime_for_asset, ASSET_SYMBOL
+        _binance_symbol = ASSET_SYMBOL.get(asset_key)
+        _b_rt = fetch_realtime_for_asset(asset_key)
         if _b_rt:
             _binance_mark = _b_rt.get("mark_price")
             _binance_funding = _b_rt.get("funding_rate", 0)
@@ -3749,21 +3751,25 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             _ent_str = _fmt_legs_l(r["legs"], r["entry_leg_prices"])
             _credit = r["entry_credit_or_premium"]
             _is_futures = r["strategy"] == "FUTURES_LONG"
+            # v3.7.163: gc_gld_r 已 per-asset 调整 (line 1364-1368)
+            # GLD: gc_gld_r ≈ 10.97 (GC=F / GLD)
+            # SLV: gc_gld_r ≈ 1.18 (SI=F / SLV, 跟 Binance XAGUSDT/SLV 接近)
+            _asset_ratio = gc_gld_r
             if r["strategy"] in ("SELL PUT", "SHORT_VOL"):
                 _ent_str += f" → 收${_credit:.2f}"
             elif _is_futures:
-                _entry_gc = r["entry_etf"] * gc_gld_r
-                _liq = _entry_gc * 0.955  # 20× lev liq buffer
-                _ent_str = f"USDT@${_entry_gc:.0f} (20×, Liq ${_liq:.0f})"
+                _entry_perp = r["entry_etf"] * _asset_ratio
+                _liq = _entry_perp * 0.955  # 20× lev liq buffer
+                _ent_str = f"USDT@${_entry_perp:.2f} (20×, Liq ${_liq:.2f})"
             else:
                 _ent_str += f" → ${_credit:.2f}"
 
             # v3.7.162: 期货 OPEN 用 Binance live mark 一致跨 row
             if _is_futures and not r["is_closed"] and _binance_mark and _binance_mark > 0:
-                _entry_gc = r["entry_etf"] * gc_gld_r
+                _entry_gc = r["entry_etf"] * _asset_ratio
                 _ret_spot = (_binance_mark / _entry_gc - 1) * 100
                 _ret_lev = _ret_spot * 20  # ROI on margin
-                _exit_str = (f"Binance ${_binance_mark:.2f} "
+                _exit_str = (f"Binance {_binance_symbol or 'PERP'} ${_binance_mark:.2f} "
                               f"(funding {_binance_funding*100:.4f}%/8h)")
                 _gain_str = f"{_ret_lev:+.1f}%"
                 _exit_label = f'OPEN ({r["hold_days"]}d, live)'
@@ -3801,7 +3807,7 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
 
     st.subheader(f"📊 历史未平仓持仓 ({len(_ledger_open)} 笔)")
     if _binance_mark:
-        st.caption(f"💹 Binance XAUUSDT 实时 mark: **${_binance_mark:.2f}** "
+        st.caption(f"💹 Binance {_binance_symbol} 实时 mark: **${_binance_mark:.2f}** "
                    f"(funding {_binance_funding*100:.4f}%/8h) — "
                    f"所有期货 OPEN 用此价计算 PnL")
     if _ledger_open:
