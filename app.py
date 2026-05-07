@@ -3672,18 +3672,89 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             else:
                 _open_recs.append(_rec)
 
-    # 历史未平仓信号 (OPEN)
+    # 历史未平仓信号 (OPEN) — v3.7.159 直读 ledger.json (single source of truth)
     st.divider()
-    st.subheader(f"📊 历史未平仓信号 ({len(_open_recs)} 笔)")
-    if _open_recs:
-        st.dataframe(pd.DataFrame(_open_recs).iloc[::-1],
-                      use_container_width=True, hide_index=True)
-        st.caption("STRADDLE 还在 14d 内 / SHORT_VOL 还在 30d 内 / 方向性还没 EXIT trigger")
-    else:
-        st.caption("当前无未平仓信号")
+    _ledger_path = "/Users/yhdong/Gold/data/positions_ledger.json"
+    _ledger_open = []
+    _ledger_closed = []
+    try:
+        import json as _json
+        with open(_ledger_path) as _f:
+            _all = _json.load(_f)
+        # 过滤当前 asset
+        _asset_l = [r for r in _all if r["asset"] == asset_key]
 
-    # 近一月期权模拟 (CLOSED)
+        def _fmt_legs_l(legs, leg_prices):
+            if not legs or not leg_prices: return "—"
+            parts = []
+            for (lab, _code, K, qty), (_lp_lab, p) in zip(legs, leg_prices):
+                if "futures" in lab:
+                    parts.append(f"FUT@${p:.2f}")
+                else:
+                    sign = "-" if qty < 0 else "+"
+                    t = "C" if "call" in lab else "P"
+                    parts.append(f"{sign}{t}${K:.0f}@${p:.2f}")
+            return " / ".join(parts)
+
+        for r in _asset_l:
+            _du = pd.Timestamp(r["signal_date"])
+            _ent_str = _fmt_legs_l(r["legs"], r["entry_leg_prices"])
+            _credit = r["entry_credit_or_premium"]
+            if r["strategy"] in ("SELL PUT", "SHORT_VOL"):
+                _ent_str += f" → 收${_credit:.2f}"
+            elif r["strategy"] == "FUTURES_LONG":
+                _ent_str = (f"USDT@${r['entry_etf']*gc_gld_r:.0f} "
+                             f"(20×, Liq ${r['entry_etf']*gc_gld_r*0.955:.0f})")
+            else:
+                _ent_str += f" → ${_credit:.2f}"
+
+            if r["is_closed"]:
+                _ex_d = pd.Timestamp(r["exit_date"]).strftime("%m-%d") if r["exit_date"] else "?"
+                _exit_str = _fmt_legs_l(r["legs"], r["exit_legs"])
+                _exit_str += f" → 平${r['exit_value']:.2f}"
+                _exit_label = f'{_ex_d} ({r["exit_reason"]})'
+            else:
+                _exit_str = _fmt_legs_l(r["legs"], r["exit_legs"])
+                _exit_str += f" → 现${r['current_value']:.2f}"
+                _exit_label = f'OPEN ({r["hold_days"]}d)'
+
+            _rec = {
+                "信号日": _du.strftime("%m-%d"),
+                "策略": r["strategy"],
+                "合约": r["source"],
+                "入场ETF": f"${r['entry_etf']:.2f}",
+                "入场GC=F": f"${r['entry_etf']*gc_gld_r:.0f}",
+                "入场期权": _ent_str,
+                "现/平期权": _exit_str,
+                "P&L%": f"{r['pnl_pct']:+.1f}%",
+                "状态": _exit_label,
+            }
+            if r["is_closed"]:
+                _ledger_closed.append(_rec)
+            else:
+                _ledger_open.append(_rec)
+    except FileNotFoundError:
+        st.error(f"Ledger 不存在: 跑 `python scripts/build_positions_ledger.py` 生成")
+    except Exception as _e:
+        st.error(f"Ledger 加载错: {_e}")
+
+    st.subheader(f"📊 历史未平仓信号 ({len(_ledger_open)} 笔)")
+    if _ledger_open:
+        st.dataframe(pd.DataFrame(_ledger_open).iloc[::-1],
+                      use_container_width=True, hide_index=True)
+        import os as _os
+        _mt = _os.path.getmtime(_ledger_path) if _os.path.exists(_ledger_path) else 0
+        from datetime import datetime as _dt
+        _mt_str = _dt.fromtimestamp(_mt).strftime("%Y-%m-%d %H:%M") if _mt else "—"
+        st.caption(f"数据源: ledger.json (最后更新 {_mt_str}). "
+                   f"重新生成: `python scripts/build_positions_ledger.py`")
+    else:
+        st.caption("当前无未平仓信号 (ledger 空 — 跑 build_positions_ledger.py)")
+
+    # 近一月期权模拟 (CLOSED) — v3.7.159 直读 ledger
     st.divider()
+    # 用 ledger 数据替代 _closed_recs (legacy)
+    _closed_recs = _ledger_closed if _ledger_closed else _closed_recs
     st.subheader(f"🎯 近一月期权模拟 — 已平仓 ({len(_closed_recs)} 笔)")
     if _closed_recs:
         st.dataframe(pd.DataFrame(_closed_recs).iloc[::-1],
@@ -3959,17 +4030,38 @@ def main():
     st.sidebar.header("设置")
     asset = st.sidebar.selectbox("资产", ["GLD (黄金)", "SLV (白银)"], index=0)
     asset_key = "GLD" if "GLD" in asset else "SLV"
-    # v3.7.155/157: 强制刷新按钮 (清 streamlit cache + module-level cache)
-    if st.sidebar.button("🔄 强制刷新数据"):
+    # v3.7.155/157/159: 强制刷新 (清 cache + 重建 ledger.json)
+    if st.sidebar.button("🔄 强制刷新数据 + 重建 ledger"):
         st.cache_data.clear()
-        # 清 paper_positions._KLINE_DB_CACHE module-global
         try:
             import core.paper_positions as _pp
             _pp._KLINE_DB_CACHE = None
             _pp._KLINE_DB_MTIME = None
         except Exception:
             pass
+        # 重建 positions_ledger.json
+        with st.spinner("重建 positions_ledger.json..."):
+            import subprocess
+            res = subprocess.run(
+                ["python", "scripts/build_positions_ledger.py", "--days", "90"],
+                capture_output=True, text=True, timeout=180)
+            if res.returncode == 0:
+                st.sidebar.success("ledger 重建完成")
+            else:
+                st.sidebar.error(f"ledger 重建失败: {res.stderr[-200:]}")
         st.rerun()
+    # ledger 状态 sidebar
+    try:
+        import os as _osl
+        _lp = "/Users/yhdong/Gold/data/positions_ledger.json"
+        if _osl.path.exists(_lp):
+            from datetime import datetime as _dtl
+            _mt_l = _dtl.fromtimestamp(_osl.path.getmtime(_lp))
+            _age_min = (_dtl.now() - _mt_l).total_seconds() / 60
+            _icon = "🟢" if _age_min < 30 else ("🟡" if _age_min < 120 else "🔴")
+            st.sidebar.caption(f"{_icon} ledger 更新于 {_age_min:.0f} 分钟前")
+    except Exception:
+        pass
 
     # v3.7.63: 模块化 — GLD/SLV 共用 pipeline, 仅参数不同
     def _load_asset_pipeline(asset_key: str):
