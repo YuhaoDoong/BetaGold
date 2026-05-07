@@ -96,7 +96,10 @@ def build_for_asset(asset: str, days_back: int, today_dt: pd.Timestamp,
         if _ru.get("buy_signal", False):
             bt = _ru.get("buy_type") or ""
             if bt: strats.append(bt)
-            strats.append("FUTURES_LONG")
+            # v3.7.175: 期货只在 buy_type=BC (sp_score 判定上涨期) 时开
+            # 避免 SP-flagged 信号 (下跌/震荡期) 强制做多导致 wick 爆仓
+            if bt == "BUY CALL":
+                strats.append("FUTURES_LONG")
         if not strats: continue
 
         if _du not in ohlc.index: continue
