@@ -31,6 +31,12 @@ class SPConfig:
     profit_target_credit_pct: float = 50.0   # +50% credit 早平 (GLD 优于 30)
     stop_loss_margin_pct: float = 100.0      # = 等价无主动 SL, 让 spread 走完
     base_dte: int = 30
+    # v3.7.179 panic SL 实验后撤销 (grid 验证打断 mean reversion 反而降总收益):
+    #   21d/70% panic: sum -122% (vs 无 panic +116%, 差 238%)
+    #   SP 数学最优: 接受 1/10 概率 -100%, 不主动止损
+    #   保护通过仓位管理 (每笔仓位 ≤ 5-7% 总资金)
+    panic_sl_hold_days: int = 999            # ★ 999 = 禁用 panic SL
+    panic_sl_margin_pct: float = 999.0       # ★ 999 = 禁用
 
 
 def simulate_sp_position(entry_pricing: dict,
@@ -91,12 +97,18 @@ def simulate_sp_position(entry_pricing: dict,
                      "exit_reason": "+50% credit", "pnl_pct": pnl_pct,
                      "hold_days": hold, "leg_prices": leg_prices_at_exit,
                      "max_risk": max_risk}
-        # SL
+        # SL (主 SL = stop_loss_margin_pct × max_risk)
         if cur_value >= stop_loss:
             return {"is_closed": True, "exit_date": d_ts, "exit_value": cur_value,
-                     "exit_reason": "-50% margin SL", "pnl_pct": pnl_pct,
-                     "hold_days": hold, "leg_prices": leg_prices_at_exit,
-                     "max_risk": max_risk}
+                     "exit_reason": f"-{int(cfg.stop_loss_margin_pct)}% margin SL",
+                     "pnl_pct": pnl_pct, "hold_days": hold,
+                     "leg_prices": leg_prices_at_exit, "max_risk": max_risk}
+        # v3.7.179 panic SL: 持仓 ≥ panic_sl_hold_days 且 浮亏 ≥ panic_sl_margin_pct
+        if hold >= cfg.panic_sl_hold_days and pnl_pct <= -cfg.panic_sl_margin_pct:
+            return {"is_closed": True, "exit_date": d_ts, "exit_value": cur_value,
+                     "exit_reason": f"panic SL ({hold}d 浮亏 {pnl_pct:.0f}%)",
+                     "pnl_pct": pnl_pct, "hold_days": hold,
+                     "leg_prices": leg_prices_at_exit, "max_risk": max_risk}
         # Expiry
         if d_ts >= expiry_dt:
             return {"is_closed": True, "exit_date": d_ts, "exit_value": cur_value,
