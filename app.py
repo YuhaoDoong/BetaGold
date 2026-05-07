@@ -2143,23 +2143,27 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         # viz 窗口
         _viz_start = plot_ts[0].normalize() if len(plot_ts) else None
         _viz_end = plot_ts[-1].normalize() if len(plot_ts) else None
+        # v3.7.161: y 偏移避免同日 marker 完全重叠
+        # 每个策略一个固定偏移百分比 (扇形分散)
         _strat_marker = {
-            "BUY CALL": ("#2196F3", "^", 130),
-            "SELL PUT": ("#FF9800", "^", 130),
-            "STRADDLE": ("#FFD700", "*", 220),
-            "SHORT_VOL": ("#FF6F00", "P", 200),
-            "FUTURES_LONG": ("#9C27B0", "s", 100),
+            "BUY CALL":     ("#2196F3", "^", 130, +0.6),  # 上 +0.6%
+            "SELL PUT":     ("#FF9800", "^", 130, +0.3),  # 上 +0.3%
+            "STRADDLE":     ("#FFD700", "*", 220,  0.0),  # 中
+            "SHORT_VOL":    ("#FF6F00", "P", 200, -0.3),  # 下 -0.3%
+            "FUTURES_LONG": ("#9C27B0", "s", 100, -0.6),  # 下 -0.6%
         }
         for _row_l in _ledger_asset:
             _d_l = pd.Timestamp(_row_l["signal_date"]).normalize()
             if _viz_start and _d_l < _viz_start: continue
             if _viz_end and _d_l > _viz_end: continue
             _strat_l = _row_l["strategy"]
-            _color_l, _mark_l, _sz_l = _strat_marker.get(_strat_l, ("gray", "o", 100))
-            _xi_l = _xi_open(_d_l)  # 09:30 RTH 开盘
+            _color_l, _mark_l, _sz_l, _y_off_pct = _strat_marker.get(
+                _strat_l, ("gray", "o", 100, 0.0))
+            _xi_l = _xi_open(_d_l)
             if _xi_l is None: continue
             _y_l = float(close_d.get(_d_l, _row_l["entry_etf"]))
-            ax.scatter([_xi_l], [_y_l * _viz_ratio],
+            _y_with_off = _y_l * (1 + _y_off_pct / 100)
+            ax.scatter([_xi_l], [_y_with_off * _viz_ratio],
                         marker=_mark_l, s=_sz_l, color=_color_l,
                         edgecolors="black", linewidths=1.0, zorder=8,
                         label="_nolegend_")
@@ -4012,6 +4016,14 @@ def _render_options_section(eod_df, snap_date, last_close, next_bp090,
 def main():
     today_sgt = get_today_sgt()
     st.title(f"贵金属交易仪表板  ({today_sgt})")
+
+    # v3.7.161: ledger 后台 daemon — dashboard 启动即部署, 退出即停
+    try:
+        from core.ledger_daemon import start_daemon_once, is_running
+        if start_daemon_once():
+            st.toast("✅ Ledger daemon 已启动 (5 min 自动重建)")
+    except Exception:
+        pass
 
     # v3.7.157: startup 检查 — 关键数据文件 mtime 变化时强制清所有 cache
     # 防御 paper_positions._KLINE_DB_CACHE 这种 module-global 永不失效 cache

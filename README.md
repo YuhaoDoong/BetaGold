@@ -18,17 +18,45 @@
 ```bash
 conda activate gold
 
-# 启动 Dashboard
+# 启动 Dashboard (= 部署服务) — 后台 ledger daemon 自动启动
 streamlit run app.py
+
+# 关闭 Dashboard = 停止部署 (Ctrl+C)
+# 不需要 cron / systemd, daemon thread 跟 process 绑定
+
+# 手动重建 positions ledger (single source of truth)
+python scripts/build_positions_ledger.py --days 90
+
+# 月度阈值重测 (建议月度跑)
+python scripts/monthly_retune.py              # 全部资产
+python scripts/tune_thresholds.py --asset GLD # 单个资产手动
 
 # 历史回填盘中触发 (首次或规则变更后)
 python scripts/backfill_intraday_signals.py --asset GLD --timeframe 60
 python scripts/backfill_intraday_signals.py --asset SLV --timeframe 60
-
-# 月度阈值重测 (建议 cron / launchd 自动化)
-python scripts/monthly_retune.py              # 全部资产
-python scripts/tune_thresholds.py --asset GLD # 单个资产手动
 ```
+
+## 架构 (v3.7.158-161 ledger 模式)
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  build_positions_ledger.py                              │
+│  ledger_daemon (后台 thread, 5min 自动跑)               │
+│            ↓                                            │
+│  positions_ledger.json  ←── single source of truth     │
+│            ↓                                            │
+│  Dashboard (无状态, 仅读 JSON)                          │
+│  - 历史未平仓 section                                   │
+│  - 近一月已平 section                                   │
+│  - 主图 chart marker                                    │
+└─────────────────────────────────────────────────────────┘
+```
+
+dashboard 启动 = 服务部署. 关闭 = 停止部署. daemon thread `daemon=True` 随 process 退出. 网页端部署同样架构: 后台跑 ledger daemon + 前端读 JSON.
+
+任何信号 "不见" 问题, **先打开 `/Users/yhdong/Gold/data/positions_ledger.json` 查证**, 不再黑箱.
+
+
 
 ### 月度自动调度 (macOS launchd)
 ```bash
