@@ -13,8 +13,8 @@ import pandas as pd
 @dataclass
 class StraddleConfig:
     profit_target_mult: float = 2.0        # +100% (cur >= entry × 2)
-    hold_max_days: int = 14
-    base_dte: int = 14                      # 短 DTE long vol
+    hold_max_days: int = 21                # v3.7.172: 14→21 (匹配月度 DTE)
+    base_dte: int = 30                     # v3.7.172: 14→30 (kline_db 月度 expiry only)
 
 
 def simulate_straddle_position(entry_pricing: dict,

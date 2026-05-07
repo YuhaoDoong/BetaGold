@@ -90,12 +90,11 @@ def stage0_raw_signals():
                                            gvz_series=None)  # stage0 不带 GVZ → 跳过 IV 过滤
         # 加 STRADDLE / SHORT_VOL detect (规则信号, 不过滤)
         rv_s = features.loc[common, "rv_10d"]
-        # detect_straddle_signal: signature varies, try common form
-        try:
-            strad = detect_straddle_signal(rv_s, common, regime=regime)
-        except TypeError:
-            strad = pd.DataFrame(index=common,
-                                   data={"straddle_signal": False})
+        # detect_straddle_signal(rv_series, dates_index, rv_pctile=, close=, high=, low=, asset=)
+        strad = detect_straddle_signal(rv_s, common,
+                                          rv_pctile=rv_pct,
+                                          close=close_d, high=high_d, low=low_d,
+                                          asset=asset)
         sv = detect_short_vol_signal(rv_s, rv_pct, common, regime=regime)
 
         # Merge: 一行 = 一日, 每信号 boolean
