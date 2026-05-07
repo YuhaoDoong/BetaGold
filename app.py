@@ -72,9 +72,29 @@ EXIT_MARKERS = {
 # ══════════════════════════════════════════════════════════
 # 缓存数据加载
 # ══════════════════════════════════════════════════════════
-@st.cache_data(ttl=3600)
-def load_all():
-    """加载全部数据, 缓存1小时."""
+def _data_mtime():
+    """关键数据文件 mtime 集合 — 用作 cache key, 任一文件变就失效 cache."""
+    paths = [
+        "/Users/yhdong/Gold/data/processed/features_all.parquet",
+        "/Users/yhdong/Gold/data/processed/features_slv.parquet",
+        "/Users/yhdong/Gold/data/raw/market/gld.csv",
+        "/Users/yhdong/Gold/data/raw/market/slv.csv",
+        "/Users/yhdong/Gold/data/raw/options_history/kline_db/all_klines.parquet",
+    ]
+    mts = []
+    for p in paths:
+        try:
+            mts.append(int(os.path.getmtime(p)))
+        except OSError:
+            mts.append(0)
+    return tuple(mts)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_all(_data_token):
+    """加载全部数据, 5min TTL + 数据文件 mtime 守卫
+    任一数据文件 (features/csv/kline_db) 变化, _data_token 变 → cache 失效自动重载.
+    """
     cfg = load_config()
     features = load_features(cfg)
     gld = load_gld(cfg)
@@ -3925,6 +3945,10 @@ def main():
     st.sidebar.header("设置")
     asset = st.sidebar.selectbox("资产", ["GLD (黄金)", "SLV (白银)"], index=0)
     asset_key = "GLD" if "GLD" in asset else "SLV"
+    # v3.7.155: 强制刷新按钮 (清 streamlit cache)
+    if st.sidebar.button("🔄 强制刷新数据"):
+        st.cache_data.clear()
+        st.rerun()
 
     # v3.7.63: 模块化 — GLD/SLV 共用 pipeline, 仅参数不同
     def _load_asset_pipeline(asset_key: str):
@@ -3933,7 +3957,7 @@ def main():
         """
         # 共享: regime + usdcny + (GLD 自己) + ratios
         (gld_df, gld_oos, regime_, rv_pct_gld,
-         gc_gld_r, usdcny_r, si_slv_r) = load_all()
+         gc_gld_r, usdcny_r, si_slv_r) = load_all(_data_mtime())
         if asset_key == "GLD":
             return (gld_df, gld_oos, regime_, rv_pct_gld,
                     gc_gld_r, usdcny_r, si_slv_r)
