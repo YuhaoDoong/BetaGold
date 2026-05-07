@@ -89,4 +89,26 @@ def simulate_bc_position(entry_pricing: dict,
         pnl_pct = (cur_value / entry_value - 1) * 100
         return {"is_closed": False, "current_value": cur_value, "hold_days": hold,
                  "pnl_pct": pnl_pct, "leg_prices": leg_prices_at_exit}
-    return {"is_closed": False, "reason": "no data after entry"}
+    # v3.7.153: kline_db 滞后, OPEN MTM fallback 用最近可用日 (>= sig_d)
+    nearest = db[db["code"].isin([l[1] for l in legs]) &
+                  (db["date"] >= sig_d) & (db["date"] <= today_dt)]
+    if not nearest.empty:
+        latest_date = nearest["date"].max()
+        cur_total = 0.0; ok = True; leg_prices_today = []
+        for _lab, _code, _K, _qty in legs:
+            r = db[(db["code"] == _code) & (db["date"] == latest_date)]
+            if not len(r): ok = False; break
+            _p = float(r.iloc[0]["close"])
+            leg_prices_today.append((_lab, _p))
+            cur_total += _qty * _p
+        if ok:
+            cur_value = cur_total
+            pnl_pct = (cur_value / entry_value - 1) * 100
+            return {"is_closed": False, "current_value": cur_value,
+                     "hold_days": max(0, (today_dt - sig_d).days),
+                     "pnl_pct": pnl_pct, "leg_prices": leg_prices_today}
+    # 真没数据 — 用 entry leg prices 作 OPEN MTM (无变化)
+    ent_leg_prices = entry_pricing.get("leg_prices", [])
+    return {"is_closed": False, "current_value": entry_value,
+             "hold_days": max(0, (today_dt - sig_d).days),
+             "pnl_pct": 0.0, "leg_prices": ent_leg_prices}

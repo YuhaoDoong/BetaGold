@@ -3424,26 +3424,42 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                                 _O_t, _C_t, _H_t, _L_t)
                 if not _ent_v.get("legs"): continue
                 _credit_v = _ent_v["entry_price"]
-                _parts = []
-                for (lab, code, K, qty), (_lp, p) in zip(
-                        _ent_v["legs"], _ent_v.get("leg_prices", [])):
-                    _sign = "Short" if qty < 0 else "Long"
-                    _opt_t = "C" if "call" in lab else "P"
-                    _parts.append(f"{_sign} {_opt_t}${K:.0f}: ${p:.2f}")
-                _ent_str_v = " / ".join(_parts)
+                # v3.7.153: 用 _fmt_legs (qty<0 → 短, 'call' in lab → C)
+                def _fmt_v(legs_def, leg_prices):
+                    if not legs_def or not leg_prices: return "—"
+                    parts = []
+                    for (lab, code, K, qty), (_lp, p) in zip(legs_def, leg_prices):
+                        sign = "-" if qty < 0 else "+"
+                        t = "C" if "call" in lab else "P"
+                        parts.append(f"{sign}{t}${K:.0f}@${p:.2f}")
+                    return " / ".join(parts)
+                _ent_str_v = _fmt_v(_ent_v["legs"], _ent_v.get("leg_prices", []))
                 _ent_str_v += (f" → 收${_credit_v:.2f}" if _vs == "SHORT_VOL"
                                 else f" → ${_credit_v:.2f}")
+                # 算 OPEN MTM (跟历史 section 一致, kline_db EOD close)
+                from core.paper_positions import simulate_option_exit as _se_v
+                _sim_v = _se_v(_ent_v, _today, _vs,
+                                pd.Timestamp(today_sgt).normalize())
+                _exit_legs_v = _sim_v.get("leg_prices", [])
+                _cur_v = _sim_v.get("current_value", _credit_v)
+                _gain_v = _sim_v.get("pnl_pct", 0.0)
+                if _exit_legs_v:
+                    _exit_str_v = _fmt_v(_ent_v["legs"], _exit_legs_v)
+                    _exit_str_v += (f" → 现${_cur_v:.2f}" if _vs == "SHORT_VOL"
+                                     else f" → 现${_cur_v:.2f}")
+                else:
+                    _exit_str_v = "(kline_db 暂无)"
                 _vol_only_rows.append({
                     "时间(ET)": _t_v.strftime("%m-%d %H:%M") + " (日级)",
                     "信号": "BUY",
                     "策略": _vs,
                     "合约": _ent_v["source"],
-                    "入场ETF": f"${_O_t:.2f}",  # v3.7.149: Open
+                    "入场ETF": f"${_O_t:.2f}",
                     "入场GC=F": f"${_O_t * gc_gld_r:.0f}",
                     "入场期权": _ent_str_v,
                     "现ETF": f"${float(locals().get('gld_est') or _C_t):.2f}",
-                    "现期权/状态": "(RTH 后看)",
-                    "P&L%": "0.0%",
+                    "现期权/状态": _exit_str_v,
+                    "P&L%": f"{_gain_v:+.1f}%",
                     "状态": "OPEN",
                 })
         except Exception as _e:
