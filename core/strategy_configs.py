@@ -41,26 +41,33 @@ from core.strategies.straddle import StraddleConfig
 # 用户原则: "胜率重要, 收益率通过仓位变化". 默认参数保 WR, 仓位灵活.
 # SL=100% margin 在两 asset 均最优 (= 等价 liq-only, 避免被噪声打)
 # hold=20d 给金/银长期趋势走完
+# v3.7.174 — wick-safe leverage:
+# 3 月实测 GC=F 单日 wick (Open→Low):
+#   3-19 -5.72%   3-23 -5.79%   收盘后大都回拉 -2~-4%
+# lev=10× 爆仓距离 = 1/lev - mm_rate ≈ 5% spot → 单日 wick 必爆
+# lev=5×  爆仓距离 ≈ 19.5% spot → 5-8% wick 安全, 收盘回拉时持仓存活
+# lev=3×  爆仓距离 ≈ 33% spot → 极端 wick 也安全
+# SP 期权按 expiry 日线 close 计 mark, wick 不影响 → 解释 3-19/23 SP 盈利但 FUT 爆仓
 FUTURES_GLD = FuturesConfig(
-    leverage=10,            # v3.7.170: 20→10× (WR 82→85%, 用户可加仓换收益)
-    tp_margin_pct=200.0,    # v3.7.170: 150→200% (TP 不限制大涨)
-    sl_margin_pct=100.0,    # v3.7.169: 50→100% margin (= 等价 liq-only)
-    hold_max_days=20,
-    early_tp_locks=(
-        (3, 5.0),    # 3d ≥ +5% spot (+50% margin @10×) 锁利
-        (7, 3.0),    # 7d ≥ +3% spot (+30% margin)
-        (12, 1.0),   # 12d ≥ +1% spot (+10% margin)
-    ),
-)
-FUTURES_SLV = FuturesConfig(
-    leverage=5,             # v3.7.170: 10→5× (WR 73→76%, 安全且可加仓)
+    leverage=5,             # v3.7.174: 10→5× (爆仓 5%→19.5% spot, wick 安全)
     tp_margin_pct=200.0,
-    sl_margin_pct=100.0,    # 50→100% margin (= 等价 liq-only)
+    sl_margin_pct=100.0,    # = liq-only (爆仓即出)
     hold_max_days=20,
     early_tp_locks=(
         (3, 10.0),   # 3d ≥ +10% spot (+50% margin @5×) 锁利
         (7, 6.0),    # 7d ≥ +6% spot (+30% margin)
         (12, 2.0),   # 12d ≥ +2% spot (+10% margin)
+    ),
+)
+FUTURES_SLV = FuturesConfig(
+    leverage=3,             # v3.7.174: 5→3× (银日波 3-5%, 爆仓 19→33% spot)
+    tp_margin_pct=200.0,
+    sl_margin_pct=100.0,
+    hold_max_days=20,
+    early_tp_locks=(
+        (3, 15.0),   # 3d ≥ +15% spot (+45% margin @3×) 锁利
+        (7, 10.0),   # 7d ≥ +10% spot (+30% margin)
+        (12, 4.0),   # 12d ≥ +4% spot (+12% margin)
     ),
 )
 
