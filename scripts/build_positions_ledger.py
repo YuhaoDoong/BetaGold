@@ -104,24 +104,31 @@ def build_for_asset(asset: str, days_back: int, today_dt: pd.Timestamp,
         eL = float(ohlc.loc[_du, "Low"])
 
         for strat in strats:
-            # v3.7.165: 期货模块 — 完全用 Binance OHLC 算 entry/exit/PnL/爆仓
-            # 不再 mix ETF spot (scale 不同会导致 simulate 立即 -100% 误爆仓).
+            # v3.7.166: 期货模块 — 完全用 Binance OHLC + per-asset leverage + 合理 SL
+            # GLD 20× (波动小, Binance XAUUSDT 默认), SLV 10× (波动大, 多缓冲)
+            # 退出顺序: SL (-50% margin) 先于 Liq (-100% margin), 避免动辄爆仓
+            # TP +200% margin (+10% spot 20× / +20% spot 10×)
+            # 早平锁利按 margin 收益: hold_d ≥ N 且 ret_margin ≥ M%
+            # PnL cap [-100%, ...] (margin 不能损失超过 100%)
             if strat == "FUTURES_LONG":
                 _bin_entry = fetch_perp_price_at_date(binance_sym, _du)
                 if not _bin_entry:
                     continue
                 _entry_perp = _bin_entry["open"]
-                # 拉 Binance 信号日后到今天的 daily klines
                 _start_ms = int((_du + pd.Timedelta(days=1)).timestamp() * 1000)
                 _end_ms = int(today_dt.timestamp() * 1000)
                 _bin_klines = fetch_perp_klines(binance_sym, _start_ms, _end_ms, "1d")
-                # leverage 退出参数 (跟 simulate_long_position 一致)
-                _tp_pct = 12.0   # +12% spot = +240% margin
-                _sl_pct = 5.0    # -5% spot = -100% margin (= 爆仓)
+                # Per-asset leverage
+                _lev = 20 if asset == "GLD" else 10
+                # SL: -50% margin → spot pct = -50/lev (-2.5% GLD / -5% SLV)
+                _sl_spot = -50.0 / _lev
+                # Liq: -100% margin → spot ≈ -1/lev (-5% GLD / -10% SLV)
+                _liq_spot = -(100.0 - 0.5) / _lev  # 留 0.5% mm buffer
+                # TP: +200% margin → +10% (GLD) / +20% (SLV) spot
+                _tp_spot = 200.0 / _lev
                 _hold_max = 15
-                _early_locks = [(3, 5.0), (7, 3.0), (10, 1.0)]
-                _liq_pct = -4.5  # 20× lev: 1/20 - 0.005 = 4.5% 爆仓
-                # 模拟逐日 (用 Binance OHLC, 时间序保守: bar 内最坏先发)
+                # Early locks 用 margin% 触发: 3d≥+100%, 7d≥+60%, 10d≥+20%
+                _early_locks_margin = [(3, 100.0), (7, 60.0), (10, 20.0)]
                 _exit_v = None; _exit_d = None; _exit_reason = ""
                 _hold_d = 0
                 for k in _bin_klines:
@@ -131,31 +138,32 @@ def build_for_asset(asset: str, days_back: int, today_dt: pd.Timestamp,
                     _rL = (_l / _entry_perp - 1) * 100
                     _rH = (_h / _entry_perp - 1) * 100
                     _rC = (_c / _entry_perp - 1) * 100
-                    # 1) 爆仓
-                    if _rL <= _liq_pct:
-                        _exit_v = _entry_perp * (1 + _liq_pct / 100)
+                    # 1) SL 先 (margin -50%) — 优先于爆仓, 给账户留 50% margin
+                    if _rL <= _sl_spot:
+                        _exit_v = _entry_perp * (1 + _sl_spot / 100)
                         _exit_d = _d_k
-                        _exit_reason = "爆仓 (-100% margin)"
+                        _exit_reason = f"SL -50% margin (spot {_sl_spot:+.1f}%)"
                         break
-                    # 2) SL (在 Binance 价上)
-                    if _rL <= -_sl_pct:
-                        _exit_v = _entry_perp * (1 - _sl_pct / 100)
+                    # 2) 爆仓 (开盘gap远超 SL 时才会触发)
+                    if _rL <= _liq_spot:
+                        _exit_v = _entry_perp * (1 + _liq_spot / 100)
                         _exit_d = _d_k
-                        _exit_reason = f"-{_sl_pct}% spot SL"
+                        _exit_reason = f"爆仓 -100% margin"
                         break
-                    # 3) TP
-                    if _rH >= _tp_pct:
-                        _exit_v = _entry_perp * (1 + _tp_pct / 100)
+                    # 3) TP +200% margin
+                    if _rH >= _tp_spot:
+                        _exit_v = _entry_perp * (1 + _tp_spot / 100)
                         _exit_d = _d_k
-                        _exit_reason = f"+{_tp_pct}% spot TP"
+                        _exit_reason = f"TP +200% margin (spot +{_tp_spot:.1f}%)"
                         break
-                    # 4) Early TP locks
+                    # 4) Early TP locks (margin%)
                     _et = False
-                    for _hd_t, _min_p in _early_locks:
-                        if _hold_d >= _hd_t and _rC >= _min_p:
+                    _ret_margin = _rC * _lev
+                    for _hd_t, _min_m in _early_locks_margin:
+                        if _hold_d >= _hd_t and _ret_margin >= _min_m:
                             _exit_v = _c
                             _exit_d = _d_k
-                            _exit_reason = f"{_hd_t}d+{_min_p:.0f}% 早平锁利"
+                            _exit_reason = f"{_hd_t}d+{_min_m:.0f}%margin 早平锁利"
                             _et = True
                             break
                     if _et: break
@@ -166,13 +174,15 @@ def build_for_asset(asset: str, days_back: int, today_dt: pd.Timestamp,
                         _exit_reason = f"{_hold_max}d 时间出场"
                         break
                 if _exit_v is not None:
-                    _ret_lev = (_exit_v / _entry_perp - 1) * 100 * 20
+                    _ret_lev_raw = (_exit_v / _entry_perp - 1) * 100 * _lev
+                    _ret_lev = max(-100.0, _ret_lev_raw)
                     row = {
                         "asset": asset, "signal_date": _du.isoformat(),
                         "strategy": "FUTURES_LONG",
                         "entry_etf": eO, "entry_perp": _entry_perp,
                         "binance_symbol": binance_sym,
-                        "source": f"{binance_sym} 多头 @ ${_entry_perp:.2f}",
+                        "leverage": _lev,
+                        "source": f"{binance_sym} 多头 @ ${_entry_perp:.2f} ({_lev}×)",
                         "entry_credit_or_premium": _entry_perp,
                         "legs": [], "entry_leg_prices": [], "exit_legs": [],
                         "is_closed": True,
@@ -184,15 +194,16 @@ def build_for_asset(asset: str, days_back: int, today_dt: pd.Timestamp,
                         "hold_days": _hold_d,
                     }
                 else:
-                    # 没退出 — OPEN, current = Binance live mark
                     _cur_v = binance_live_mark or _entry_perp
-                    _ret_lev = (_cur_v / _entry_perp - 1) * 100 * 20
+                    _ret_lev_raw = (_cur_v / _entry_perp - 1) * 100 * _lev
+                    _ret_lev = max(-100.0, _ret_lev_raw)
                     row = {
                         "asset": asset, "signal_date": _du.isoformat(),
                         "strategy": "FUTURES_LONG",
                         "entry_etf": eO, "entry_perp": _entry_perp,
                         "binance_symbol": binance_sym,
-                        "source": f"{binance_sym} 多头 @ ${_entry_perp:.2f}",
+                        "leverage": _lev,
+                        "source": f"{binance_sym} 多头 @ ${_entry_perp:.2f} ({_lev}×)",
                         "entry_credit_or_premium": _entry_perp,
                         "legs": [], "entry_leg_prices": [], "exit_legs": [],
                         "is_closed": False,

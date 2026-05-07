@@ -3755,9 +3755,10 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             # 期权用 ETF (合约/credit). 不再用 ratio 推算.
             if _is_futures:
                 _entry_perp = r.get("entry_perp", 0)  # ledger v3.7.164 存 Binance 真实价
-                _liq = _entry_perp * 0.955  # 20× liq buffer
+                _lev = int(r.get("leverage", 20))  # v3.7.166: per-asset (GLD 20×, SLV 10×)
+                _liq = _entry_perp * (1 - 1.0 / _lev + 0.005)  # liq buffer
                 _ent_str = (f"{r.get('binance_symbol','PERP')}@${_entry_perp:.2f} "
-                             f"(20×, Liq ${_liq:.2f})")
+                             f"({_lev}×, Liq ${_liq:.2f})")
             elif r["strategy"] in ("SELL PUT", "SHORT_VOL"):
                 _ent_str += f" → 收${_credit:.2f}"
             else:

@@ -38,6 +38,9 @@ def simulate_short_vol_position(entry_pricing: dict,
     # 修正 v3.7.148 max_risk bug: 之前用 max_spread - total_credit (错!)
     # IC 只能一边 max-lose, max_risk = max(put_width - put_credit, call_width - call_credit)
     # 这才是券商保证金 (Reg-T) 算法
+    # v3.7.166: max_risk 鲁棒化 — fallback 用 wing - net_credit, 避免退化到 0.01
+    # IC 真实 max_loss = max(put_wing, call_wing) - total_credit
+    # (一边 ITM 时另一边 OTM 留 credit, 净亏 = wing_width - credit_kept)
     if len(legs) == 4:
         sp_k = next((l[2] for l in legs if l[0] == "short_put"), 0)
         lp_k = next((l[2] for l in legs if l[0] == "long_put"), 0)
@@ -45,13 +48,9 @@ def simulate_short_vol_position(entry_pricing: dict,
         lc_k = next((l[2] for l in legs if l[0] == "long_call"), 0)
         put_width = abs(sp_k - lp_k) if sp_k and lp_k else 0
         call_width = abs(lc_k - sc_k) if sc_k and lc_k else 0
-        # 单边 credit (从入场 leg prices 重算)
-        ent_dict = {lab: p for lab, p in ent_leg_prices}
-        put_credit = ent_dict.get("short_put", 0) - ent_dict.get("long_put", 0)
-        call_credit = ent_dict.get("short_call", 0) - ent_dict.get("long_call", 0)
-        max_loss_put = max(0, put_width - put_credit)
-        max_loss_call = max(0, call_width - call_credit)
-        max_risk = max(0.01, max_loss_put, max_loss_call)
+        wing = max(put_width, call_width)
+        max_risk = wing - entry_value if wing > entry_value > 0 else wing
+        if max_risk <= 0.05: max_risk = max(wing, entry_value, 0.5)
     else:
         # 兼容 2-leg 旧实现 (put credit spread only)
         spread_width = 0.0
@@ -60,12 +59,16 @@ def simulate_short_vol_position(entry_pricing: dict,
             kl = [l[2] for l in legs if l[0] == "long_put" or
                    (l[0] == "long_call" and "short" not in l[0])]
             if ks and kl: spread_width = abs(ks[0] - kl[0])
-        max_risk = max(0.01, spread_width - entry_value) \
-                    if spread_width > 0 else entry_value
+        max_risk = spread_width - entry_value if spread_width > entry_value > 0 \
+                    else (spread_width if spread_width > 0 else max(entry_value * 5, 0.5))
+        if max_risk <= 0.05: max_risk = max(spread_width, entry_value, 0.5)
     profit_target = entry_value * (1 - cfg.profit_target_credit_pct / 100)
     stop_loss = entry_value + (cfg.stop_loss_pct / 100) * max_risk
 
-    def _pnl(cv): return (entry_value - cv) / max_risk * 100
+    # v3.7.166: pnl cap [-100%, +100%] (IC 实际 max profit = credit ≤ max_risk → ≤+100%, max loss = -100%)
+    def _pnl(cv):
+        raw = (entry_value - cv) / max_risk * 100
+        return max(-100.0, min(100.0, raw))
 
     first_kdb = db[db["code"] == legs[0][1]]
     if not len(first_kdb):
