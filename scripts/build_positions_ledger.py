@@ -31,6 +31,8 @@ from core.regime import RegimeClassifier
 from core.paper_positions import (price_strategy_at, simulate_option_exit)
 from core.binance_futures import (fetch_perp_price_at_date, fetch_perp_klines,
                                        fetch_realtime_for_asset, ASSET_SYMBOL)
+from core.strategies.futures_long import simulate_long_position
+from core.strategy_configs import get_futures_config
 
 
 LEDGER_PARQUET = "/Users/yhdong/Gold/data/positions_ledger.parquet"
@@ -104,12 +106,9 @@ def build_for_asset(asset: str, days_back: int, today_dt: pd.Timestamp,
         eL = float(ohlc.loc[_du, "Low"])
 
         for strat in strats:
-            # v3.7.166: 期货模块 — 完全用 Binance OHLC + per-asset leverage + 合理 SL
-            # GLD 20× (波动小, Binance XAUUSDT 默认), SLV 10× (波动大, 多缓冲)
-            # 退出顺序: SL (-50% margin) 先于 Liq (-100% margin), 避免动辄爆仓
-            # TP +200% margin (+10% spot 20× / +20% spot 10×)
-            # 早平锁利按 margin 收益: hold_d ≥ N 且 ret_margin ≥ M%
-            # PnL cap [-100%, ...] (margin 不能损失超过 100%)
+            # v3.7.167: 期货 delegate 到 simulate_long_position (futures_long 模块)
+            # 用 Binance kline → DataFrame → cfg from strategy_configs
+            # 不再 inline 重复 SL/TP/Liq/早平 逻辑
             if strat == "FUTURES_LONG":
                 _bin_entry = fetch_perp_price_at_date(binance_sym, _du)
                 if not _bin_entry:
@@ -118,99 +117,62 @@ def build_for_asset(asset: str, days_back: int, today_dt: pd.Timestamp,
                 _start_ms = int((_du + pd.Timedelta(days=1)).timestamp() * 1000)
                 _end_ms = int(today_dt.timestamp() * 1000)
                 _bin_klines = fetch_perp_klines(binance_sym, _start_ms, _end_ms, "1d")
-                # Per-asset leverage
-                _lev = 20 if asset == "GLD" else 10
-                # SL: -50% margin → spot pct = -50/lev (-2.5% GLD / -5% SLV)
-                _sl_spot = -50.0 / _lev
-                # Liq: -100% margin → spot ≈ -1/lev (-5% GLD / -10% SLV)
-                _liq_spot = -(100.0 - 0.5) / _lev  # 留 0.5% mm buffer
-                # TP: +200% margin → +10% (GLD) / +20% (SLV) spot
-                _tp_spot = 200.0 / _lev
-                _hold_max = 15
-                # Early locks 用 margin% 触发: 3d≥+100%, 7d≥+60%, 10d≥+20%
-                _early_locks_margin = [(3, 100.0), (7, 60.0), (10, 20.0)]
-                _exit_v = None; _exit_d = None; _exit_reason = ""
-                _hold_d = 0
+                # Binance kline → OHLC DataFrame (signal_date 之后用)
+                _ohlc_records = []
                 for k in _bin_klines:
-                    _d_k = pd.Timestamp(k[0], unit="ms").normalize()
-                    _o = float(k[1]); _h = float(k[2]); _l = float(k[3]); _c = float(k[4])
-                    _hold_d += 1
-                    _rL = (_l / _entry_perp - 1) * 100
-                    _rH = (_h / _entry_perp - 1) * 100
-                    _rC = (_c / _entry_perp - 1) * 100
-                    # 1) SL 先 (margin -50%) — 优先于爆仓, 给账户留 50% margin
-                    if _rL <= _sl_spot:
-                        _exit_v = _entry_perp * (1 + _sl_spot / 100)
-                        _exit_d = _d_k
-                        _exit_reason = f"SL -50% margin (spot {_sl_spot:+.1f}%)"
-                        break
-                    # 2) 爆仓 (开盘gap远超 SL 时才会触发)
-                    if _rL <= _liq_spot:
-                        _exit_v = _entry_perp * (1 + _liq_spot / 100)
-                        _exit_d = _d_k
-                        _exit_reason = f"爆仓 -100% margin"
-                        break
-                    # 3) TP +200% margin
-                    if _rH >= _tp_spot:
-                        _exit_v = _entry_perp * (1 + _tp_spot / 100)
-                        _exit_d = _d_k
-                        _exit_reason = f"TP +200% margin (spot +{_tp_spot:.1f}%)"
-                        break
-                    # 4) Early TP locks (margin%)
-                    _et = False
-                    _ret_margin = _rC * _lev
-                    for _hd_t, _min_m in _early_locks_margin:
-                        if _hold_d >= _hd_t and _ret_margin >= _min_m:
-                            _exit_v = _c
-                            _exit_d = _d_k
-                            _exit_reason = f"{_hd_t}d+{_min_m:.0f}%margin 早平锁利"
-                            _et = True
-                            break
-                    if _et: break
-                    # 5) Hold timeout
-                    if _hold_d >= _hold_max:
-                        _exit_v = _c
-                        _exit_d = _d_k
-                        _exit_reason = f"{_hold_max}d 时间出场"
-                        break
-                if _exit_v is not None:
-                    _ret_lev_raw = (_exit_v / _entry_perp - 1) * 100 * _lev
-                    _ret_lev = max(-100.0, _ret_lev_raw)
-                    row = {
-                        "asset": asset, "signal_date": _du.isoformat(),
-                        "strategy": "FUTURES_LONG",
-                        "entry_etf": eO, "entry_perp": _entry_perp,
-                        "binance_symbol": binance_sym,
-                        "leverage": _lev,
-                        "source": f"{binance_sym} 多头 @ ${_entry_perp:.2f} ({_lev}×)",
-                        "entry_credit_or_premium": _entry_perp,
-                        "legs": [], "entry_leg_prices": [], "exit_legs": [],
-                        "is_closed": True,
-                        "exit_date": _exit_d.isoformat(),
-                        "exit_value": _exit_v,
-                        "exit_reason": _exit_reason,
-                        "current_value": _exit_v,
-                        "pnl_pct": _ret_lev,
-                        "hold_days": _hold_d,
-                    }
+                    _ohlc_records.append({
+                        "Date": pd.Timestamp(k[0], unit="ms").normalize(),
+                        "Open": float(k[1]), "High": float(k[2]),
+                        "Low": float(k[3]), "Close": float(k[4]),
+                    })
+                if _ohlc_records:
+                    _df_perp = pd.DataFrame(_ohlc_records).set_index("Date")
+                    # entry day row 必须存在 (simulate_long_position 用 ohlc.index > entry_d)
+                    if _du not in _df_perp.index:
+                        _df_perp.loc[_du] = {
+                            "Open": _entry_perp, "High": _bin_entry["high"],
+                            "Low": _bin_entry["low"], "Close": _bin_entry["close"],
+                        }
+                        _df_perp = _df_perp.sort_index()
                 else:
-                    _cur_v = binance_live_mark or _entry_perp
-                    _ret_lev_raw = (_cur_v / _entry_perp - 1) * 100 * _lev
-                    _ret_lev = max(-100.0, _ret_lev_raw)
-                    row = {
-                        "asset": asset, "signal_date": _du.isoformat(),
-                        "strategy": "FUTURES_LONG",
-                        "entry_etf": eO, "entry_perp": _entry_perp,
-                        "binance_symbol": binance_sym,
-                        "leverage": _lev,
-                        "source": f"{binance_sym} 多头 @ ${_entry_perp:.2f} ({_lev}×)",
-                        "entry_credit_or_premium": _entry_perp,
-                        "legs": [], "entry_leg_prices": [], "exit_legs": [],
-                        "is_closed": False,
-                        "exit_date": None, "exit_value": 0.0, "exit_reason": "",
-                        "current_value": _cur_v, "pnl_pct": _ret_lev,
-                        "hold_days": max(0, (today_dt - _du).days),
-                    }
+                    _df_perp = pd.DataFrame(
+                        [{"Open": _entry_perp, "High": _bin_entry["high"],
+                          "Low": _bin_entry["low"], "Close": _bin_entry["close"]}],
+                        index=[_du])
+                # Cfg: per-asset leverage + SL/TP/Liq + early locks
+                _cfg = get_futures_config(asset)
+                # Live mark (今日盘中)
+                _live = binance_live_mark or _df_perp.iloc[-1]["Close"]
+                _sim_res = simulate_long_position(
+                    entry_d=_du, entry_spot=_entry_perp,
+                    ohlc=_df_perp, today=today_dt, cfg=_cfg,
+                    live_spot=_live)
+                _is_closed = _sim_res.get("closed", False)
+                _exit_d_obj = _sim_res.get("exit_date")
+                _exit_d_iso = (_exit_d_obj.isoformat()
+                                if isinstance(_exit_d_obj, pd.Timestamp) else None)
+                _exit_v = float(_sim_res.get("exit_price", _entry_perp) or _entry_perp)
+                _ret_lev = max(-100.0, float(
+                    _sim_res.get("ret_levered_pct", 0) or 0))
+                _hold_d = int(_sim_res.get("hold_days", 0) or 0)
+                row = {
+                    "asset": asset, "signal_date": _du.isoformat(),
+                    "strategy": "FUTURES_LONG",
+                    "entry_etf": eO, "entry_perp": _entry_perp,
+                    "binance_symbol": binance_sym,
+                    "leverage": _cfg.leverage,
+                    "source": f"{binance_sym} 多头 @ ${_entry_perp:.2f} ({_cfg.leverage}×)",
+                    "entry_credit_or_premium": _entry_perp,
+                    "legs": [], "entry_leg_prices": [], "exit_legs": [],
+                    "is_closed": _is_closed,
+                    "exit_date": _exit_d_iso if _is_closed else None,
+                    "exit_value": _exit_v if _is_closed else 0.0,
+                    "exit_reason": _sim_res.get("reason", "") if _is_closed else "",
+                    "current_value": _exit_v if _is_closed else _live,
+                    "pnl_pct": _ret_lev,
+                    "hold_days": _hold_d if _is_closed
+                                  else max(0, (today_dt - _du).days),
+                }
                 rows.append(row)
                 continue
             # 期权模块 — 仅 ETF 价 + kline_db (跟期货模块完全独立)

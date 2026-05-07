@@ -80,12 +80,17 @@ def stage_for(date: pd.Timestamp, today: pd.Timestamp) -> str:
 def simulate_futures_history(entry_d: pd.Timestamp, entry_spot_etf: float,
                                 ratio: float, asset_csv: pd.DataFrame,
                                 today: pd.Timestamp,
-                                leverage: int = 20) -> dict:
+                                leverage: int = None,
+                                asset: str = "GLD") -> dict:
     """期货多头模拟 — 委托 core/strategies/futures_long 模块.
-    v3.7.132: 替代内联逻辑, 走独立模块 (爆仓-100% / leverage 参数化 / SL 自动收紧).
+    v3.7.167: cfg 从 strategy_configs 拿 (per-asset GLD 20× / SLV 10×).
     """
-    from core.strategies.futures_long import simulate_long_position, FuturesConfig
-    cfg = FuturesConfig(leverage=leverage)  # v3.7.130 grid 默认 (TP=12 SL=5 hold=15)
+    from core.strategies.futures_long import simulate_long_position
+    from core.strategy_configs import get_futures_config
+    cfg = get_futures_config(asset)
+    if leverage is not None and leverage != cfg.leverage:
+        from dataclasses import replace as _replace
+        cfg = _replace(cfg, leverage=leverage)
     res = simulate_long_position(entry_d, entry_spot_etf, asset_csv, today, cfg)
     if not res.get("closed"):
         return {"closed": False, "reason": res.get("reason", "持仓中"),
@@ -307,11 +312,11 @@ def main():
             for strat in strats:
                 n_total += 1
                 if "FUTURES" in strat:
-                    res = simulate_futures_history(d, entry_spot, ratio, daily, today)
+                    res = simulate_futures_history(d, entry_spot, ratio, daily, today, asset=asset_key)
                 elif stage == "stage1_spot_only":
                     if strat != "FUTURES_LONG":
                         continue
-                    res = simulate_futures_history(d, entry_spot, ratio, daily, today)
+                    res = simulate_futures_history(d, entry_spot, ratio, daily, today, asset=asset_key)
                 else:  # stage2_main_3m OR stage2_leaps_aux 都用同 DTE 45
                     res = simulate_option_stage23(d, entry_spot, strat, asset_key,
                                                        daily, today)
