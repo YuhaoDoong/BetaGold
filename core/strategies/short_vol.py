@@ -111,9 +111,10 @@ def simulate_short_vol_position(entry_pricing: dict,
         return {"is_closed": False, "current_value": cur_value, "hold_days": hold,
                  "pnl_pct": pnl_pct, "leg_prices": leg_prices_at_exit,
                  "max_risk": max_risk}
-    # v3.7.151: kline_db 没今日数据 (1-2d 滞后), OPEN MTM 用最近可用日
+    # v3.7.152: kline_db 没今日数据 (1-2d 滞后), OPEN MTM 用最近可用日
+    # latest_date >= sig_d (取入场日及之后 latest), 不能用 < sig_d 的旧数据
     nearest = db[db["code"].isin([l[1] for l in legs]) &
-                  (db["date"] <= today_dt)]
+                  (db["date"] >= sig_d) & (db["date"] <= today_dt)]
     if not nearest.empty:
         latest_date = nearest["date"].max()
         cur_total = 0.0; ok = True; leg_prices_today = []
@@ -125,9 +126,15 @@ def simulate_short_vol_position(entry_pricing: dict,
             cur_total += _qty * _p
         if ok:
             cur_value = -cur_total
+            hold_days_actual = max(0, (today_dt - sig_d).days)  # 真持仓天数
             return {"is_closed": False, "current_value": cur_value,
-                     "hold_days": (latest_date - sig_d).days,
+                     "hold_days": hold_days_actual,
                      "pnl_pct": _pnl(cur_value),
                      "leg_prices": leg_prices_today,
                      "max_risk": max_risk}
-    return {"is_closed": False, "reason": "no data after entry"}
+    # 真没数据 — 用 entry leg prices 当 OPEN MTM (无变化, hold_days 0)
+    return {"is_closed": False, "current_value": entry_value,
+             "hold_days": max(0, (today_dt - sig_d).days),
+             "pnl_pct": 0.0,
+             "leg_prices": ent_leg_prices,
+             "max_risk": max_risk}
