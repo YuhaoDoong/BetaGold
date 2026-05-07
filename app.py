@@ -3708,16 +3708,28 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             else:
                 _open_recs.append(_rec)
 
-    # 历史未平仓信号 (OPEN) — v3.7.159 直读 ledger.json (single source of truth)
+    # 历史未平仓持仓 — v3.7.162 直读 ledger.json (期权 + 期货 统一)
     st.divider()
     _ledger_path = "/Users/yhdong/Gold/data/positions_ledger.json"
     _ledger_open = []
     _ledger_closed = []
+
+    # v3.7.162: 期货用 Binance live 真实价 (跨 row 一致, 不再用 ledger 的 EOD snapshot)
+    _binance_mark = None
+    _binance_funding = 0.0
+    try:
+        from core.binance_futures import fetch_xauusdt_realtime
+        _b_rt = fetch_xauusdt_realtime()
+        if _b_rt:
+            _binance_mark = _b_rt.get("mark_price")
+            _binance_funding = _b_rt.get("funding_rate", 0)
+    except Exception:
+        pass
+
     try:
         import json as _json
         with open(_ledger_path) as _f:
             _all = _json.load(_f)
-        # 过滤当前 asset
         _asset_l = [r for r in _all if r["asset"] == asset_key]
 
         def _fmt_legs_l(legs, leg_prices):
@@ -3736,22 +3748,35 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             _du = pd.Timestamp(r["signal_date"])
             _ent_str = _fmt_legs_l(r["legs"], r["entry_leg_prices"])
             _credit = r["entry_credit_or_premium"]
+            _is_futures = r["strategy"] == "FUTURES_LONG"
             if r["strategy"] in ("SELL PUT", "SHORT_VOL"):
                 _ent_str += f" → 收${_credit:.2f}"
-            elif r["strategy"] == "FUTURES_LONG":
-                _ent_str = (f"USDT@${r['entry_etf']*gc_gld_r:.0f} "
-                             f"(20×, Liq ${r['entry_etf']*gc_gld_r*0.955:.0f})")
+            elif _is_futures:
+                _entry_gc = r["entry_etf"] * gc_gld_r
+                _liq = _entry_gc * 0.955  # 20× lev liq buffer
+                _ent_str = f"USDT@${_entry_gc:.0f} (20×, Liq ${_liq:.0f})"
             else:
                 _ent_str += f" → ${_credit:.2f}"
 
-            if r["is_closed"]:
+            # v3.7.162: 期货 OPEN 用 Binance live mark 一致跨 row
+            if _is_futures and not r["is_closed"] and _binance_mark and _binance_mark > 0:
+                _entry_gc = r["entry_etf"] * gc_gld_r
+                _ret_spot = (_binance_mark / _entry_gc - 1) * 100
+                _ret_lev = _ret_spot * 20  # ROI on margin
+                _exit_str = (f"Binance ${_binance_mark:.2f} "
+                              f"(funding {_binance_funding*100:.4f}%/8h)")
+                _gain_str = f"{_ret_lev:+.1f}%"
+                _exit_label = f'OPEN ({r["hold_days"]}d, live)'
+            elif r["is_closed"]:
                 _ex_d = pd.Timestamp(r["exit_date"]).strftime("%m-%d") if r["exit_date"] else "?"
                 _exit_str = _fmt_legs_l(r["legs"], r["exit_legs"])
                 _exit_str += f" → 平${r['exit_value']:.2f}"
+                _gain_str = f"{r['pnl_pct']:+.1f}%"
                 _exit_label = f'{_ex_d} ({r["exit_reason"]})'
             else:
                 _exit_str = _fmt_legs_l(r["legs"], r["exit_legs"])
                 _exit_str += f" → 现${r['current_value']:.2f}"
+                _gain_str = f"{r['pnl_pct']:+.1f}%"
                 _exit_label = f'OPEN ({r["hold_days"]}d)'
 
             _rec = {
@@ -3760,9 +3785,9 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                 "合约": r["source"],
                 "入场ETF": f"${r['entry_etf']:.2f}",
                 "入场GC=F": f"${r['entry_etf']*gc_gld_r:.0f}",
-                "入场期权": _ent_str,
-                "现/平期权": _exit_str,
-                "P&L%": f"{r['pnl_pct']:+.1f}%",
+                "入场详情": _ent_str,            # v3.7.162: 改名 (期权+期货)
+                "现/平价": _exit_str,             # v3.7.162: 改名 (期权 leg / 期货 mark)
+                "P&L%": _gain_str,
                 "状态": _exit_label,
             }
             if r["is_closed"]:
@@ -3774,7 +3799,11 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     except Exception as _e:
         st.error(f"Ledger 加载错: {_e}")
 
-    st.subheader(f"📊 历史未平仓信号 ({len(_ledger_open)} 笔)")
+    st.subheader(f"📊 历史未平仓持仓 ({len(_ledger_open)} 笔)")
+    if _binance_mark:
+        st.caption(f"💹 Binance XAUUSDT 实时 mark: **${_binance_mark:.2f}** "
+                   f"(funding {_binance_funding*100:.4f}%/8h) — "
+                   f"所有期货 OPEN 用此价计算 PnL")
     if _ledger_open:
         st.dataframe(pd.DataFrame(_ledger_open).iloc[::-1],
                       use_container_width=True, hide_index=True)
@@ -3787,11 +3816,10 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     else:
         st.caption("当前无未平仓信号 (ledger 空 — 跑 build_positions_ledger.py)")
 
-    # 近一月期权模拟 (CLOSED) — v3.7.159 直读 ledger
+    # 近一月已平仓 (CLOSED) — v3.7.162 改名 (期权+期货统一)
     st.divider()
-    # 用 ledger 数据替代 _closed_recs (legacy)
     _closed_recs = _ledger_closed if _ledger_closed else _closed_recs
-    st.subheader(f"🎯 近一月期权模拟 — 已平仓 ({len(_closed_recs)} 笔)")
+    st.subheader(f"🎯 近一月已平仓持仓 ({len(_closed_recs)} 笔)")
     if _closed_recs:
         st.dataframe(pd.DataFrame(_closed_recs).iloc[::-1],
                       use_container_width=True, hide_index=True)
