@@ -16,10 +16,18 @@ import pandas as pd
 
 @dataclass
 class BCConfig:
-    """BC 入场 + 退出参数."""
-    profit_target_mult: float = 2.0      # +100% premium (cur >= entry × 2)
-    stop_loss_mult: float = 0.5          # -50% premium (cur <= entry × 0.5)
-    base_dte: int = 45                   # 默认 DTE (智能 DTE 信号距今 + 30d)
+    """BC 入场 + 退出参数 (v3.7.169 grid 后).
+
+    90d kline_db grid (n=11 GLD / n=29 SLV):
+      GLD 现行 (2.0x/0.5x/45d): wr=22% sum=-200%
+      GLD 最优 (1.5x/0.7x/30d): wr=55% sum=+231% ← +431% 改善
+      SLV 现行 (2.0x/0.5x/45d): wr=29% sum=-117%
+      SLV 最优 (1.5x/0.7x/30d): wr=45% sum=+351% ← +468% 改善
+    取 1.5x/0.7x/30d (两 asset 同方向 — sample 小但一致信号).
+    """
+    profit_target_mult: float = 1.5      # v3.7.169: 2.0→1.5 (+50% 早平 vs +100%)
+    stop_loss_mult: float = 0.7          # v3.7.169: 0.5→0.7 (-30% SL vs -50%)
+    base_dte: int = 30                   # v3.7.169: 45→30 (近 DTE theta 优势)
 
 
 def simulate_bc_position(entry_pricing: dict,

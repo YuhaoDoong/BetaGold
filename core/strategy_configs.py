@@ -20,34 +20,41 @@ from core.strategies.buy_call import BCConfig
 from core.strategies.straddle import StraddleConfig
 
 
-# ── 期货 (v3.7.168 grid-validated) ──
-# 近 1y grid 结果 (n=15 GLD / n=30 SLV):
-#   GLD: SL=50%→sum -221% (wr 33%); SL=75%→sum +47% (wr 47%); SL=100% 同
-#       hold=10>15>20 (热信号尽快锁利)
-#   SLV: SL=50%→sum -528% (wr 33%); SL=100%→sum +3% (wr 60%); TP=100%>200%
-# 解读: SL=50% margin 在波动期被噪声打止损, 然后趋势继续我们错过.
-#       SL 放宽 + 早平 (基于 hold/margin) 才是正确机制.
+# ── 期货 (v3.7.169 grid-validated 5y COMEX) ──
+# 5y grid (n=151 GLD GC=F / n=230 SLV SI=F, source=comex 2020-04 至今):
+#   GLD lev=20×:
+#     现行 TP200/SL50/h15:  wr=63% sum=+2952% sharpe=+0.31
+#     最优 TP150/SL100/h20: wr=82% sum=+4867% sharpe=+0.51 (+1900%)
+#   SLV lev=10×:
+#     现行 TP200/SL50/h15:  wr=56% sum=+1101% sharpe=+0.086
+#     最优 (10× SL100 h20): wr=73% sum=+2600% sharpe=+0.18 (+1500%)
+#     绝对最优 lev15×: wr=65% sum=+3395% (但爆仓风险 ↑)
+# 1y grid (n=15-30) 与 5y 反向 — 短期噪声不可信. 5y 大样本主导决策.
+# 核心结论: SL=100% margin (≈ liq-only) 在两个 asset 都明显优于紧 SL.
+#          SL 太紧噪声打止损, 错过黄金/白银长期趋势.
+#          hold 20d > 15d (给趋势时间走完)
 FUTURES_GLD = FuturesConfig(
     leverage=20,
-    tp_margin_pct=200.0,    # +200% margin = +10% spot
-    sl_margin_pct=75.0,     # v3.7.168: 50→75% margin (-3.75% spot, 给震荡空间)
-    hold_max_days=10,       # v3.7.168: 15→10d (热信号尽快锁利)
+    tp_margin_pct=150.0,    # v3.7.169: 200→150% (5y grid 略优)
+    sl_margin_pct=100.0,    # v3.7.169: 50→100% margin (-5% spot, 等价 liq-only)
+                              # 5y wr 提升 19pp (63→82%)
+    hold_max_days=20,       # v3.7.169: 15→20d (黄金趋势走得久)
     early_tp_locks=(
         (3, 5.0),    # 3d ≥ +5% spot (+100% margin) 锁利
-        (5, 3.0),    # 5d ≥ +3% spot (+60% margin)
-        (7, 1.0),    # 7d ≥ +1% spot (+20% margin)
+        (7, 3.0),    # 7d ≥ +3% spot (+60% margin)
+        (12, 1.0),   # 12d ≥ +1% spot (+20% margin)
     ),
 )
 FUTURES_SLV = FuturesConfig(
     leverage=10,
-    tp_margin_pct=100.0,    # v3.7.168: 200→100% margin (+10% spot, grid 偏好近 TP)
-    sl_margin_pct=100.0,    # v3.7.168: 50→100% margin (-10% spot, 等价 liq-only;
-                              # SL=50%(5% spot) 在 SLV 日波 3-5% 区间会被噪声打)
-    hold_max_days=15,
+    tp_margin_pct=200.0,    # v3.7.169: 保 200% (TP100 没明显优势)
+    sl_margin_pct=100.0,    # v3.7.169: 50→100% margin (= 等价 liq-only)
+                              # 5y wr 提升 17pp (56→73%)
+    hold_max_days=20,       # v3.7.169: 15→20d
     early_tp_locks=(
         (3, 5.0),    # 3d ≥ +5% spot (+50% margin)
         (7, 3.0),    # 7d ≥ +3% spot (+30% margin)
-        (10, 1.0),   # 10d ≥ +1% spot (+10% margin)
+        (12, 1.0),   # 12d ≥ +1% spot (+10% margin)
     ),
 )
 

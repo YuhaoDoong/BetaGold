@@ -15,10 +15,21 @@ import pandas as pd
 
 @dataclass
 class SPConfig:
-    """SP credit spread 退出参数."""
-    profit_target_credit_pct: float = 50.0   # +50% credit (cur ≤ entry × 0.5)
-    stop_loss_margin_pct: float = 50.0       # -50% margin (cur ≥ entry + 0.5 × max_risk)
-    base_dte: int = 45
+    """SP credit spread 退出参数 (v3.7.169 grid 后).
+
+    90d kline_db grid (n=10 GLD / n=24 SLV):
+      GLD 现行 (50/50/45d): wr=60% sum=-47%
+      GLD 最优 (50/100/30d): wr=78% sum=+70%
+      SLV 现行 (50/50/45d): wr=46% sum=-114%
+      SLV 最优 (30/100/30d): wr=92% sum=+709% ← 极大改善
+    SL 50%→100% margin: 不主动止损, 让 spread 走到 expiry (premium decay 帮我们).
+    profit_target 30 vs 50: SLV 短取 30%, GLD 50% 留空间.
+    """
+    profit_target_credit_pct: float = 50.0   # 保持 50% (GLD 优于 30%)
+    stop_loss_margin_pct: float = 100.0      # v3.7.169: 50→100% margin (= 不主动 SL)
+                                              # SP credit spread 最大风险 = max_risk,
+                                              # SL 50% 提前锁亏, expiry 反而能收 part credit
+    base_dte: int = 30                       # v3.7.169: 45→30 (近 DTE theta 优势)
 
 
 def simulate_sp_position(entry_pricing: dict,
