@@ -3205,7 +3205,7 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                                 straddle_active=_is_straddle_now,
                                 straddle_reason=(_uni_today["chosen_reason"]
                                                   if _is_straddle_now else ""),
-                                rv_val=rv)
+                                rv_val=rv, asset=asset_key)
 
     # ════════════════════════════════════════════════════════════════
     # v3.7.89 持仓管理重构: 4 节合并为 2 节 (按用户需求精简)
@@ -3976,11 +3976,46 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
 # ══════════════════════════════════════════════════════════
 # 共享: 期权策略推荐
 # ══════════════════════════════════════════════════════════
+@st.cache_data(ttl=300)
+def _load_strategy_stats():
+    """v3.7.181: 加载 strategy_stats.json (近 1y WR + Kelly 推荐仓位)."""
+    import json
+    try:
+        with open("/Users/yhdong/Gold/data/strategy_stats.json") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _format_strategy_stats_pill(asset: str, current_signal: str,
+                                   straddle_active: bool) -> str:
+    """v3.7.181: 信号推荐区显示 '近1y WR | 推荐仓位 ½K'."""
+    stats = _load_strategy_stats()
+    if not stats or asset not in stats: return ""
+    # 映射 current_signal → 策略名
+    sig_map = {"BUY_CALL": "BUY CALL", "SELL_PUT": "SELL PUT"}
+    strats_to_show = []
+    if straddle_active: strats_to_show.append("STRADDLE")
+    if current_signal in sig_map:
+        strats_to_show.append(sig_map[current_signal])
+    if not strats_to_show: return ""
+    parts = []
+    for s in strats_to_show:
+        d = stats[asset].get(s, {})
+        r = d.get("real_1y", {})
+        wr = r.get("wr_pct"); n = r.get("n", 0)
+        hk = d.get("recommended_half_kelly"); qk = d.get("recommended_qtr_kelly")
+        if wr is not None and n >= 3:
+            parts.append(f"**{s}** 近1y: WR=**{wr:.0f}%** (n={n}) | "
+                          f"½Kelly=**{hk}%** | ¼Kelly={qk}%")
+    return "\n\n".join([":bar_chart: 实战统计:"] + parts) if parts else ""
+
+
 def _render_options_section(eod_df, snap_date, last_close, next_bp090,
                             oi_adj_bp090=0, gc_gld_ratio=None,
                             today_sgt=None, current_signal=None,
                             straddle_active=False, straddle_reason="",
-                            rv_val=0):
+                            rv_val=0, asset="GLD"):
     """渲染期权策略推荐 — 只推荐当日最优策略."""
     if eod_df is None:
         cfg = load_config()
@@ -3997,6 +4032,11 @@ def _render_options_section(eod_df, snap_date, last_close, next_bp090,
     price_src = f"实时≈${current_gld:.1f}" if _rt else f"收盘 ${last_close:.2f}"
 
     st.caption(f"期权数据: EOD {snap_date} | {price_src} | 退出${eff_exit:.1f}")
+
+    # v3.7.181: 显示策略实战 stats (近 1y WR + 推荐仓位)
+    _stats_pill = _format_strategy_stats_pill(asset, current_signal, straddle_active)
+    if _stats_pill:
+        st.markdown(_stats_pill)
 
     # ── 根据当前信号推荐最优策略 ──
     if current_signal == "EXIT":
@@ -5414,7 +5454,7 @@ def main():
                                 gc_gld_ratio, today_sgt, _sig_for_opt,
                                 straddle_active=_is_straddle_pred,
                                 straddle_reason=_straddle_reason_pred,
-                                rv_val=_rv_val)
+                                rv_val=_rv_val, asset=asset_key)
 
     # ── 近期信号 ──
     st.divider()

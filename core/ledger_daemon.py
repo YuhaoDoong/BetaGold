@@ -18,6 +18,7 @@ from pathlib import Path
 
 REBUILD_INTERVAL_SEC = 300  # 5 min
 LEDGER_BUILDER = "/Users/yhdong/GoldDash/scripts/build_positions_ledger.py"
+STATS_BUILDER = "/Users/yhdong/GoldDash/scripts/compute_strategy_stats.py"  # v3.7.181
 LOG_FILE = "/tmp/ledger_daemon.log"
 
 _DAEMON_LOCK = threading.Lock()
@@ -35,6 +36,11 @@ def _rebuild_loop():
                     [sys.executable, LEDGER_BUILDER, "--days", "90"],
                     stdout=f, stderr=subprocess.STDOUT, timeout=180)
                 f.write(f"=== exit code {proc.returncode} ===\n")
+                # v3.7.181: ledger 重建后自动算 stats (Dashboard 推荐用)
+                proc2 = subprocess.run(
+                    [sys.executable, STATS_BUILDER],
+                    stdout=f, stderr=subprocess.STDOUT, timeout=60)
+                f.write(f"=== stats exit code {proc2.returncode} ===\n")
         except Exception as e:
             try:
                 with open(LOG_FILE, "a") as f:
