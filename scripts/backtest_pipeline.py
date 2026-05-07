@@ -56,8 +56,9 @@ for p in STAGES.values():
 
 WEIGHT_REAL = 0.7
 WEIGHT_SIM = 0.3
-REAL_WINDOW_DAYS = 365  # 真实数据窗口
-SIM_WINDOW_DAYS = 1825  # 模拟数据窗口 (5y)
+# v3.7.173: window 可 CLI 传入 (--real-days / --sim-days)
+REAL_WINDOW_DAYS = int(os.environ.get("REAL_WINDOW_DAYS", 365))
+SIM_WINDOW_DAYS = int(os.environ.get("SIM_WINDOW_DAYS", 1825))
 
 
 # ─────────────────────── STAGE 0: 原始信号 ───────────────────────
@@ -182,10 +183,10 @@ def stage1_filtered():
 
 # ─────────────────────── STAGE 2: 分源模拟 PnL ───────────────────────
 def _save_pnls(asset, strat, source, rows, today_dt):
-    """rows: list of dict per signal."""
+    """rows: list of dict per signal. 空 rows 也覆盖 (写空 parquet) 防残留."""
     out = STAGES["stage2"] / f"pnl_{asset.lower()}_{strat}_{source}_{today_dt.strftime('%Y%m%d')}.parquet"
-    if rows:
-        pd.DataFrame(rows).to_parquet(out)
+    df = pd.DataFrame(rows) if rows else pd.DataFrame(columns=["signal_date", "asset", "strategy", "source", "pnl_pct", "hold_days", "exit_reason"])
+    df.to_parquet(out)
     return out
 
 
@@ -394,11 +395,20 @@ def stage3_summary():
             print(f"  {r['strategy']:<14}{real_s:<32}{sim_s:<32}{wgt_s:>8}")
 
 
-if __name__ == "__main__":
+def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("which", nargs="?", default="all",
                       choices=["stage0", "stage1", "stage2", "stage3", "all"])
+    ap.add_argument("--real-days", type=int, default=None,
+                      help="真实数据窗口 (默认 365)")
+    ap.add_argument("--sim-days", type=int, default=None,
+                      help="模拟数据窗口 (默认 1825)")
     args = ap.parse_args()
+    global REAL_WINDOW_DAYS, SIM_WINDOW_DAYS
+    if args.real_days is not None:
+        REAL_WINDOW_DAYS = args.real_days
+    if args.sim_days is not None:
+        SIM_WINDOW_DAYS = args.sim_days
     print(f"v3.7.171 backtest pipeline @ {datetime.now()}")
     print(f"  PIPE = {PIPE}")
     print(f"  weights: real={WEIGHT_REAL} sim={WEIGHT_SIM}")
@@ -412,3 +422,7 @@ if __name__ == "__main__":
             stage2_simulate_sim(asset)
     if args.which in ("stage3", "all"):
         stage3_summary()
+
+
+if __name__ == "__main__":
+    main()
