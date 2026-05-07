@@ -111,4 +111,23 @@ def simulate_short_vol_position(entry_pricing: dict,
         return {"is_closed": False, "current_value": cur_value, "hold_days": hold,
                  "pnl_pct": pnl_pct, "leg_prices": leg_prices_at_exit,
                  "max_risk": max_risk}
+    # v3.7.151: kline_db 没今日数据 (1-2d 滞后), OPEN MTM 用最近可用日
+    nearest = db[db["code"].isin([l[1] for l in legs]) &
+                  (db["date"] <= today_dt)]
+    if not nearest.empty:
+        latest_date = nearest["date"].max()
+        cur_total = 0.0; ok = True; leg_prices_today = []
+        for _lab, _code, _K, _qty in legs:
+            r = db[(db["code"] == _code) & (db["date"] == latest_date)]
+            if not len(r): ok = False; break
+            _p = float(r.iloc[0]["close"])
+            leg_prices_today.append((_lab, _p))
+            cur_total += _qty * _p
+        if ok:
+            cur_value = -cur_total
+            return {"is_closed": False, "current_value": cur_value,
+                     "hold_days": (latest_date - sig_d).days,
+                     "pnl_pct": _pnl(cur_value),
+                     "leg_prices": leg_prices_today,
+                     "max_risk": max_risk}
     return {"is_closed": False, "reason": "no data after entry"}

@@ -3578,14 +3578,13 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                     return "—"
                 parts = []
                 for (lab, code, K, qty), (lp_lab, p) in zip(legs_def, leg_prices):
+                    # v3.7.151: 修 IC 4-leg 显示 — short_call 之前误显示成 -P
                     if "futures" in lab:
                         parts.append(f"FUT@${p:.2f}")
-                    elif "short" in lab:
-                        parts.append(f"-P${K:.0f}@${p:.2f}")
-                    elif "put" in lab:
-                        parts.append(f"+P${K:.0f}@${p:.2f}")
-                    elif "call" in lab:
-                        parts.append(f"+C${K:.0f}@${p:.2f}")
+                    else:
+                        _sign = "-" if qty < 0 else "+"
+                        _t = "C" if "call" in lab else "P"
+                        parts.append(f"{_sign}{_t}${K:.0f}@${p:.2f}")
                 return " / ".join(parts)
             _ent_str = _fmt_legs(_ent_pricing["legs"], _ent_legs)
             if "SELL PUT" in _strat:
