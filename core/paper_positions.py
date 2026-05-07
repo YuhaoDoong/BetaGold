@@ -319,20 +319,24 @@ def fetch_chain_atm_premium(asset: str, expiry_str: str,
 
 _KLINE_DB_PATH = "/Users/yhdong/Gold/data/raw/options_history/kline_db/all_klines.parquet"
 _KLINE_DB_CACHE: Optional[pd.DataFrame] = None
+_KLINE_DB_MTIME: Optional[float] = None  # v3.7.156: 文件 mtime 守卫
 
 
 def _load_kline_db() -> Optional[pd.DataFrame]:
     """加载 EOD 期权 OHLC kline_db (cached)."""
-    global _KLINE_DB_CACHE
-    if _KLINE_DB_CACHE is not None:
-        return _KLINE_DB_CACHE
+    # v3.7.156: 加 mtime 守卫 — 文件变 → cache 自动重载
+    global _KLINE_DB_CACHE, _KLINE_DB_MTIME
     import os
     if not os.path.exists(_KLINE_DB_PATH):
         return None
+    cur_mtime = os.path.getmtime(_KLINE_DB_PATH)
+    if _KLINE_DB_CACHE is not None and _KLINE_DB_MTIME == cur_mtime:
+        return _KLINE_DB_CACHE
     df = pd.read_parquet(_KLINE_DB_PATH)
     df["date"] = pd.to_datetime(df["date"])
     df["expiry"] = pd.to_datetime(df["expiry"])
     _KLINE_DB_CACHE = df
+    _KLINE_DB_MTIME = cur_mtime
     return df
 
 
