@@ -3910,6 +3910,20 @@ def main():
     today_sgt = get_today_sgt()
     st.title(f"贵金属交易仪表板  ({today_sgt})")
 
+    # v3.7.157: startup 检查 — 关键数据文件 mtime 变化时强制清所有 cache
+    # 防御 paper_positions._KLINE_DB_CACHE 这种 module-global 永不失效 cache
+    try:
+        import core.paper_positions as _pp
+        cur_db_mtime = os.path.getmtime(
+            "/Users/yhdong/Gold/data/raw/options_history/kline_db/all_klines.parquet")
+        if hasattr(_pp, "_KLINE_DB_MTIME") and _pp._KLINE_DB_MTIME is not None \
+                and _pp._KLINE_DB_MTIME != cur_db_mtime:
+            _pp._KLINE_DB_CACHE = None
+            _pp._KLINE_DB_MTIME = None
+            st.cache_data.clear()
+    except Exception:
+        pass
+
     # 自动检测并更新市场数据
     cfg_refresh = load_config()
     with st.spinner("检测数据更新..."):
@@ -3945,9 +3959,16 @@ def main():
     st.sidebar.header("设置")
     asset = st.sidebar.selectbox("资产", ["GLD (黄金)", "SLV (白银)"], index=0)
     asset_key = "GLD" if "GLD" in asset else "SLV"
-    # v3.7.155: 强制刷新按钮 (清 streamlit cache)
+    # v3.7.155/157: 强制刷新按钮 (清 streamlit cache + module-level cache)
     if st.sidebar.button("🔄 强制刷新数据"):
         st.cache_data.clear()
+        # 清 paper_positions._KLINE_DB_CACHE module-global
+        try:
+            import core.paper_positions as _pp
+            _pp._KLINE_DB_CACHE = None
+            _pp._KLINE_DB_MTIME = None
+        except Exception:
+            pass
         st.rerun()
 
     # v3.7.63: 模块化 — GLD/SLV 共用 pipeline, 仅参数不同

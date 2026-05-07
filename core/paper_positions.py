@@ -320,6 +320,7 @@ def fetch_chain_atm_premium(asset: str, expiry_str: str,
 _KLINE_DB_PATH = "/Users/yhdong/Gold/data/raw/options_history/kline_db/all_klines.parquet"
 _KLINE_DB_CACHE: Optional[pd.DataFrame] = None
 _KLINE_DB_MTIME: Optional[float] = None  # v3.7.156: 文件 mtime 守卫
+_KLINE_DB_SIZE: Optional[int] = None     # v3.7.157: 文件 size 双重守卫
 
 
 def _load_kline_db() -> Optional[pd.DataFrame]:
