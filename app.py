@@ -2134,6 +2134,38 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         except Exception:
             return None
 
+    # v3.7.160: ledger-driven 主图 marker (跟历史 section 同源, 修 5-5/5-6 marker 缺)
+    try:
+        import json as _json_m
+        with open("/Users/yhdong/Gold/data/positions_ledger.json") as _flm:
+            _ledger_m = _json_m.load(_flm)
+        _ledger_asset = [r for r in _ledger_m if r["asset"] == asset_key]
+        # viz 窗口
+        _viz_start = plot_ts[0].normalize() if len(plot_ts) else None
+        _viz_end = plot_ts[-1].normalize() if len(plot_ts) else None
+        _strat_marker = {
+            "BUY CALL": ("#2196F3", "^", 130),
+            "SELL PUT": ("#FF9800", "^", 130),
+            "STRADDLE": ("#FFD700", "*", 220),
+            "SHORT_VOL": ("#FF6F00", "P", 200),
+            "FUTURES_LONG": ("#9C27B0", "s", 100),
+        }
+        for _row_l in _ledger_asset:
+            _d_l = pd.Timestamp(_row_l["signal_date"]).normalize()
+            if _viz_start and _d_l < _viz_start: continue
+            if _viz_end and _d_l > _viz_end: continue
+            _strat_l = _row_l["strategy"]
+            _color_l, _mark_l, _sz_l = _strat_marker.get(_strat_l, ("gray", "o", 100))
+            _xi_l = _xi_open(_d_l)  # 09:30 RTH 开盘
+            if _xi_l is None: continue
+            _y_l = float(close_d.get(_d_l, _row_l["entry_etf"]))
+            ax.scatter([_xi_l], [_y_l * _viz_ratio],
+                        marker=_mark_l, s=_sz_l, color=_color_l,
+                        edgecolors="black", linewidths=1.0, zorder=8,
+                        label="_nolegend_")
+    except Exception as _e_l:
+        pass  # ledger 不存在或损坏, 忽略
+
     # v3.7.70/72: 混合信号不合并; STRADDLE/SHORT_VOL 标在美股开盘时间点
     for d, r in _unified_viz.iterrows():
         if xi(d) is None:
