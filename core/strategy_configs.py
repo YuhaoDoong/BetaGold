@@ -49,25 +49,28 @@ from core.strategies.straddle import StraddleConfig
 # lev=3×  爆仓距离 ≈ 33% spot → 极端 wick 也安全
 # SP 期权按 expiry 日线 close 计 mark, wick 不影响 → 解释 3-19/23 SP 盈利但 FUT 爆仓
 FUTURES_GLD = FuturesConfig(
-    leverage=5,             # v3.7.174: 10→5× (爆仓 5%→19.5% spot, wick 安全)
-    tp_margin_pct=200.0,
-    sl_margin_pct=100.0,    # = liq-only (爆仓即出)
-    hold_max_days=20,
-    early_tp_locks=(
-        (3, 10.0),   # 3d ≥ +10% spot (+50% margin @5×) 锁利
-        (7, 6.0),    # 7d ≥ +6% spot (+30% margin)
-        (12, 2.0),   # 12d ≥ +2% spot (+10% margin)
-    ),
-)
-FUTURES_SLV = FuturesConfig(
-    leverage=3,             # v3.7.174: 5→3× (银日波 3-5%, 爆仓 19→33% spot)
+    leverage=5,
     tp_margin_pct=200.0,
     sl_margin_pct=100.0,
     hold_max_days=20,
+    # v3.7.184: 撤销 v3.7.183 过激进早平 (用户实际想法是 SP 平太早, 不是 FUT 太晚)
+    # 恢复 GLD lev=5× 适度早平阈值
     early_tp_locks=(
-        (3, 15.0),   # 3d ≥ +15% spot (+45% margin @3×) 锁利
-        (7, 10.0),   # 7d ≥ +10% spot (+30% margin)
-        (12, 4.0),   # 12d ≥ +4% spot (+12% margin)
+        (3, 5.0),    # 3d ≥ +5% spot (+25% margin)
+        (7, 3.0),    # 7d ≥ +3% spot (+15% margin)
+        (12, 1.0),   # 12d ≥ +1% spot (+5% margin)
+    ),
+)
+FUTURES_SLV = FuturesConfig(
+    leverage=3,
+    tp_margin_pct=200.0,
+    sl_margin_pct=100.0,
+    hold_max_days=20,
+    # v3.7.184: SLV 早平阈值适中 (银波动大但 lev=3× 不需过激进)
+    early_tp_locks=(
+        (3, 8.0),    # 3d ≥ +8% spot (+24% margin)
+        (7, 5.0),    # 7d ≥ +5% spot (+15% margin)
+        (12, 2.0),   # 12d ≥ +2% spot (+6% margin)
     ),
 )
 
@@ -82,8 +85,15 @@ SHORT_VOL_DEFAULT = ShortVolConfig(
 )
 SHORT_VOL_DISABLED = True  # ★ v3.7.177: 当前默认停用
 
-# ── SELL_PUT credit spread ──
-SELL_PUT_DEFAULT = SPConfig()
+# ── SELL_PUT credit spread ── v3.7.184 拆 per-asset (grid 实测)
+# GLD SP (1y n=14): pt=50 最优 sB=+17.8 (WR=80% sum=+116%)
+# SLV SP (1y n=46): pt=30 最优 sB=+68.9 (WR=89% sum=+694%, 比 pt=50 强 90%)
+# SLV 高频 + mean reversion 快 → 更早锁利反而总收益更高
+SELL_PUT_GLD = SPConfig(profit_target_credit_pct=50.0, stop_loss_margin_pct=100.0,
+                          base_dte=30)
+SELL_PUT_SLV = SPConfig(profit_target_credit_pct=30.0, stop_loss_margin_pct=100.0,
+                          base_dte=30)
+SELL_PUT_DEFAULT = SELL_PUT_GLD  # 兼容旧 import
 
 # ── BUY_CALL ──
 BUY_CALL_DEFAULT = BCConfig()
@@ -97,8 +107,8 @@ _REGISTRY = {
     ("SLV", "FUTURES_LONG"): FUTURES_SLV,
     ("GLD", "SHORT_VOL"): SHORT_VOL_DEFAULT,
     ("SLV", "SHORT_VOL"): SHORT_VOL_DEFAULT,
-    ("GLD", "SELL PUT"): SELL_PUT_DEFAULT,
-    ("SLV", "SELL PUT"): SELL_PUT_DEFAULT,
+    ("GLD", "SELL PUT"): SELL_PUT_GLD,
+    ("SLV", "SELL PUT"): SELL_PUT_SLV,
     ("GLD", "BUY CALL"): BUY_CALL_DEFAULT,
     ("SLV", "BUY CALL"): BUY_CALL_DEFAULT,
     ("GLD", "STRADDLE"): STRADDLE_DEFAULT,

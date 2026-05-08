@@ -256,12 +256,15 @@ def stage2_simulate_real(asset: str):
                                       "hold_days": int(res.get("hold_days", 0)),
                                       "exit_reason": str(res.get("exit_reason", ""))})
         elif isinstance(bt, str) and bt == "SELL PUT":
+            # v3.7.184: per-asset SP cfg (GLD pt=50, SLV pt=30 grid 实测最优)
+            from core.strategy_configs import get_config as _get_cfg
+            _sp_cfg = _get_cfg(asset, "SELL PUT") or SELL_PUT_DEFAULT
             ent = price_strategy_at(asset, "SELL PUT", d,
                                        d + pd.Timedelta(hours=9, minutes=30),
                                        eO, eO, eC, eH, eL,
-                                       dte_target=SELL_PUT_DEFAULT.base_dte)
+                                       dte_target=_sp_cfg.base_dte)
             if ent.get("legs") and db is not None:
-                res = simulate_sp_position(ent, d, today, db, SELL_PUT_DEFAULT)
+                res = simulate_sp_position(ent, d, today, db, _sp_cfg)
                 if res.get("is_closed"):
                     rows_sp.append({"signal_date": d, "asset": asset,
                                       "strategy": "SELL PUT", "source": "real_klinedb",
