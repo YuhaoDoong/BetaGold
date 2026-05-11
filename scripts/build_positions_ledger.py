@@ -88,6 +88,10 @@ def build_for_asset(asset: str, days_back: int, today_dt: pd.Timestamp,
           f"${binance_live_mark:.2f}" if binance_live_mark else
           f"[ledger] {asset} → Binance {binance_sym} live: 拿不到")
 
+    # v3.7.187: 被过滤信号 log writer
+    from core.filtered_signal_log import append_log as _append_filt
+    _filt_rows = []
+
     rows = []
     for _du, _ru in sig_df.loc[u_dates].iterrows():
         is_strad = (_du in strad_df.index
@@ -97,13 +101,29 @@ def build_for_asset(asset: str, days_back: int, today_dt: pd.Timestamp,
         strats = []
         if is_strad: strats.append("STRADDLE")
         # v3.7.178: SHORT_VOL_DISABLED 真生效 (实战 24% WR, IC 大波动期失效)
-        if is_sv and not SHORT_VOL_DISABLED: strats.append("SHORT_VOL")
+        if is_sv and not SHORT_VOL_DISABLED:
+            strats.append("SHORT_VOL")
+        elif is_sv and SHORT_VOL_DISABLED:
+            _filt_rows.append({
+                "date": _du, "asset": asset, "candidate_strategy": "SHORT_VOL",
+                "filter_reason": "SHORT_VOL_DISABLED (v3.7.177 起停用, 实战 6% WR)",
+                "raw_trigger_price": float(ohlc.loc[_du, "Close"]) if _du in ohlc.index else 0,
+                "raw_trigger_time": _du.isoformat(),
+                "detect_source": "daily",
+            })
         if _ru.get("buy_signal", False):
             bt = _ru.get("buy_type") or ""
             if bt: strats.append(bt)
+            else:
+                # v3.7.187: buy_signal=True 但 buy_type 空 = IV/sp_score 过滤
+                _filt_rows.append({
+                    "date": _du, "asset": asset, "candidate_strategy": "BC/SP (方向性)",
+                    "filter_reason": "IV 三阶过滤 / sp_score 未通过",
+                    "raw_trigger_price": float(ohlc.loc[_du, "Close"]) if _du in ohlc.index else 0,
+                    "raw_trigger_time": _du.isoformat(),
+                    "detect_source": "daily",
+                })
             # v3.7.176: 期货所有 buy 信号都打, 靠 lev=5×/3× wick-safe 保护
-            # 5y grid 实测: lev=5× 无 filter wr=86% n=151, 优于 BC-filter wr=89% n=133
-            # 频次 +14% 远抵 WR -2.6pp, 用户原则: 胜率 + 频次都重要
             strats.append("FUTURES_LONG")
         if not strats: continue
 
@@ -214,6 +234,10 @@ def build_for_asset(asset: str, days_back: int, today_dt: pd.Timestamp,
                 "hold_days": int(sim.get("hold_days", 0) or 0),
             }
             rows.append(row)
+    # v3.7.187: flush 被过滤信号 log
+    if _filt_rows:
+        n = _append_filt(_filt_rows)
+        print(f"[ledger] {asset} 写入 {n} 笔被过滤信号 → filtered_signal_log.parquet")
     return rows
 
 
