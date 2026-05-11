@@ -47,7 +47,7 @@ _ASSET_CFG = {
         "kline_15m": None,
         "daily_close": "slv.csv",
         "oos_key": None,  # 见下: 直接读 dl_range_slv_oos.parquet
-        "futures_1h": None,
+        "futures_1h": "si_1h.csv",  # v3.7.189 SLV: 加 SI=F 1h (24h 数据)
     },
 }
 
@@ -129,6 +129,8 @@ def main():
     print(f"加载 {kline_file}...")
     kline = _load_kline(market_dir, kline_file)
     print(f"  范围 {kline.index[0]} → {kline.index[-1]} ({len(kline)} bars)")
+
+    # v3.7.189 撤销 ratio hack — 期货/期权不同模块, 不能混 backfill 一个 log
 
     print(f"构造 {args.asset} 每日阈值...")
     thresholds = _build_daily_thresholds(args.asset, cfg)

@@ -42,13 +42,14 @@ def _rebuild_loop():
                     [sys.executable, STATS_BUILDER],
                     stdout=f, stderr=subprocess.STDOUT, timeout=60)
                 f.write(f"=== stats exit code {proc2.returncode} ===\n")
-                # v3.7.188: 自动 backfill intraday signal log (修期货 23h kline 未 detect bug)
+                # v3.7.189: backfill 仅 ETF (期权用), 期货专用 pipeline 另议
                 for asset_key in ("GLD", "SLV"):
                     proc3 = subprocess.run(
                         [sys.executable, BACKFILL_INTRA,
-                         "--asset", asset_key, "--timeframe", "60"],
+                         "--asset", asset_key, "--timeframe", "60",
+                         "--source", "etf"],
                         stdout=f, stderr=subprocess.STDOUT, timeout=120)
-                    f.write(f"=== backfill {asset_key} exit {proc3.returncode} ===\n")
+                    f.write(f"=== backfill ETF {asset_key} exit {proc3.returncode} ===\n")
         except Exception as e:
             try:
                 with open(LOG_FILE, "a") as f:
