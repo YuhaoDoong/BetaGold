@@ -3538,6 +3538,71 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         else:
             st.caption(f"今日 {today_sgt} 无盘中触发 + 无日级 vol 信号")
 
+    # v3.7.186: 今日被过滤信号 + 数据 staleness 诊断
+    _filt_diag_rows = []
+    try:
+        import os
+        from datetime import datetime
+        # 数据 staleness 检查
+        _today_dt = pd.Timestamp(today_sgt).normalize()
+        _etf_last = close_d.index.max() if len(close_d) else None
+        _features_last = features.index.max() if hasattr(features, 'index') else None
+        _intra_last_dt = pd.to_datetime(_intra_log_asset['date']).max() \
+                          if len(_intra_log_asset) > 0 else None
+        if _etf_last and _etf_last < _today_dt - pd.Timedelta(days=1):
+            _filt_diag_rows.append({
+                "类型": "🟡 数据延迟", "asset": asset_key,
+                "候选 strategy": "ETF csv",
+                "状态": f"截止 {str(_etf_last)[:10]} (今日 {today_sgt})",
+                "原因": "数据未刷新到今日, daily signal 无法生成",
+            })
+        if _intra_last_dt and _intra_last_dt < _today_dt - pd.Timedelta(days=1):
+            _filt_diag_rows.append({
+                "类型": "🟡 数据延迟", "asset": asset_key,
+                "候选 strategy": "intraday log",
+                "状态": f"截止 {str(_intra_last_dt)[:10]}",
+                "原因": "5m/1h kline 未刷新, 盘中 detect 无新数据",
+            })
+        # 当日 raw signal 探测 (无 IV 过滤)
+        if _today_dt in sig_df.index:
+            _r_today = sig_df.loc[_today_dt]
+            _raw_buy = bool(_r_today.get("buy_signal", False))
+            _raw_bt = _r_today.get("buy_type") or ""
+            # 加 IV 过滤后是否仍触发
+            if _raw_buy and _raw_bt == "":
+                _filt_diag_rows.append({
+                    "类型": "🚫 IV 过滤", "asset": asset_key,
+                    "候选 strategy": "BUY (方向性)",
+                    "状态": "raw=True, filtered buy_type=空",
+                    "原因": "高 IV 三阶过滤 (GVZ 高) 跳过 BC, sp_score 也未转 SP",
+                })
+            # SHORT_VOL DISABLED 状态
+            if not SHORT_VOL_DISABLED:
+                pass  # 没 disabled 就正常
+            else:
+                # 检测 raw SHORT_VOL (无 disabled flag)
+                try:
+                    from core.events import detect_short_vol_signal as _dsv_diag
+                    _sv_raw_today = _dsv_diag(
+                        features.loc[close_d.index, "rv_10d"], rv_pctile,
+                        pd.DatetimeIndex([_today_dt]), regime=regime,
+                        close=close_d, high=high_d, low=low_d, asset=asset_key)
+                    if len(_sv_raw_today) and bool(_sv_raw_today.iloc[0].get("short_vol_signal", False)):
+                        _filt_diag_rows.append({
+                            "类型": "🚫 策略停用", "asset": asset_key,
+                            "候选 strategy": "SHORT_VOL",
+                            "状态": "raw=True, DISABLED 屏蔽",
+                            "原因": "v3.7.177 起停用 (实战 6% WR 失效)",
+                        })
+                except Exception:
+                    pass
+        if _filt_diag_rows:
+            with st.expander(f"🔍 今日被过滤信号 / 数据诊断 ({len(_filt_diag_rows)} 项)", expanded=True):
+                st.dataframe(pd.DataFrame(_filt_diag_rows),
+                              use_container_width=True, hide_index=True)
+    except Exception as _diag_e:
+        st.caption(f"诊断错误: {_diag_e}")
+
     # ── (2) 历史未平仓信号 + (3) 近一月已平期权模拟 共用单一构建 ──
     # 数据源: sig_df.buy_signal + detect_straddle/short_vol (event-mode 跟主图一致)
     # 平仓判定:
