@@ -3559,6 +3559,16 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         _etf_csv_last = close_d.index.max() if len(close_d) else None
         _intra_log_last = pd.to_datetime(_intra_log_asset['date']).max() \
                           if len(_intra_log_asset) > 0 else None
+        # v3.7.191: 期货 log (futures_signal_log)
+        _fut_log_last = None
+        try:
+            _fut_log = pd.read_parquet("/Users/yhdong/Gold/data/futures_signal_log.parquet")
+            _fut_tag = "GC" if asset_key == "GLD" else "SI"
+            _fut_log_asset = _fut_log[_fut_log["asset"] == _fut_tag]
+            if len(_fut_log_asset):
+                _fut_log_last = pd.to_datetime(_fut_log_asset["date"]).max()
+        except Exception:
+            pass
         _et_now = pd.Timestamp.now(tz="America/New_York")
         # ETF live
         _etf_status = "✓ 实时" if _etf_live else "✗ 无"
@@ -3579,13 +3589,16 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         _log_str = (f"intraday log: 截止 {str(_intra_log_last)[:10] if _intra_log_last else '?'} "
                     f"({_log_status})")
 
+        # 期货 log status
+        _fut_log_str = (f"futures log: 截止 {str(_fut_log_last)[:10]}"
+                          if _fut_log_last else "futures log: 空")
         st.caption(
-            f"📡 实时数据 | {_etf_str} | {_gc_str} | {_bn_str} | {_log_str}"
+            f"📡 期权链 | {_etf_str} | {_log_str}\n\n"
+            f"📡 期货链 | {_gc_str} | {_bn_str} | {_fut_log_str}"
         )
         if _log_lag_days >= 2 and _gc_price:
-            st.warning(f"⚠ intraday_signal_log 滞后 {_log_lag_days} 天 "
-                        f"但 {_gc_ticker} 1m 实时可拉 (最新 {_gc_last.strftime('%m-%d %H:%M ET')}). "
-                        f"需运行 backfill_intraday_signals.py 写入近期触发.")
+            st.info(f"ℹ ETF intraday log 滞后 {_log_lag_days} 天 (周末/盘前正常). "
+                     f"期货另用 {_gc_ticker} 24h pipeline → futures_signal_log.")
     except Exception as _data_e:
         st.caption(f"数据状态检查错: {_data_e}")
 
