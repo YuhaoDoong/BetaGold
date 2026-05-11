@@ -70,6 +70,15 @@ def build_for_asset(asset: str, days_back: int, today_dt: pd.Timestamp,
     sig_df = generate_daily_signals(close_d, high_d, low_d, upper, lower,
                                        regime, rv_pctile, asset=asset, gvz_series=gvz)
 
+    # v3.7.190: 双 pipeline — 期权用 ETF sig_df (上面), 期货另读 GC/SI scale sig_df
+    sig_fut_path = (f"/Users/yhdong/Gold/data/processed/sig_df_"
+                     f"{'gc' if asset == 'GLD' else 'si'}.parquet")
+    try:
+        sig_df_fut = pd.read_parquet(sig_fut_path)
+    except Exception:
+        sig_df_fut = sig_df  # fallback ETF
+        print(f"[ledger] {asset} 期货 sig_df 缺失, fallback ETF scale")
+
     window_start = today_dt - timedelta(days=days_back)
     u_dates = sig_df.index[sig_df.index >= window_start]
 
@@ -111,19 +120,25 @@ def build_for_asset(asset: str, days_back: int, today_dt: pd.Timestamp,
                 "raw_trigger_time": _du.isoformat(),
                 "detect_source": "daily",
             })
-        if _ru.get("buy_signal", False):
-            bt = _ru.get("buy_type") or ""
-            if bt: strats.append(bt)
+        # v3.7.190: 期权用 ETF sig_df, 期货用 GC/SI sig_df (双 pipeline)
+        _opt_buy = bool(_ru.get("buy_signal", False))
+        _opt_bt = _ru.get("buy_type") or ""
+        _fut_buy = False
+        if _du in sig_df_fut.index:
+            _fut_buy = bool(sig_df_fut.loc[_du].get("buy_signal", False))
+        if _opt_buy:
+            if _opt_bt:
+                strats.append(_opt_bt)
             else:
-                # v3.7.187: buy_signal=True 但 buy_type 空 = IV/sp_score 过滤
                 _filt_rows.append({
                     "date": _du, "asset": asset, "candidate_strategy": "BC/SP (方向性)",
                     "filter_reason": "IV 三阶过滤 / sp_score 未通过",
                     "raw_trigger_price": float(ohlc.loc[_du, "Close"]) if _du in ohlc.index else 0,
                     "raw_trigger_time": _du.isoformat(),
-                    "detect_source": "daily",
+                    "detect_source": "daily (ETF)",
                 })
-            # v3.7.176: 期货所有 buy 信号都打, 靠 lev=5×/3× wick-safe 保护
+        # 期货独立决策: GC=F daily signal (24h)
+        if _fut_buy:
             strats.append("FUTURES_LONG")
         if not strats: continue
 

@@ -20,6 +20,7 @@ REBUILD_INTERVAL_SEC = 300  # 5 min
 LEDGER_BUILDER = "/Users/yhdong/GoldDash/scripts/build_positions_ledger.py"
 STATS_BUILDER = "/Users/yhdong/GoldDash/scripts/compute_strategy_stats.py"  # v3.7.181
 BACKFILL_INTRA = "/Users/yhdong/GoldDash/scripts/backfill_intraday_signals.py"  # v3.7.188
+FUT_SIGNALS = "/Users/yhdong/GoldDash/scripts/build_futures_signals.py"  # v3.7.190
 LOG_FILE = "/tmp/ledger_daemon.log"
 
 _DAEMON_LOCK = threading.Lock()
@@ -33,6 +34,11 @@ def _rebuild_loop():
         try:
             with open(LOG_FILE, "a") as f:
                 f.write(f"\n=== {time.strftime('%Y-%m-%d %H:%M:%S')} 重建 ledger ===\n")
+                # v3.7.190: 先重建期货 sig_df (GC/SI scale), ledger 才能读到最新
+                proc_fut = subprocess.run(
+                    [sys.executable, FUT_SIGNALS],
+                    stdout=f, stderr=subprocess.STDOUT, timeout=90)
+                f.write(f"=== fut_signals exit {proc_fut.returncode} ===\n")
                 proc = subprocess.run(
                     [sys.executable, LEDGER_BUILDER, "--days", "90"],
                     stdout=f, stderr=subprocess.STDOUT, timeout=180)
