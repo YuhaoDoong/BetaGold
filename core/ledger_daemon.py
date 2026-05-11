@@ -19,6 +19,7 @@ from pathlib import Path
 REBUILD_INTERVAL_SEC = 300  # 5 min
 LEDGER_BUILDER = "/Users/yhdong/GoldDash/scripts/build_positions_ledger.py"
 STATS_BUILDER = "/Users/yhdong/GoldDash/scripts/compute_strategy_stats.py"  # v3.7.181
+BACKFILL_INTRA = "/Users/yhdong/GoldDash/scripts/backfill_intraday_signals.py"  # v3.7.188
 LOG_FILE = "/tmp/ledger_daemon.log"
 
 _DAEMON_LOCK = threading.Lock()
@@ -41,6 +42,13 @@ def _rebuild_loop():
                     [sys.executable, STATS_BUILDER],
                     stdout=f, stderr=subprocess.STDOUT, timeout=60)
                 f.write(f"=== stats exit code {proc2.returncode} ===\n")
+                # v3.7.188: 自动 backfill intraday signal log (修期货 23h kline 未 detect bug)
+                for asset_key in ("GLD", "SLV"):
+                    proc3 = subprocess.run(
+                        [sys.executable, BACKFILL_INTRA,
+                         "--asset", asset_key, "--timeframe", "60"],
+                        stdout=f, stderr=subprocess.STDOUT, timeout=120)
+                    f.write(f"=== backfill {asset_key} exit {proc3.returncode} ===\n")
         except Exception as e:
             try:
                 with open(LOG_FILE, "a") as f:

@@ -3538,48 +3538,77 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         else:
             st.caption(f"今日 {today_sgt} 无盘中触发 + 无日级 vol 信号")
 
-    # v3.7.187: 今日被过滤信号 (从 filtered_signal_log) + 数据 staleness
-    _filt_diag_rows = []
+    # v3.7.188: 拆分诊断 — 数据状态 (含 live 实时价) + 过滤理由 (纯策略逻辑)
+    _today_dt = pd.Timestamp(today_sgt).normalize()
+
+    # ── 数据状态 banner (实时价 + staleness 警告) ──
     try:
-        _today_dt = pd.Timestamp(today_sgt).normalize()
-        # ── 数据 staleness ──
-        _etf_last = close_d.index.max() if len(close_d) else None
-        _intra_last_dt = pd.to_datetime(_intra_log_asset['date']).max() \
-                          if len(_intra_log_asset) > 0 else None
-        if _etf_last and _etf_last < _today_dt - pd.Timedelta(days=1):
-            _filt_diag_rows.append({
-                "类型": "🟡 数据延迟", "asset": asset_key,
-                "候选": "ETF csv",
-                "状态": f"截止 {str(_etf_last)[:10]}",
-                "原因": "yfinance 未更新; 美股周末不交易 / 周一开盘前正常",
-            })
-        if _intra_last_dt and _intra_last_dt < _today_dt - pd.Timedelta(days=1):
-            _filt_diag_rows.append({
-                "类型": "🟡 数据延迟", "asset": asset_key,
-                "候选": "intraday log",
-                "状态": f"截止 {str(_intra_last_dt)[:10]}",
-                "原因": "5m/1h kline 未触发 detect; 期货 23h GC=F 可拉实时",
-            })
-        # ── 今日被过滤信号 (从 log 读, 由 build_positions_ledger 写入) ──
+        import yfinance as _yf_diag
+        from core.binance_futures import fetch_realtime_for_asset as _fra_diag
+        _live_rows = []
+        _gc_ticker = "GC=F" if asset_key == "GLD" else "SI=F"
+        _etf_t = _yf_diag.Ticker(asset_key)
         try:
-            from core.filtered_signal_log import today_filtered as _today_filt
-            _filt_today = _today_filt(_today_dt, asset=asset_key)
-            for _, _fr in _filt_today.iterrows():
-                _filt_diag_rows.append({
-                    "类型": "🚫 被过滤",
-                    "asset": _fr["asset"],
-                    "候选": _fr["candidate_strategy"],
-                    "状态": f"price=${_fr.get('raw_trigger_price', 0):.2f}",
-                    "原因": _fr["filter_reason"],
-                })
+            _etf_live = _etf_t.fast_info.last_price
         except Exception:
-            pass
-        if _filt_diag_rows:
-            with st.expander(f"🔍 今日被过滤信号 / 数据诊断 ({len(_filt_diag_rows)} 项)", expanded=True):
-                st.dataframe(pd.DataFrame(_filt_diag_rows),
+            _etf_live = None
+        _etf_intra = _etf_t.history(period="1d", interval="1m", prepost=True)
+        _gc_intra = _yf_diag.Ticker(_gc_ticker).history(period="1d", interval="1m",
+                                                              prepost=True)
+        _bn = _fra_diag(asset_key)
+        _etf_csv_last = close_d.index.max() if len(close_d) else None
+        _intra_log_last = pd.to_datetime(_intra_log_asset['date']).max() \
+                          if len(_intra_log_asset) > 0 else None
+        _et_now = pd.Timestamp.now(tz="America/New_York")
+        # ETF live
+        _etf_status = "✓ 实时" if _etf_live else "✗ 无"
+        _etf_str = (f"{asset_key} ETF: 实时=${_etf_live:.2f} | "
+                     f"csv 截止 {str(_etf_csv_last)[:10] if _etf_csv_last else '?'}")
+        # 期货 live (24h, 应当实时)
+        _gc_last = (_gc_intra.index[-1] if len(_gc_intra) else None)
+        _gc_price = _gc_intra["Close"].iloc[-1] if len(_gc_intra) else None
+        _gc_str = (f"{_gc_ticker}: ${_gc_price:.2f} @ {_gc_last.strftime('%m-%d %H:%M ET')}"
+                    if _gc_price else f"{_gc_ticker}: 拿不到")
+        # Binance live
+        _bn_str = f"Binance {_bn['symbol']}: ${_bn['mark_price']:.2f}" if _bn else "Binance: 拿不到"
+        # intraday log freshness
+        _log_lag_days = ((_today_dt - _intra_log_last).days
+                          if _intra_log_last else 99)
+        _log_status = ("✓ 同步" if _log_lag_days <= 1 else
+                        f"⚠ 滞后 {_log_lag_days} 天")
+        _log_str = (f"intraday log: 截止 {str(_intra_log_last)[:10] if _intra_log_last else '?'} "
+                    f"({_log_status})")
+
+        st.caption(
+            f"📡 实时数据 | {_etf_str} | {_gc_str} | {_bn_str} | {_log_str}"
+        )
+        if _log_lag_days >= 2 and _gc_price:
+            st.warning(f"⚠ intraday_signal_log 滞后 {_log_lag_days} 天 "
+                        f"但 {_gc_ticker} 1m 实时可拉 (最新 {_gc_last.strftime('%m-%d %H:%M ET')}). "
+                        f"需运行 backfill_intraday_signals.py 写入近期触发.")
+    except Exception as _data_e:
+        st.caption(f"数据状态检查错: {_data_e}")
+
+    # ── 今日被过滤信号 (从 filtered_signal_log 读, 仅纯策略过滤逻辑) ──
+    try:
+        from core.filtered_signal_log import today_filtered as _today_filt
+        _filt_today = _today_filt(_today_dt, asset=asset_key)
+        if len(_filt_today):
+            _filt_rows_display = []
+            for _, _fr in _filt_today.iterrows():
+                _filt_rows_display.append({
+                    "asset": _fr["asset"],
+                    "候选 strategy": _fr["candidate_strategy"],
+                    "price": f"${_fr.get('raw_trigger_price', 0):.2f}",
+                    "过滤理由": _fr["filter_reason"],
+                })
+            with st.expander(f"🚫 今日被过滤信号 ({len(_filt_today)} 项)", expanded=False):
+                st.caption("纯策略过滤 (IV 三阶 / sp_score / MA / regime / "
+                            "SHORT_VOL_DISABLED). 数据延迟另在顶部 banner.")
+                st.dataframe(pd.DataFrame(_filt_rows_display),
                               use_container_width=True, hide_index=True)
-    except Exception as _diag_e:
-        st.caption(f"诊断错误: {_diag_e}")
+    except Exception:
+        pass
 
     # ── (2) 历史未平仓信号 + (3) 近一月已平期权模拟 共用单一构建 ──
     # 数据源: sig_df.buy_signal + detect_straddle/short_vol (event-mode 跟主图一致)
