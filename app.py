@@ -3233,6 +3233,41 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     _today_log = _intra_log_asset[
         pd.to_datetime(_intra_log_asset["date"]).dt.normalize() == _today
     ] if len(_intra_log_asset) else _intra_log_asset
+
+    # v3.7.192: 期货专用 log (GC=F/SI=F 24h) 今日触发
+    _fut_today_rows = []
+    try:
+        _fut_log_full = pd.read_parquet("/Users/yhdong/Gold/data/futures_signal_log.parquet")
+        _fut_tag = "GC" if asset_key == "GLD" else "SI"
+        _fut_log_a = _fut_log_full[_fut_log_full["asset"] == _fut_tag]
+        _fut_today_df = _fut_log_a[
+            pd.to_datetime(_fut_log_a["date"]).dt.normalize() == _today
+        ] if len(_fut_log_a) else pd.DataFrame()
+        if len(_fut_today_df):
+            from core.binance_futures import fetch_realtime_for_asset as _fra
+            _bn_live = _fra(asset_key)
+            _bn_price = _bn_live["mark_price"] if _bn_live else None
+            from core.strategy_configs import get_futures_config as _gfc
+            _fcfg = _gfc(asset_key)
+            for _, _r in _fut_today_df.iterrows():
+                _entry_p = float(_r["price"])
+                _gain_pct = ((_bn_price / _entry_p - 1) * 100 * _fcfg.leverage
+                              if _bn_price else 0)
+                _fut_today_rows.append({
+                    "时间": pd.Timestamp(_r["trigger_time"]).strftime("%H:%M ET"),
+                    "类型": f"{_r['side']} 期货",
+                    "信号 source": f"{_fut_tag}=F 24h",
+                    "入场价": f"${_entry_p:.2f}",
+                    "现价": f"${_bn_price:.2f}" if _bn_price else "—",
+                    "lev": f"{_fcfg.leverage}×",
+                    "浮盈": f"{_gain_pct:+.1f}%" if _bn_price else "—",
+                })
+        if _fut_today_rows:
+            st.markdown("**🥇 今日期货触发 (GC=F/SI=F 24h):**")
+            st.dataframe(pd.DataFrame(_fut_today_rows),
+                          use_container_width=True, hide_index=True)
+    except Exception as _fute:
+        st.caption(f"期货 log 读取错: {_fute}")
     if len(_today_log):
         # v3.7.99: sig_df 没 chosen 列, 用 buy_type; straddle_signal 走 events.detect
         _today_buy_type = ((sig_df.loc[_today, "buy_type"] or "")
