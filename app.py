@@ -1677,28 +1677,87 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             st.metric("② 盘中信号状态", _intra_label, delta=_intra_delta)
         with sb3:
             # ── 3. 方向性策略 (今日激活该用什么) ──
+            # v3.7.216: 总是显示 prospective 策略 (基于 rv/sp_score),
+            # 不依赖 buy_signal=True. 即使 filter 拦下也显示"应该用什么"
             _ld = pd.Timestamp(last_date)
             _bdays_age = len(pd.bdate_range(_ld.normalize(),
                                                 pd.Timestamp(today_sgt).normalize())) - 1
+            _row_today = (sig_df.loc[last_date] if last_date in sig_df.index else None)
+            # 基于 sp_score 或 rv 推断 prospective 策略 (即使 buy_signal=False 也算)
+            _prospect_type = None
+            _prospect_tier = ""
+            _filter_block = ""
+
+            # v3.7.216: 也算 prospective tier (即使 buy_signal=False, 显示"若通过会是什么 tier")
+            def _calc_prospect_tier(row, asset):
+                try:
+                    from core.strategy_config import get_config as _gcfg
+                    _ac = _gcfg(asset)
+                    s_rv = getattr(_ac, "tier_s_rv_max", 0.65)
+                    s_ret = getattr(_ac, "tier_s_ret_20d_min", 0.0)
+                    s_bp = getattr(_ac, "tier_s_bp_low_max", 0.20)
+                    a_rv = getattr(_ac, "tier_a_rv_max", 0.75)
+                    a_ret = getattr(_ac, "tier_a_ret_20d_min", -0.01)
+                    a_bp = getattr(_ac, "tier_a_bp_low_max", 0.20)
+                    rv = float(row.get("rv_pctile", 0.5))
+                    ret20 = float(row.get("ret_20d", 0)) if not pd.isna(row.get("ret_20d", 0)) else 0
+                    bp_low = float(row.get("bp_low", 1))
+                    if rv < s_rv and ret20 > s_ret and bp_low <= s_bp: return "S"
+                    if rv < a_rv and ret20 > a_ret and bp_low <= a_bp: return "A"
+                    return "B"
+                except Exception:
+                    return ""
+
+            if _row_today is not None:
+                _sp = _row_today.get("sp_score")
+                _rv_t = float(_row_today.get("rv_pctile", 0.5))
+                # sp_score 决策 (如有), 否则按 rv
+                if _sp is not None and not pd.isna(_sp):
+                    try:
+                        from core.strategy_config import get_config as _gcfg
+                        _spt = getattr(_gcfg(asset_key), "sp_score_threshold", 3.0)
+                        _prospect_type = "SELL PUT" if float(_sp) >= _spt else "BUY CALL"
+                    except Exception:
+                        _prospect_type = "SELL PUT" if _rv_t >= 0.45 else "BUY CALL"
+                else:
+                    _prospect_type = "SELL PUT" if _rv_t >= 0.45 else "BUY CALL"
+                # buy_signal 真实状态
+                _bs = bool(_row_today.get("buy_signal", False))
+                _iv_r = str(_row_today.get("iv_filter_reason", "") or "")
+                _hard_r = str(_row_today.get("signal_hard_skip_reason", "") or "")
+                _ma_skip = bool(_row_today.get("ma_trend_skip", False))
+                if not _bs:
+                    if _iv_r and "正常" not in _iv_r and "通过" not in _iv_r:
+                        _filter_block = f"⚠️ {_iv_r[:30]}"
+                    elif _hard_r:
+                        _filter_block = f"⚠️ {_hard_r[:30]}"
+                    elif _ma_skip:
+                        _filter_block = "⚠️ ma_trend 趋势 跳过"
+                    else:
+                        _filter_block = ""
+                # tier — 用 prospective 计算 (覆盖 sig_df 里的空值)
+                _tier = _row_today.get("signal_tier", "") or ""
+                if not _tier:  # 被 filter 拦时 tier 为空, 用 prospective
+                    _tier = _calc_prospect_tier(_row_today, asset_key)
+                _prospect_tier = _tier
+                _tier_emo = {"S": "⭐", "A": "🔵", "B": "⚪"}.get(_tier, "")
+
             if _bdays_age > 1:
                 _dir_label = "⏸ 数据过期"
                 _dir_delta = f"末数据 {_ld.date()}"
-            elif _raw_sig and "BUY CALL" in _raw_sig:
-                _tier = (sig_df.loc[last_date].get("signal_tier", "")
-                          if last_date in sig_df.index else "")
-                _tier_emo = {"S": "⭐", "A": "🔵", "B": "⚪"}.get(_tier, "")
-                _dir_label = f"{_tier_emo} BUY CALL"
-                _dir_delta = (f"tier={_tier or '-'} | "
-                                f"{'期权' if _is_us_session else '期货补盘'}")
-            elif _raw_sig and "SELL PUT" in _raw_sig:
-                _tier = (sig_df.loc[last_date].get("signal_tier", "")
-                          if last_date in sig_df.index else "")
-                _tier_emo = {"S": "⭐", "A": "🔵", "B": "⚪"}.get(_tier, "")
-                _dir_label = f"{_tier_emo} SELL PUT"
-                _dir_delta = f"tier={_tier or '-'} | 收 credit"
+            elif _prospect_type:
+                _emo = ({"S": "⭐", "A": "🔵", "B": "⚪"}.get(_prospect_tier, "💡"))
+                _dir_label = f"{_emo} {_prospect_type}"
+                if _filter_block:
+                    _dir_delta = f"今日被过滤 ({_filter_block}), 触发亦不开"
+                elif bool(_row_today.get("buy_signal", False)):
+                    _dir_delta = f"tier={_prospect_tier or '-'} | ✅ 信号通过, 可入场"
+                else:
+                    _dir_delta = (f"tier={_prospect_tier or '-'} | "
+                                    f"window 未开 (现 bp={bp_est:.2f}, 触发后开仓)")
             else:
-                _dir_label = "⏸ 无方向性"
-                _dir_delta = f"bp={bp_est:.2f} 等窗口开启" if bp_est else "—"
+                _dir_label = "—"
+                _dir_delta = "无信号数据"
             st.metric("③ 方向性策略", _dir_label, delta=_dir_delta)
         with sb4:
             # ── 4. 波动率信号 (独立, 跟方向性分开) ──
@@ -3520,8 +3579,34 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             _entry_etf = _ul
             _entry_gc = _ul * gc_gld_r
             _exit_etf = float(locals().get("gld_est") or _C_today)
+            # v3.7.216: 加 Tier 列 (跟持仓表一致)
+            _today_tier = ""
+            if _today in sig_df.index:
+                _today_tier = sig_df.loc[_today].get("signal_tier", "") or ""
+                if not _today_tier:  # filter 拦下 → 算 prospective tier
+                    try:
+                        from core.strategy_config import get_config as _gcfg216
+                        _ac216 = _gcfg216(asset_key)
+                        _row_t = sig_df.loc[_today]
+                        _rv_t216 = float(_row_t.get("rv_pctile", 0.5))
+                        _ret_t216 = float(_row_t.get("ret_20d", 0)) if not pd.isna(_row_t.get("ret_20d", 0)) else 0
+                        _bp_t216 = float(_row_t.get("bp_low", 1))
+                        if (_rv_t216 < getattr(_ac216, "tier_s_rv_max", 0.65) and
+                            _ret_t216 > getattr(_ac216, "tier_s_ret_20d_min", 0.0) and
+                            _bp_t216 <= getattr(_ac216, "tier_s_bp_low_max", 0.20)):
+                            _today_tier = "S"
+                        elif (_rv_t216 < getattr(_ac216, "tier_a_rv_max", 0.75) and
+                              _ret_t216 > getattr(_ac216, "tier_a_ret_20d_min", -0.01) and
+                              _bp_t216 <= getattr(_ac216, "tier_a_bp_low_max", 0.20)):
+                            _today_tier = "A"
+                        else:
+                            _today_tier = "B"
+                    except Exception:
+                        _today_tier = ""
+            _tier_disp = {"S": "⭐ S", "A": "🔵 A", "B": "⚪ B"}.get(_today_tier, "—")
             _rows1.append({
                 "时间(ET)": _t.strftime("%m-%d %H:%M"),
+                "Tier": _tier_disp,
                 "信号": r["side"],
                 "策略": _strat,
                 "合约": _opt_code,
