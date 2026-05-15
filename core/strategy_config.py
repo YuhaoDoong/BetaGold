@@ -91,6 +91,10 @@ class AssetConfig:
     # 默认禁用 (rv_max=1.0 / ret_min=-1.0 即任何 RV/任何 ret 都过), per-asset 开启
     rv_pctile_max_hard: float = 1.0
     ret_20d_min_hard: float = -1.0
+    # v3.7.214: ret_20d_max 顶部追高过滤 (撤底拦顶, 反 v3.7.201)
+    # 5y grid 实证: ret_20d<+3% (拦顶) 比 ret_20d>-3% (拦底) WR +7pp, sum +64%
+    # 1y 减亏 80% (-36→-7), 因为 1y 顺势顶部 (rally 后) 是真亏区, 不是底部
+    ret_20d_max_hard: float = 100.0  # 默认禁用
 
     # ── v3.7.202: 信号 S/A/B 三级 tier 标注 (不过滤, 仅打分) ──
     # 用户诉求: 100%胜率阈值下的信号要能区分出来, 让人看到是最优信号
@@ -170,10 +174,12 @@ ASSET_CONFIGS: Dict[str, AssetConfig] = {
         # 不仅拦 BC, 也让 GVZ 26 深破时强制转 SP (用户提的关键 alpha)
         iv_filter_high_min=25.0,
         # v3.7.201: 信号双因子硬过滤 (signal_filter_deep.py 3y grid 验证)
-        # rv<0.75 + ret_20d>-3% → n 143→82 (砍 43%), WR 70.6→75.6%, Q1 拦 19/20
-        # 推荐方案 B (用户选): 频率/质量平衡, 季度分布均衡
+        # v3.7.214: ret_20d 撤底拦顶 (5y grid + 多窗口验证)
+        #   旧 ret_20d>-3% (拦底): 1y sum -36, 错杀超跌反弹
+        #   新 ret_20d<+3% (拦顶): 5y/3y/1y WR +7pp, 1y sum -7 (减亏 80%)
         rv_pctile_max_hard=0.75,
-        ret_20d_min_hard=-0.03,
+        ret_20d_min_hard=-1.0,            # v3.7.214: 撤底拦 (旧 -0.03 错杀)
+        ret_20d_max_hard=0.03,            # v3.7.214: 顶部追高拦下
         short_vol_rv_pctile_lo=0.45,
         short_vol_rv_pctile_hi=0.80,
         straddle_rv_abs_max=30.0,

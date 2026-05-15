@@ -226,6 +226,7 @@ def generate_daily_signals(close_d, high_d, low_d,
                 _ac2 = get_config(asset)
                 _rv_max = getattr(_ac2, "rv_pctile_max_hard", 1.0)
                 _ret_min = getattr(_ac2, "ret_20d_min_hard", -1.0)
+                _ret_max = getattr(_ac2, "ret_20d_max_hard", 100.0)
                 if rv >= _rv_max:
                     buy_sig = False
                     signal_hard_skip_reason = f"rv_pct {rv:.2f}>={_rv_max} 跳过"
@@ -233,6 +234,11 @@ def generate_daily_signals(close_d, high_d, low_d,
                     buy_sig = False
                     signal_hard_skip_reason = (
                         f"ret_20d {_r20_val*100:+.1f}%<={_ret_min*100:.0f}% 跳过")
+                elif not np.isnan(_r20_val) and _r20_val >= _ret_max:
+                    # v3.7.214: 顶部追高过滤
+                    buy_sig = False
+                    signal_hard_skip_reason = (
+                        f"ret_20d {_r20_val*100:+.1f}%>={_ret_max*100:.0f}% 顶部追高 跳过")
             except Exception:
                 pass
 
