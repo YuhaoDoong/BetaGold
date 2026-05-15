@@ -1651,39 +1651,71 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         div[data-testid="stMetricDelta"] { font-size: 0.75rem !important; }
         </style>
         """, unsafe_allow_html=True)
-        sb1, sb2, sb3, sb4, sb5 = st.columns(5)
+        # v3.7.215: 顶部状态栏重构成 4 大状态块 (用户要求清晰化)
+        # 1. 阈值窗口是否开启  2. 盘中是否激活  3. 方向性策略  4. 波动率信号
+        sb1, sb2, sb3, sb4 = st.columns(4)
         with sb1:
-            # v3.7.54/55: 三态 — 可入场 / 已触过 (含 pre-market 反弹) / 未开启
-            # 含日内 + 1h pre-market 是否触过 0.30 buy zone
+            # ── 1. 今日阈值窗口 ──
             if _window_open:
-                _w_label, _w_delta = "✅ 可入场", f"实时 bp={bp_est:.2f} < 0.30"
+                _w_label = "✅ 可入场"
+                _w_delta = f"现 bp={bp_est:.2f} < 0.30 (在窗口内)"
             elif _window_touched:
-                # 区分: 是日线 daily Low 触过, 还是 pre-market 1h 触过
-                _w_label = "⚠️ 已触过 (无效)"
-                _w_delta = (f"今日触底 bp={_bp_low_today:.2f} 但已反弹"
-                            f" → 现 bp={bp_est:.2f}, 不可入场,"
-                            f" 等盘中回踩 + 技术确认")
+                _w_label = "⚠️ 已触过"
+                _w_delta = (f"今日触底 bp={_bp_low_today:.2f} 但反弹 → "
+                            f"现 bp={bp_est:.2f} 等回踩")
             else:
-                _w_label = "未开启"
-                _w_delta = (f"现 bp={bp_est:.2f} (需 < 0.30)"
-                            if bp_est else "—")
-            st.metric("今日窗口", _w_label, delta=_w_delta)
+                _w_label = "🚫 未开启"
+                _w_delta = (f"现 bp={bp_est:.2f} (需 < 0.30)" if bp_est else "—")
+            st.metric("① 今日阈值窗口", _w_label, delta=_w_delta)
         with sb2:
-            st.metric("盘中实时", f"{_intra_emo} {_intra_state}",
-                      delta=f"实时 bp≈{bp_est:.2f} | "
-                            f"今日触发 {_intra_today_n} 次")
+            # ── 2. 盘中触发状态 ──
+            _intra_active = (_intra_today_n > 0)
+            _intra_label = (f"✅ 已激活" if _intra_active else "⭕ 未激活")
+            _intra_delta = (f"今日触发 {_intra_today_n} 次 | {_intra_emo} {_intra_state}"
+                              if _intra_active
+                              else f"等盘中 BUY 触发 | bp≈{bp_est:.2f}")
+            st.metric("② 盘中信号状态", _intra_label, delta=_intra_delta)
         with sb3:
-            st.metric("波动率信号", f"{_vol_emo} {_vol_label}",
-                      delta=_vol_delta)
+            # ── 3. 方向性策略 (今日激活该用什么) ──
+            _ld = pd.Timestamp(last_date)
+            _bdays_age = len(pd.bdate_range(_ld.normalize(),
+                                                pd.Timestamp(today_sgt).normalize())) - 1
+            if _bdays_age > 1:
+                _dir_label = "⏸ 数据过期"
+                _dir_delta = f"末数据 {_ld.date()}"
+            elif _raw_sig and "BUY CALL" in _raw_sig:
+                _tier = (sig_df.loc[last_date].get("signal_tier", "")
+                          if last_date in sig_df.index else "")
+                _tier_emo = {"S": "⭐", "A": "🔵", "B": "⚪"}.get(_tier, "")
+                _dir_label = f"{_tier_emo} BUY CALL"
+                _dir_delta = (f"tier={_tier or '-'} | "
+                                f"{'期权' if _is_us_session else '期货补盘'}")
+            elif _raw_sig and "SELL PUT" in _raw_sig:
+                _tier = (sig_df.loc[last_date].get("signal_tier", "")
+                          if last_date in sig_df.index else "")
+                _tier_emo = {"S": "⭐", "A": "🔵", "B": "⚪"}.get(_tier, "")
+                _dir_label = f"{_tier_emo} SELL PUT"
+                _dir_delta = f"tier={_tier or '-'} | 收 credit"
+            else:
+                _dir_label = "⏸ 无方向性"
+                _dir_delta = f"bp={bp_est:.2f} 等窗口开启" if bp_est else "—"
+            st.metric("③ 方向性策略", _dir_label, delta=_dir_delta)
         with sb4:
-            st.metric("Regime", last_regime,
-                      delta=f"数据至 {last_date.date()}")
-        with sb5:
+            # ── 4. 波动率信号 (独立, 跟方向性分开) ──
+            st.metric("④ 波动率信号", f"{_vol_emo} {_vol_label}",
+                      delta=_vol_delta)
+        # 副信息行: Regime / RV 数据态
+        sb_a, sb_b, sb_c, sb_d = st.columns(4)
+        with sb_a:
+            st.caption(f"📊 Regime: **{last_regime}**")
+        with sb_b:
             _rv_zone = ("低位" if _rv_pct_today < 0.30
-                        else ("高位" if _rv_pct_today > 0.85
-                              else "正常"))
-            st.metric("RV %tile", f"{_rv_pct_today:.0%}",
-                      delta=_rv_zone)
+                        else ("高位" if _rv_pct_today > 0.85 else "正常"))
+            st.caption(f"📈 RV %tile: **{_rv_pct_today:.0%}** ({_rv_zone})")
+        with sb_c:
+            st.caption(f"📅 数据至: {last_date.date()}")
+        with sb_d:
+            st.caption(f"🕐 {pd.Timestamp(today_sgt).strftime('%Y-%m-%d %H:%M')} SGT")
         st.divider()
 
         # v3.7.210: 实时 vs EOD 锚定双显示 (用户问 "为何阈值一天变化" — live close + OI 修正)
@@ -1695,7 +1727,8 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         if eod_bp090 > 0 and abs(eod_bp090 - next_bp090) > 0.3:
             _eod_exit_delta = f" | EOD锚 ${eod_bp090:.2f}"
         st.markdown('<div class="signal-box">', unsafe_allow_html=True)
-        c1, c2, c3 = st.columns(3)
+        # v3.7.215: 阈值价 2 列 (砍掉冗余"当日信号", 已在顶部 ③④ 显示)
+        c1, c2 = st.columns(2)
         with c1:
             st.metric(f"看多 <{oi_tag}", f"${_buy_spot:{_price_fmt}}",
                       delta=f"{_etf_label} < ${eff_bp030:.2f}{_eod_buy_delta} | {_shfe_label} < ¥{_buy_shfe:.1f}",
@@ -1705,7 +1738,7 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             st.metric(f"看空/止盈 >{oi_tag}", f"${_exit_spot:{_price_fmt}}",
                       delta=f"{_etf_label} > ${eff_bp090:.2f}{_eod_exit_delta} | {_shfe_label} > ¥{_exit_shfe:.1f}",
                       help="同看多 — 实时阈值跟随 live close 调整, EOD 锚是昨日 close 基准")
-        with c3:
+        if False:  # 旧 c3 当日信号代码 (现移到顶部 ③ 方向性策略列)
             # v3.7.62: session-aware 工具路由 — 默认期权, 非 US session 用期货补窗外
             # US 期权 regular session: SGT 21:30 ~ 04:00 (= US 9:30-16:00 EDT)
             # 之外 (盘前/盘后/亚欧时段): 期权流动性差, 用期货 24h 抓机会
