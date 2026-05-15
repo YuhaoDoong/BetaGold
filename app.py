@@ -1251,9 +1251,18 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             _high_for_sig = _high_for_sig.sort_index()
             _low_for_sig = _low_for_sig.sort_index()
 
+    # v3.7.213: 传 gvz_series 让 iv_filter_reason 生效 (被过滤 section 需要)
+    try:
+        import yfinance as _yf
+        _gvz_intra = _yf.Ticker("^GVZ").history(period="5y")
+        _gvz_intra.index = pd.to_datetime(_gvz_intra.index).tz_localize(None).normalize()
+        _gvz_intra_s = _gvz_intra["Close"]
+    except Exception:
+        _gvz_intra_s = None
     sig_df = generate_daily_signals(
         _close_for_sig, _high_for_sig, _low_for_sig,
-        upper_band, lower_band, regime, rv_pctile, asset=asset_key)
+        upper_band, lower_band, regime, rv_pctile, asset=asset_key,
+        gvz_series=_gvz_intra_s)
 
     # ── 加载盘中触发 log (在回测之前!), 构造每日代表价 ──
     from core.data import load_config, load_oos_predictions
