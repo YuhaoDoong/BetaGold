@@ -4030,8 +4030,8 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     except Exception as _e:
         st.error(f"Ledger 加载错: {_e}")
 
-    st.subheader(f"📊 历史未平仓持仓 — 近 3 个月 OPEN ({len(_ledger_open)} 笔)")
-    st.caption("数据源: positions_ledger.json (v3.7.201+ 信号过滤 + tier 后实际触发的 paper positions)")
+    st.subheader(f"📊 历史未平仓 ({len(_ledger_open)} 笔)")
+    st.caption("近 3 个月开仓且尚未平仓的 paper positions (v3.7.201+ 信号过滤 + tier 后实际触发)")
     if _binance_mark:
         st.caption(f"💹 Binance {_binance_symbol} 实时 mark: **${_binance_mark:.2f}** "
                    f"(funding {_binance_funding*100:.4f}%/8h) — "
@@ -4052,9 +4052,8 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     # ledger 默认 --days 90, 历史 OPEN / CLOSED / 3 月真实回测都是 90d
     st.divider()
     _closed_recs = _ledger_closed if _ledger_closed else _closed_recs
-    st.subheader(f"🎯 近 3 个月已平仓持仓 — CLOSED ({len(_closed_recs)} 笔)")
-    st.caption("数据源: positions_ledger.json (同 OPEN 表, 是已平仓的子集). "
-               "跟 '3 个月真实交易回测' 不同 — 这里是实际触发的, 那里是历史信号全量回测.")
+    st.subheader(f"🎯 近 3 个月已平仓 ({len(_closed_recs)} 笔)")
+    st.caption("近 3 个月开仓且已平仓的 paper positions (过滤后实际交易)")
     if _closed_recs:
         st.dataframe(pd.DataFrame(_closed_recs).iloc[::-1],
                       use_container_width=True, hide_index=True)
@@ -4096,138 +4095,94 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
 
     # v3.7.140: 全历史回测分析 (sp_score/SL grid/paired/stage 等) 已移除
     # 这些是回测分析维度, 应在 mode=="回测分析" 页面查看 (Phase 5 重构)
-    # 当前用户可直接看 scripts 输出 + backtest_history CSV
 
-    # ── (1) 3 个月真实交易回测 (v3.7.207: 期权 + 期货 unified) ──
-    # 期权: data/real_options_backtest/<asset>_real_pnl_hold5d.csv (yfinance/moomoo OCC kline)
-    # 期货: data/positions_ledger.json FUTURES_LONG (Binance perp 真实 entry/exit)
+    # ── 近 3 个月被过滤信号模拟盈亏 (v3.7.212) ──
+    # 让用户看 "若不过滤会怎样" — 验证 filter 是不是真的拦下烂信号
     st.divider()
-    from pathlib import Path as _PathReal
-    _real_bt_path = _PathReal("/Users/yhdong/Gold/data/real_options_backtest") \
-        / f"{asset_key}_real_pnl_hold5d.csv"
-    if not _real_bt_path.exists():
-        st.subheader("📈 3 个月真实交易回测")
-        st.warning(f"未找到 `{_real_bt_path.name}` — 请先跑 "
-                   f"`python scripts/real_options_backtest.py --asset {asset_key} --hold 5`")
-    else:
-        from datetime import datetime as _dt
-        _real_bt = pd.read_csv(_real_bt_path)
-        _real_bt["signal_date"] = pd.to_datetime(_real_bt["signal_date"])
-        _3m_start = pd.Timestamp(today_sgt) - timedelta(days=90)
-        _real_bt_3m = _real_bt[_real_bt["signal_date"] >= _3m_start].copy()
-        _mtime = _dt.fromtimestamp(_real_bt_path.stat().st_mtime)
-        _file_age_d = (_dt.now() - _mtime).days
-        st.subheader(f"📈 3 个月真实交易回测 — 历史信号全量 ({asset_key} · "
-                     f"数据 {_mtime.strftime('%m-%d %H:%M')})")
-        st.caption("数据源: real_options_backtest CSV (期权 yfinance/moomoo OCC kline hold=5d) "
-                   "+ positions_ledger FUTURES (Binance perp). "
-                   "**包含未经 v3.7.201 过滤的历史信号** — 用于验证过滤前后差异. "
-                   "跟 '近 3 个月已平仓' 不同 (那里是过滤后实际触发).")
-
-        # 信号类型 → P&L 字段 / strike / expiry
-        _pnl_map = {
-            "BUY CALL": ("long_call_entry", "long_call_pnl_pct"),
-            "SELL PUT": ("short_put_entry_premium", "short_put_pnl_pct"),
-            "STRADDLE": ("straddle_entry", "straddle_pnl_pct"),
-            "SHORT_VOL": ("ic_credit", "ic_pnl_pct_of_credit"),
-        }
-        _bt_recs = []
-        for _, r in _real_bt_3m.iterrows():
-            sig = r["signal_type"]
-            if sig not in _pnl_map: continue
-            entry_col, pnl_col = _pnl_map[sig]
-            entry_v = r.get(entry_col)
-            pnl_v = r.get(pnl_col)
-            if pd.isna(pnl_v): continue
-            _bt_recs.append({
-                "信号日": r["signal_date"].strftime("%m-%d"),
-                "策略": sig,
-                "Spot": f"${r['spot']:.2f}" if pd.notna(r.get('spot')) else "—",
-                "Strike": f"${r['strike_atm']:.0f}"
-                    if pd.notna(r.get('strike_atm')) else "—",
-                "到期": (pd.to_datetime(r['expiry']).strftime("%m-%d")
-                         if pd.notna(r.get('expiry')) else "—"),
-                "DTE": int(r['actual_dte'])
-                    if pd.notna(r.get('actual_dte')) else 0,
-                "入场权利金": f"${entry_v:.2f}"
-                    if pd.notna(entry_v) else "—",
-                "RV": f"{r['rv']:.1f}" if pd.notna(r.get('rv')) else "—",
-                "P&L%": f"{pnl_v:+.1f}%",
-                "结果": "✓" if pnl_v > 0 else "✗",
-            })
-        # v3.7.207: 加期货真实交易 (Binance perp) — 从 ledger.json 读
-        try:
-            import json as _json_bt
-            with open("/Users/yhdong/Gold/data/positions_ledger.json") as _flb:
-                _ledger_bt = _json_bt.load(_flb)
-            _fut_bt = [x for x in _ledger_bt
-                          if x.get("asset") == asset_key
-                          and x.get("strategy") == "FUTURES_LONG"
-                          and pd.to_datetime(x["signal_date"]) >= _3m_start]
-            for f in _fut_bt:
-                if not f.get("is_closed"): continue  # 未平仓不算
-                _ent_p = float(f.get("entry_perp", 0) or 0)
-                _ex_v = float(f.get("exit_value", 0) or 0)
-                _lev = int(f.get("leverage", 5))
-                _tier = f.get("signal_tier", "—")
-                _hold = int(f.get("hold_days", 0))
-                _pnl_pct = float(f.get("pnl_pct", 0) or 0)
-                _bt_recs.append({
-                    "信号日": pd.to_datetime(f["signal_date"]).strftime("%m-%d"),
-                    "策略": f"FUTURES {_lev}×",
-                    "Spot": f"${_ent_p:.2f}",
-                    "Strike": f"tier={_tier}",
-                    "到期": f"{_hold}d hold",
-                    "DTE": _hold,
-                    "入场权利金": f"${_ent_p:.0f} → ${_ex_v:.0f}",
-                    "RV": "—",
-                    "P&L%": f"{_pnl_pct:+.1f}%",
-                    "结果": "✓" if _pnl_pct > 0 else "✗",
-                })
-        except Exception as _e:
-            st.caption(f"期货数据加载失败: {_e}")
-
-        if not _bt_recs:
-            st.caption(f"近 90 天内 {asset_key} 无真实交易回测记录")
+    try:
+        _3m_ago = pd.Timestamp(today_sgt) - pd.Timedelta(days=90)
+        _sig_3m = sig_df[sig_df.index >= _3m_ago].copy() if sig_df is not None else None
+        if _sig_3m is None or not len(_sig_3m):
+            st.caption("近 3 个月无信号数据")
         else:
-            _bt_df = pd.DataFrame(_bt_recs).iloc[::-1]
-            st.dataframe(_bt_df, use_container_width=True, hide_index=True)
-            # 总统计
-            _wins = sum(1 for r in _bt_recs if r["结果"] == "✓")
-            _wr = _wins / len(_bt_recs) * 100
-            _pls = [float(r["P&L%"].rstrip("%")) for r in _bt_recs]
-            _avg = sum(_pls) / len(_pls)
-            _sum = sum(_pls)
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("信号数", len(_bt_recs))
-            c2.metric("胜率", f"{_wr:.0f}%")
-            c3.metric("单笔均", f"{_avg:+.1f}%")
-            c4.metric("累计", f"{_sum:+.0f}%")
-            # 按策略
-            _by_strat_b = {}
-            for r in _bt_recs:
-                _by_strat_b.setdefault(r["策略"], []).append(
-                    float(r["P&L%"].rstrip("%")))
-            _strat_rows_b = []
-            for s, pls in _by_strat_b.items():
-                n = len(pls)
-                wins = sum(1 for p in pls if p > 0)
-                _strat_rows_b.append({
-                    "策略": s, "笔数": n,
-                    "胜率": f"{wins / n * 100:.0f}%",
-                    "均 P&L": f"{sum(pls) / n:+.1f}%",
-                    "累计 P&L": f"{sum(pls):+.0f}%",
-                    "最佳": f"{max(pls):+.1f}%",
-                    "最差": f"{min(pls):+.1f}%",
+            # 找被 filter 拦下的笔 (buy_signal=False 但触发过 (bp_low < 阈值) 的)
+            _filt_rows = []
+            for _d, _r in _sig_3m.iterrows():
+                if bool(_r.get("buy_signal", False)): continue  # 通过的不算
+                # 仅看真触发过的 (bp_low < buy_bp 或 ma_trend_skip 或 iv_filter)
+                reason_parts = []
+                _iv_r = str(_r.get("iv_filter_reason", "") or "")
+                _hard_r = str(_r.get("signal_hard_skip_reason", "") or "")
+                _ma_skip = bool(_r.get("ma_trend_skip", False))
+                if _iv_r and "正常" not in _iv_r and "通过" not in _iv_r:
+                    reason_parts.append(_iv_r)
+                if _hard_r:
+                    reason_parts.append(_hard_r)
+                if _ma_skip:
+                    reason_parts.append(f"ma_trend<阈值 跳过")
+                if not reason_parts: continue  # 没明确 filter 原因 (可能只是 bp_low 没破)
+                # spot 5d 模拟
+                _entry = float(_r.get("close", 0)) or float(ohlc.loc[_d, "Close"] if _d in ohlc.index else 0)
+                if not _entry: continue
+                if _d not in ohlc.index: continue
+                _idx = ohlc.index.get_loc(_d)
+                if _idx + 5 >= len(ohlc):
+                    _r5_str = "未到期"
+                    _r5 = None
+                else:
+                    _exit5 = float(ohlc.iloc[_idx + 5]["Close"])
+                    _r5 = (_exit5 / _entry - 1) * 100
+                    _r5_str = f"{_r5:+.2f}%"
+                # 10d 模拟
+                if _idx + 10 >= len(ohlc):
+                    _r10_str = "未到期"
+                    _r10 = None
+                else:
+                    _exit10 = float(ohlc.iloc[_idx + 10]["Close"])
+                    _r10 = (_exit10 / _entry - 1) * 100
+                    _r10_str = f"{_r10:+.2f}%"
+                _filt_rows.append({
+                    "信号日": _d.strftime("%m-%d"),
+                    "Spot": f"${_entry:.2f}",
+                    "bp_low": f"{_r.get('bp_low', 0):.3f}",
+                    "rv_pct": f"{_r.get('rv_pctile', 0):.2f}",
+                    "过滤原因": " + ".join(reason_parts)[:60],
+                    "若开仓 5d": _r5_str,
+                    "若开仓 10d": _r10_str,
+                    "结果 (5d)": ("✓ 反向赚 (过滤错)" if (_r5 is not None and _r5 > 0)
+                                     else "✗ 真亏 (过滤对)" if _r5 is not None else "—"),
                 })
-            if _strat_rows_b:
-                st.markdown("**按策略拆分 (真实期权 P&L):**")
-                st.dataframe(pd.DataFrame(_strat_rows_b),
-                              use_container_width=True, hide_index=True)
-            if _file_age_d >= 3:
-                st.caption(f"⚠️ 数据 {_file_age_d}d 未更新 — "
-                           f"`python scripts/real_options_backtest.py "
-                           f"--asset {asset_key} --hold 5`")
+            if not _filt_rows:
+                st.caption("近 3 个月无被过滤信号")
+            else:
+                st.subheader(f"🚫 近 3 个月被过滤信号 — 模拟盈亏 ({len(_filt_rows)} 笔)")
+                st.caption("若不过滤会怎样? — 用 spot close-to-close 模拟. "
+                           "'过滤对' = 5d 真亏 (filter 拯救我们); '过滤错' = 5d 反向赚 (filter 错杀)")
+                _filt_df = pd.DataFrame(_filt_rows).iloc[::-1]
+                st.dataframe(_filt_df, use_container_width=True, hide_index=True)
+                # 总结
+                _closed = [r for r in _filt_rows if r["结果 (5d)"] != "—"]
+                if _closed:
+                    _wrong = sum(1 for r in _closed if "✓" in r["结果 (5d)"])
+                    _right = sum(1 for r in _closed if "✗" in r["结果 (5d)"])
+                    _r5_vals = []
+                    for r in _closed:
+                        s = r["若开仓 5d"]
+                        if s.endswith("%"):
+                            try: _r5_vals.append(float(s.rstrip("%")))
+                            except: pass
+                    _avg = sum(_r5_vals)/len(_r5_vals) if _r5_vals else 0
+                    c1, c2, c3, c4 = st.columns(4)
+                    c1.metric("过滤总笔", len(_closed))
+                    c2.metric("过滤正确 ✗", f"{_right} ({_right/len(_closed)*100:.0f}%)")
+                    c3.metric("过滤错杀 ✓", f"{_wrong}", delta=f"-{_wrong/len(_closed)*100:.0f}% 错杀率")
+                    c4.metric("若开仓 5d 均", f"{_avg:+.2f}%")
+                    if _avg < 0:
+                        st.success(f"✓ filter 有效: 若开仓平均亏 {_avg:.2f}% (拦下是对的)")
+                    else:
+                        st.warning(f"⚠️ filter 待审视: 若开仓平均赚 {_avg:.2f}% (可能错杀)")
+    except Exception as _e:
+        st.caption(f"被过滤信号加载错: {_e}")
 
     # ── 模型信息 ──
     with st.expander("模型信息"):
