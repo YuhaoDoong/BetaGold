@@ -344,30 +344,40 @@ def _load_kline_db() -> Optional[pd.DataFrame]:
 def pick_liquid_monthly_option(asset: str, signal_date: pd.Timestamp,
                                   ul_price: float, right: str,
                                   dte_target: int = 45,
-                                  strike_tolerance: float = 8.0) -> Optional[dict]:
+                                  strike_tolerance: float = 8.0,
+                                  min_dte: int = 14) -> Optional[dict]:
     """从 kline_db 挑期权: strike 接近 ul_price 优先 (覆盖 ATM), 月度 opex 偏好,
     DTE 接近 target, 成交量降序.
 
     v3.7.96: 重排优先级避开 strike-out-of-coverage bug. 之前 expiry 优先时
     可能选到 strikes 不覆盖 ATM 的 expiry (e.g. 3-5 GLD spot \$466 选 4-17
     expiry 但 strikes 只到 \$320 → 实际应选 5-15 expiry 的 \$465 strike).
+
+    v3.7.200: 加 min_dte 硬下限 (默认 14d) 防末日期权.
+    kline_db fallback 到旧日时, real DTE = dte_at_date - (sig_d - fallback_d).
     """
     db = _load_kline_db()
     if db is None: return None
     sig_d = pd.Timestamp(signal_date).normalize()
     day_data = db[db["date"] == sig_d]
+    fallback_offset_days = 0  # v3.7.200: 用于校正 dte_at_date → real DTE
     # v3.7.145: 没今日 EOD options 数据时, fallback 到最近可用日
     # 用 user 模型: 信号一触发就该开仓, 即使 kline_db 一两日滞后
     if not len(day_data):
         avail_dates = db.loc[db["date"] <= sig_d, "date"]
         if not len(avail_dates): return None
         nearest = avail_dates.max()
+        fallback_offset_days = (sig_d - nearest).days
         day_data = db[db["date"] == nearest]
         if not len(day_data): return None
     asset_data = day_data[day_data["code"].str.contains(asset, na=False)]
     if not len(asset_data): return None
     type_str = "CALL" if right.upper() == "C" else "PUT"
     pool = asset_data[asset_data["option_type"] == type_str].copy()
+    if not len(pool): return None
+    # v3.7.200: 加 real_dte 列 (sig_d 当天的 DTE), 应用 min_dte 硬过滤
+    pool["real_dte"] = pool["dte_at_date"] - fallback_offset_days
+    pool = pool[pool["real_dte"] >= min_dte]
     if not len(pool): return None
     # 1. Strike 必须接近 ul_price (核心硬过滤)
     pool["strike_diff"] = (pool["strike"] - ul_price).abs()
@@ -383,14 +393,14 @@ def pick_liquid_monthly_option(asset: str, signal_date: pd.Timestamp,
     monthly = near[near["is_monthly"] == 1]
     if len(monthly):
         near = monthly
-    # 3. DTE 接近 target
-    near["dte_diff"] = (near["dte_at_date"] - dte_target).abs()
+    # 3. DTE 接近 target (real_dte, 不是 dte_at_date)
+    near["dte_diff"] = (near["real_dte"] - dte_target).abs()
     near = near[near["dte_diff"] <= 20]
     if not len(near):
         near = monthly if len(monthly) else pool[pool["strike_diff"] <= strike_tolerance]
         if not len(near): return None
         near = near.copy()
-        near["dte_diff"] = (near["dte_at_date"] - dte_target).abs()
+        near["dte_diff"] = (near["real_dte"] - dte_target).abs()
     # 4. 综合排序: strike_diff 升序, dte_diff 升序, volume 降序
     near = near.sort_values(["strike_diff", "dte_diff", "volume"],
                               ascending=[True, True, False])
@@ -846,6 +856,69 @@ def fetch_realtime_option_price(option_symbol: str) -> Optional[float]:
         return float(df["Close"].iloc[-1])
     except Exception:
         return None
+
+
+# v3.7.199: kline_db EOD 滞后时, OPEN 持仓拿 yfinance live 期权报价做 MTM
+import re as _re
+import time as _time
+_LIVE_LEG_CACHE: dict = {}  # {code: (timestamp, price)}
+_LIVE_LEG_TTL_SEC = 60
+
+
+def _moomoo_code_to_yf_occ(code: str) -> Optional[str]:
+    """US.GLD260515C430000 → GLD260515C00430000.
+
+    Moomoo strike digits 可变 (430 → '430000' 6位; 77 → '77000' 5位).
+    yfinance OCC 标准 8 位 (430 → '00430000'). 左 pad 0.
+    """
+    m = _re.match(r'^US\.([A-Z]+)(\d{6})([CP])(\d+)$', code)
+    if not m: return None
+    sym, yymmdd, cp, strike_raw = m.groups()
+    strike_padded = strike_raw.zfill(8)
+    return f"{sym}{yymmdd}{cp}{strike_padded}"
+
+
+def fetch_live_leg_prices(legs: list) -> dict:
+    """yfinance 拉 legs 中各 contract live 价 (60s TTL cache).
+
+    legs: [(label, moomoo_code, strike, qty), ...]
+    返回 {moomoo_code: float price}, 拿不到的 code 不在结果里.
+    """
+    out = {}
+    if not legs: return out
+    now = _time.time()
+    try:
+        import yfinance as yf
+    except Exception:
+        return out
+    for _lab, _code, _K, _qty in legs:
+        # cache hit
+        if _code in _LIVE_LEG_CACHE:
+            ts, px = _LIVE_LEG_CACHE[_code]
+            if now - ts < _LIVE_LEG_TTL_SEC:
+                if px is not None: out[_code] = px
+                continue
+        yf_t = _moomoo_code_to_yf_occ(_code)
+        if not yf_t:
+            _LIVE_LEG_CACHE[_code] = (now, None); continue
+        px = None
+        try:
+            df = yf.Ticker(yf_t).history(period="1d", interval="1m")
+            if df is not None and len(df):
+                px = float(df["Close"].iloc[-1])
+        except Exception:
+            pass
+        if px is None or px <= 0:
+            try:
+                info = yf.Ticker(yf_t).info
+                rmp = info.get("regularMarketPrice")
+                if rmp is not None and rmp > 0:
+                    px = float(rmp)
+            except Exception:
+                pass
+        _LIVE_LEG_CACHE[_code] = (now, px)
+        if px is not None: out[_code] = px
+    return out
 
 
 def infer_option_symbol(asset: str, strategy: str, ul_price: float,

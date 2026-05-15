@@ -84,6 +84,29 @@ class AssetConfig:
     ma_trend_filter_enabled: bool = True
     ma_trend_threshold: float = 0.99
 
+    # ── v3.7.201: 信号双因子硬过滤 (GLD 3y 信号深度 grid 验证) ──
+    # rv_pctile_max: rv >= 此值跳过 BUY (高波动接飞刀)
+    # ret_20d_min: 近20日 spot 跌幅 <= 此值跳过 BUY (暴跌中接飞刀)
+    # GLD grid: rv<0.75 + ret>-3% n=82 (砍 43%) WR 70.6→75.6% +5pp, Q1 拦 19/20
+    # 默认禁用 (rv_max=1.0 / ret_min=-1.0 即任何 RV/任何 ret 都过), per-asset 开启
+    rv_pctile_max_hard: float = 1.0
+    ret_20d_min_hard: float = -1.0
+
+    # ── v3.7.202: 信号 S/A/B 三级 tier 标注 (不过滤, 仅打分) ──
+    # 用户诉求: 100%胜率阈值下的信号要能区分出来, 让人看到是最优信号
+    # GLD 3y grid (signal_filter_deep.py):
+    #   S (最优): rv<tier_s_rv AND ret>tier_s_ret AND bp<=tier_s_bp
+    #     n=13, WR5d=84.6%, WR20d=100%, mean5d=+1.31%, max_loss5d=-1.5%
+    #   A (强): rv<tier_a_rv AND ret>tier_a_ret AND bp<=tier_a_bp (not S)
+    #     n=13, WR5d=84.6%, WR20d=92.3%, mean5d=+1.75%, max_loss5d=-1.5%
+    #   B (标准): pass hard_filter, neither S nor A (n=56, WR5d=71%, WR20d=88%)
+    tier_s_rv_max: float = 0.65
+    tier_s_ret_20d_min: float = 0.0
+    tier_s_bp_low_max: float = 0.20
+    tier_a_rv_max: float = 0.75
+    tier_a_ret_20d_min: float = -0.01
+    tier_a_bp_low_max: float = 0.20
+
     # ── STRADDLE 做多波动率 ──
     straddle_rv_threshold: float = 20.0   # RV < 此值 +2 分
     straddle_rv_abs_max: float = 25.0     # RV > 此值不触发
@@ -142,12 +165,21 @@ ASSET_CONFIGS: Dict[str, AssetConfig] = {
         sp_score_enabled=True,
         sp_score_threshold=3.5,           # paired chosen sum 最大 (thr=3.5 +3279% vs 3.0 +3164%)
         ma_trend_threshold=0.975,          # v3.7.146 实证: 滤 7 笔全输 (-290%累计), 真 alpha
+        # v3.7.200: 三 lever grid 验证 — 中高 IV (GVZ 25-28) 漏网导致 5/12-14 BC 全亏 -85%.
+        # 28→25 拦 5/12-14 全 3 笔 (10y 总损失 sum -2% / WR +0.1%, 远好于 ma_trend 0.99)
+        # 不仅拦 BC, 也让 GVZ 26 深破时强制转 SP (用户提的关键 alpha)
+        iv_filter_high_min=25.0,
+        # v3.7.201: 信号双因子硬过滤 (signal_filter_deep.py 3y grid 验证)
+        # rv<0.75 + ret_20d>-3% → n 143→82 (砍 43%), WR 70.6→75.6%, Q1 拦 19/20
+        # 推荐方案 B (用户选): 频率/质量平衡, 季度分布均衡
+        rv_pctile_max_hard=0.75,
+        ret_20d_min_hard=-0.03,
         short_vol_rv_pctile_lo=0.45,
         short_vol_rv_pctile_hi=0.80,
         straddle_rv_abs_max=30.0,
         straddle_rv_pctile_max=1.00,
-        last_tuned="2026-05-06",
-        notes="v3.7.123 sp_score thr=3.5 (paired 86% acc / 76% wr / +66%/笔)",
+        last_tuned="2026-05-15",
+        notes="v3.7.201 双因子硬过滤 rv<0.75 + ret_20d>-3% (Q1 拦 19/20, WR +5pp)",
     ),
 
     # SLV: v3.7.30 SLV 单独 grid search

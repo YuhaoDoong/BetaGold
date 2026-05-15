@@ -13,8 +13,10 @@ import pandas as pd
 @dataclass
 class StraddleConfig:
     profit_target_mult: float = 2.0        # +100% (cur >= entry × 2)
-    hold_max_days: int = 21                # v3.7.172: 14→21 (匹配月度 DTE)
-    base_dte: int = 30                     # v3.7.172: 14→30 (kline_db 月度 expiry only)
+    # v3.7.211: hold_max 21→14 (多窗口 BS grid: hold=10 sum +4845 vs hold=21 +3615)
+    # 黄金 long vol theta 衰减快, 早平 ROI 更高
+    hold_max_days: int = 14                # 等同 expiry (DTE=14)
+    base_dte: int = 30                     # base 30, 但实际选 14 DTE 月度 expiry
 
 
 def simulate_straddle_position(entry_pricing: dict,
@@ -72,4 +74,23 @@ def simulate_straddle_position(entry_pricing: dict,
         pnl_pct = (cur_value / entry_value - 1) * 100
         return {"is_closed": False, "current_value": cur_value, "hold_days": hold,
                  "pnl_pct": pnl_pct, "leg_prices": leg_prices_at_exit}
+    # v3.7.199: kline_db 没数据 → yfinance live (straddle = sum legs)
+    try:
+        from core.paper_positions import fetch_live_leg_prices
+        live_map = fetch_live_leg_prices(legs)
+    except Exception:
+        live_map = {}
+    if live_map and all(l[1] in live_map for l in legs):
+        leg_prices_live = []; cur_total = 0.0
+        for _lab, _code, _K, _qty in legs:
+            _p = float(live_map[_code])
+            leg_prices_live.append((_lab, _p))
+            cur_total += _qty * _p
+        cur_value = cur_total
+        pnl_pct = (cur_value / entry_value - 1) * 100
+        sig_d = pd.Timestamp(signal_date).normalize()
+        return {"is_closed": False, "current_value": cur_value,
+                 "hold_days": max(0, (today_dt - sig_d).days),
+                 "pnl_pct": pnl_pct, "leg_prices": leg_prices_live,
+                 "price_source": "yfinance_live"}
     return {"is_closed": False, "reason": "no data after entry"}

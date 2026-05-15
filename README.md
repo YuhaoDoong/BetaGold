@@ -1,8 +1,46 @@
 # GoldDash — 贵金属交易决策系统
 
-基于宏观因子 + 深度学习的贵金属交易决策系统。支持黄金 (GLD) 和白银 (SLV)，三层模型 + 多策略竞争 + 实证回测验证。
+基于宏观因子 + 深度学习的贵金属交易决策系统。支持黄金 (GLD) 和白银 (SLV)，三层模型 + S/A/B 信号 tier + per-tier 仓位管理 + 多窗口实证验证。
 
 **GitHub**: https://github.com/YuhaoDoong/BetaGold
+
+## 当前 cfg 状态 (v3.7.209, 2026-05-15)
+
+### 信号过滤 (GLD)
+| 过滤 | 阈值 | 作用 |
+|---|---|---|
+| **rv_pctile_max** | 0.75 | rv ≥ 0.75 (高波动) 跳过, 避免接飞刀 |
+| **ret_20d_min** | −3% | 近20日跌幅 ≤ −3% 跳过, 拦下行段 |
+| **ma_trend_threshold** | 0.975 | MA20/MA50 < 0.975 (下行趋势) 跳过 |
+| **iv_filter_high_min** | 25 (GVZ) | 高IV: 浅破 (bp_low>0.10) 跳过, 深破强制 SP |
+| **min_dte** | 14d | 期权挑选, 拒绝末日期权 |
+
+### S/A/B Tier 分级 (嵌套语义, GLD)
+| Tier | 准入 | 5y WR | 期货建议 |
+|---|---|---|---|
+| ⭐ S | rv<0.65 ∧ ret_20d>0 ∧ bp_low≤0.20 | 100% (20d) | lev=10× |
+| 🔵 A | rv<0.75 ∧ ret_20d>−1% ∧ bp_low≤0.20 (含S) | 96% | lev=10× |
+| ⚪ B | 通过所有硬过滤 (含S/A) | 88% | lev=5× |
+
+### 期货 cfg (FUTURES_GLD)
+| 参数 | 值 | grid 验证 (5y/3y/1y) |
+|---|---|---|
+| **leverage** | S/A=10× B=5× | per-tier lev=10 是天花板 (≥15 wick 爆仓) |
+| **hold_max_days** | **45** | 5y sum +7513 / 1y sum +2057 (vs 30d +65~110%) |
+| **sl_margin_pct** | 100% | spot −10% 兜底 (5y 未触发) |
+| **early_tp_locks** | () | 撤早平 (5y grid sum 翻 2.3x) |
+| **funding_rate_8h** | −0.00002 | Binance XAUUSDT 实测 long 净赚 |
+
+### 期权 cfg
+| 策略 | pt | sl | DTE | 验证 |
+|---|---|---|---|---|
+| **BUY CALL** | 2.5× premium | 0.3× | 30d | 5y BS+real sum +11851% (旧 1.5/0.5 仅 +4078%) |
+| **SELL PUT (GLD)** | 70% credit | 100% margin | 30d | 5y sum +1726% (旧 50% +1323%) |
+| **SELL PUT (SLV)** | 30% credit | 100% margin | 30d | per-asset (v3.7.184) |
+| **STRADDLE** | 2× | hold **14d** | 14d | v3.7.211 21→14 (BS grid 早平最优) |
+| **SHORT_VOL** | DISABLED | — | — | 实战 6% WR (v3.7.177 起停用) |
+
+详见 [docs/STRATEGIES.md](docs/STRATEGIES.md) 和 [docs/EXPERIMENTS.md](docs/EXPERIMENTS.md)
 
 ## 详细文档
 
@@ -173,6 +211,97 @@ launchctl load ~/Library/LaunchAgents/com.golddash.retune.plist
 | **v3.7.127** | **方向性入场加 ma_trend (MA20/MA50) 过滤 — 全链路累计 PnL +1400%** |
 | v3.7.128 | ma_trend 阈值 per-asset grid: GLD 0.99→0.975 (留边界信号 sum +41%), SLV 0.99 维持 |
 | **v3.7.129** | **期货 TP/SL/hold 3D grid: 3%/3%/5d → 8%/5%/15d, 杠杆累计 +4300% → +11220% (×2.6)** |
+
+## v3.7.200-211 系统大优化 (信号过滤 + 多窗口验证 + 波动率)
+
+### 一句话总结
+**5y/3y/1y 多窗口 grid 验证**, 把信号过滤 + 期货 cfg + 期权 cfg 全部重测一遍, 把 sum 从 +828% 提到 **+7513%** (5y, lev=10 hold=45 无早平)。
+
+### 关键改动
+
+#### v3.7.200-201: 信号双因子硬过滤
+**问题**: 2026Q1 模型连续 13 笔逆势 BUY (spot 5d WR 31%, mean -3.6%), BC 期权放大成 8% WR -85%
+**解决**: 加 `rv_pctile_max=0.75` + `ret_20d_min=-3%` 硬过滤
+**效果**: GLD 3y BUY 信号 143 → 82 (砍 43%), Q1 拦 19/20, 5/12-14 全拦
+
+#### v3.7.200: BC pick min_dte=14 (拒末日期权)
+**问题**: 5/12 BC 入场选了 C$430 5/15 (9 DTE on 信号日, 3 DTE on entry), 实质末日期权
+**根因**: kline_db strike gap, fallback 选到末日期权
+**解决**: `pick_liquid_monthly_option` 加 `min_dte=14` 硬下限
+
+#### v3.7.200: IV 三阶过滤 28→25
+**问题**: 5/12-14 GVZ 26-27 (中高 IV), 旧阈值 28 没拦, BC 被 IV crush -85%
+**5y grid**: 28→25 拦 5/12-14 全 3 笔, 10y 总损失 sum 仅 −2% (代价极小)
+
+#### v3.7.202: S/A/B Tier 嵌套分级
+- S: rv<0.65 ∧ ret_20d>0 ∧ bp_low≤0.20 (n=13, **WR 100% 20d**)
+- A: rv<0.75 ∧ ret_20d>-1 ∧ bp_low≤0.20 (含S, n=26, WR 96%)
+- B: 通过所有过滤 (含S/A, n=83, WR 90%)
+- v3.7.207: tier 计算延后到 IV filter 之后 (跟 buy_signal 最终状态一致)
+
+#### v3.7.203-204: 期货 per-tier leverage
+- S=10× / A=10× / B=5× (S 是 A 的子集, lev 必须 ≥ A)
+- 5y grid: lev=15+ 在 3 月 wick (-5.7%) 必爆仓
+- Binance XAUUSDT funding 校准: mean −0.002%/8h (long 净赚 ~2%/y, 旧 cfg 假设 long 付费严重高估成本)
+
+#### v3.7.205: 期权 BC/SP 5y grid 重测
+- **BC: pt 1.5→2.5, sl 0.5→0.3** (5y BS+real n=83: sum +4078 → **+11851**, WR 75 → 87%)
+- **SP GLD: pt 50→70** (5y sum +1323 → +1726, WR 略降但 sum +30%)
+- **反直觉**: SL 越紧 (0.3 = premium 跌 70% 才止损) WR 反而越高 — BC 杠杆 + theta, 早 SL 错过反弹
+
+#### v3.7.207: 修期货信号没传 gvz_series
+**问题**: `build_futures_signals` 没传 `gvz_series` → IV filter 对期货 sig 不生效 → 5/14 期货开仓但期权被拦
+**结果**: 期货/期权两边一致, 5/14 GLD 两边都被拦
+
+#### v3.7.208: 撤期货早平锁利 + IV filter 必要性
+**早平 grid 实证**: 旧 `early_tp_locks=(3,5)(7,3)(12,1)` sum +1331, 撤掉 sum +3065 (2.3x)
+**IV filter 必要性**: NO IV n=85 但 2 笔 wick 爆仓 -100%, WITH IV n=83 0 爆仓 — 期货虽然不怕 IV crush 但高 IV 是 wick risk 代理
+
+#### v3.7.209: hold_max 30 → 45 (多窗口验证)
+| 窗口 | hold=30 | hold=45 | 提升 |
+|---|---|---|---|
+| 5y | sum +4540 WR 88% | sum **+7513** WR **94%** | +65% |
+| 3y | sum +4564 WR 89% | sum +7563 WR 95% | +66% |
+| 1y | sum +981 WR 85% | sum +2057 WR 95% | **+110%** |
+
+**所有 cfg 在 5y/3y/1y 三窗口结论一致**, 黄金中期趋势稳定。
+
+### 工具脚本 (实测验证)
+
+| 脚本 | 用途 |
+|---|---|
+| `scripts/signal_filter_deep.py` | 信号 filter 单/双/三因子 grid |
+| `scripts/three_lever_grid.py` | regime / ma_trend / IV filter 联合 |
+| `scripts/futures_grid_5y.py` | 期货 5y GC=F leverage / TP / SL / hold |
+| `scripts/futures_early_tp_grid.py` | early_tp_lock 撤vs留 grid |
+| `scripts/futures_real_tp_grid.py` | pullback / signal_reversal / 硬 TP 对比 |
+| `scripts/options_5y_bs_proxy.py` | 期权 5y 统一 (kline_db 真实 + BS proxy) |
+| `scripts/options_sl_grid_5y.py` | BC/SP pt/sl 5y grid |
+| `scripts/multi_window_validate.py` | **所有 cfg × 5y/3y/1y/6m/3m 多窗口对比** |
+| `scripts/vol_signal_multi_window.py` | STRADDLE + SHORT_VOL 多窗口 grid |
+
+#### v3.7.210: 阈值显示透明化
+**问题**: 用户问 "为何阈值一天内变化" → 根因: live spot 每 5min 更新 csv + OI 修正实时偏移
+**改动**: chart + 状态栏加 "🔴 实时" 标记, 同时显示 EOD 锚定参照 (用昨日 close 算固定)
+**效果**: 用户能看清盘中阈值漂移幅度 (通常 < $1, 大波动日 $2-3)
+
+#### v3.7.211: 波动率信号多窗口 + SHORT_VOL 决策
+**STRADDLE**:
+- hold_max 21d → **14d** (BS grid: hold=14 等同 expiry, ROI 更高)
+- 3/17 GLD 实测: 旧 hold=21 **-24.5%** → 新 hold=14 **+10.5%** (避开 spot 反向)
+- 5y/3y/1y 各窗口都赚 (sum +918~+3615, WR 46-52%)
+- score≥6 现 cfg 各窗口稳健
+
+**SHORT_VOL (IC) 保持 DISABLED**:
+- 5y/3y 是赢的 (sum +1624/+787, WR 66-68%)
+- **1y/6m 大幅崩盘** (sum −408/−785, WR 33-51%) — 2026Q1 高波动期 IC 短腿被穿
+- 重启条件: GVZ 1y 平均回 22 以下
+
+**3 表格统一窗口**:
+- 历史未平仓 OPEN (3mo)
+- 近 3 个月已平仓 CLOSED (3mo)
+- 3 个月真实交易回测 (3mo)
+- 每表都加 caption 说明数据源差异 (实际触发 vs 历史信号全量)
 
 ## v3.7.129 期货退出参数全网格优化 (核心)
 

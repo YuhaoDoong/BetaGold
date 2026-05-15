@@ -49,17 +49,31 @@ from core.strategies.straddle import StraddleConfig
 # lev=3×  爆仓距离 ≈ 33% spot → 极端 wick 也安全
 # SP 期权按 expiry 日线 close 计 mark, wick 不影响 → 解释 3-19/23 SP 盈利但 FUT 爆仓
 FUTURES_GLD = FuturesConfig(
-    leverage=5,
-    tp_margin_pct=200.0,
-    sl_margin_pct=100.0,
-    hold_max_days=20,
-    # v3.7.184: 撤销 v3.7.183 过激进早平 (用户实际想法是 SP 平太早, 不是 FUT 太晚)
-    # 恢复 GLD lev=5× 适度早平阈值
-    early_tp_locks=(
-        (3, 5.0),    # 3d ≥ +5% spot (+25% margin)
-        (7, 3.0),    # 7d ≥ +3% spot (+15% margin)
-        (12, 1.0),   # 12d ≥ +1% spot (+5% margin)
-    ),
+    # v3.7.204: per-tier leverage 遵循 S ≥ A ≥ B 原则 (用户 Q3)
+    # Tier 嵌套语义: S 是 A 的严格子集, S 信号也满足 A 条件
+    # 所以 leverage 不能 A > S (违反"S 最优"原则)
+    # 5y GC=F grid (Binance funding 校准后, Q4):
+    #   全 lev=10:        sum +1848 max_loss -100  1 爆仓 (B 残留信号)
+    #   S=10/A=10/B=5: sum +1316 max_loss -33   0 爆仓 ★
+    #   S=15/A=10/B=5: sum +1331 max_loss -100  1 爆仓 (S 4-03 wick)
+    # 取 S=10/A=10/B=5 — 零爆仓, S=A 一致 (S 是 A 的子集所以 lev 必 ≥ A)
+    # S/A 历史 100% WR, B 89.5% WR (含 Q1 残留 1 笔)
+    leverage=5,                           # 默认 (B tier 用)
+    tier_s_leverage=10,                   # S 最优 (lev 15 wick 爆 4-03)
+    tier_a_leverage=10,                   # A 含 S (S=A=10 保 tier 一致性)
+    tier_b_leverage=5,                    # B 含残留弱信号 (lev=10 时爆 1 笔)
+    tp_margin_pct=200.0,                  # 死参数, 早平已撤
+    sl_margin_pct=100.0,                  # 兜底: spot -10% 触发 (5y 未触发)
+    hold_max_days=45,                     # v3.7.209: 30→45 (多窗口验证最优)
+    funding_rate_8h=-0.00002,             # Binance XAUUSDT 实测 long 净赚
+    # v3.7.208: 撤早平锁利 (5y grid 实证)
+    # v3.7.209: hold 30→45 (多窗口 5y/3y/1y 一致 sum +65~110%, WR +6-10pp)
+    #   旧 (3,5)(7,3)(12,1) hold=13d 早平: 5y sum +1331 mean +16%
+    #   v3.7.208 无早平 hold=30:           5y sum +3065 mean +37% (2.3x)
+    #   v3.7.209 无早平 hold=45:           5y sum +7513 WR 94% / 1y sum +2057 WR 95% ★
+    # 黄金趋势强 → 45d 完整捕捉反弹+延续 (mean spot move 6-7%)
+    # SL=100% margin (spot -10%) 兜底, max_loss -25% 反而比 30d (-33%) 更小
+    early_tp_locks=(),
 )
 FUTURES_SLV = FuturesConfig(
     leverage=3,
@@ -85,11 +99,12 @@ SHORT_VOL_DEFAULT = ShortVolConfig(
 )
 SHORT_VOL_DISABLED = True  # ★ v3.7.177: 当前默认停用
 
-# ── SELL_PUT credit spread ── v3.7.184 拆 per-asset (grid 实测)
-# GLD SP (1y n=14): pt=50 最优 sB=+17.8 (WR=80% sum=+116%)
-# SLV SP (1y n=46): pt=30 最优 sB=+68.9 (WR=89% sum=+694%, 比 pt=50 强 90%)
+# ── SELL_PUT credit spread ── v3.7.205 5y grid 重测
+# GLD SP (5y n=82, BS proxy + 真实): pt=70 最优 sB=80 (WR=92.7% sum=+1726%)
+#   vs 旧 pt=50 sB=65 (WR=95.1% sum=+1323%) — pt=70 sum +30% WR -2.4pp
+# SLV SP (1y n=46): pt=30 最优 sB=+68.9 (WR=89% sum=+694%) — SLV 没重测
 # SLV 高频 + mean reversion 快 → 更早锁利反而总收益更高
-SELL_PUT_GLD = SPConfig(profit_target_credit_pct=50.0, stop_loss_margin_pct=100.0,
+SELL_PUT_GLD = SPConfig(profit_target_credit_pct=70.0, stop_loss_margin_pct=100.0,
                           base_dte=30)
 SELL_PUT_SLV = SPConfig(profit_target_credit_pct=30.0, stop_loss_margin_pct=100.0,
                           base_dte=30)

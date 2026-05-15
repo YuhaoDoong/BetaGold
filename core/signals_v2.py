@@ -138,6 +138,14 @@ def generate_daily_signals(close_d, high_d, low_d,
         _ma_trend = _ma20 / _ma50
     except Exception:
         pass
+
+    # v3.7.201: 信号双因子硬过滤 (rv_pctile_max + ret_20d_min)
+    # signal_filter_deep.py 3y GLD grid: rv<0.75 + ret>-3% n=82/143 WR +5pp Q1 拦 19/20
+    _ret_20d = None
+    try:
+        _ret_20d = close_d.pct_change(20)
+    except Exception:
+        pass
     """日线级别信号: v1.0 Band + H/L 触发 + RV 极值过滤.
 
     rv_filter=True 时只在 RV %tile < rv_low 或 > rv_high 时触发方向性.
@@ -205,6 +213,32 @@ def generate_daily_signals(close_d, high_d, low_d,
             if not np.isnan(mt) and mt < mt_thr:
                 buy_sig = False
                 ma_trend_skip = True
+
+        # v3.7.201: 双因子硬过滤 (rv_pctile_max + ret_20d_min)
+        # GLD 3y grid: rv<0.75 + ret>-3% n=82/143 WR +5pp Q1 拦 19/20
+        signal_hard_skip_reason = ""
+        _r20_val = np.nan
+        if _ret_20d is not None and d in _ret_20d.index:
+            _r20_val = float(_ret_20d.get(d, np.nan))
+        if buy_sig and asset is not None:
+            try:
+                from core.strategy_config import get_config
+                _ac2 = get_config(asset)
+                _rv_max = getattr(_ac2, "rv_pctile_max_hard", 1.0)
+                _ret_min = getattr(_ac2, "ret_20d_min_hard", -1.0)
+                if rv >= _rv_max:
+                    buy_sig = False
+                    signal_hard_skip_reason = f"rv_pct {rv:.2f}>={_rv_max} 跳过"
+                elif not np.isnan(_r20_val) and _r20_val <= _ret_min:
+                    buy_sig = False
+                    signal_hard_skip_reason = (
+                        f"ret_20d {_r20_val*100:+.1f}%<={_ret_min*100:.0f}% 跳过")
+            except Exception:
+                pass
+
+        # v3.7.207: tier 计算延后到 IV filter 之后 (跟 buy_sig 最终状态一致)
+        # 旧 v3.7.202: tier 在 IV filter 前算 → 3/17 tier=S 但 buy_signal=False 矛盾
+        signal_tier = ""
         buy_type = None
         iv_filter_reason = ""  # v3.7.117 透明记录 IV 过滤原因
         sp_score = None
@@ -280,6 +314,28 @@ def generate_daily_signals(close_d, high_d, low_d,
                 else:
                     iv_filter_reason = f"低IV {gvz:.0f} 正常"
 
+        # v3.7.207: tier 计算延后到这里 — IV filter 之后, 跟 buy_sig 最终状态对齐
+        # 旧 v3.7.202 tier 在 IV filter 前算 → 3/17 等"IV 拦下"信号仍标 S, 误导
+        if buy_sig and asset is not None:
+            try:
+                from core.strategy_config import get_config
+                _ac3 = get_config(asset)
+                s_rv = getattr(_ac3, "tier_s_rv_max", 0.65)
+                s_ret = getattr(_ac3, "tier_s_ret_20d_min", 0.0)
+                s_bp = getattr(_ac3, "tier_s_bp_low_max", 0.20)
+                a_rv = getattr(_ac3, "tier_a_rv_max", 0.75)
+                a_ret = getattr(_ac3, "tier_a_ret_20d_min", -0.01)
+                a_bp = getattr(_ac3, "tier_a_bp_low_max", 0.20)
+                _r20_safe = _r20_val if not np.isnan(_r20_val) else 0.0
+                if (rv < s_rv and _r20_safe > s_ret and bp_low <= s_bp):
+                    signal_tier = "S"
+                elif (rv < a_rv and _r20_safe > a_ret and bp_low <= a_bp):
+                    signal_tier = "A"
+                else:
+                    signal_tier = "B"
+            except Exception:
+                signal_tier = "B"
+
         exit_sig = bp_high > exit_bp
         # Regime 退出
         if d in regime.index:
@@ -329,6 +385,11 @@ def generate_daily_signals(close_d, high_d, low_d,
                          if (_ma_trend is not None and d in _ma_trend.index)
                          else np.nan,
             "ma_trend_skip": ma_trend_skip,
+            "signal_hard_skip_reason": signal_hard_skip_reason,
+            "ret_20d": float(_ret_20d.get(d, np.nan))
+                         if (_ret_20d is not None and d in _ret_20d.index)
+                         else np.nan,
+            "signal_tier": signal_tier,  # v3.7.202: S/A/B
         })
 
     return pd.DataFrame(records).set_index("date")

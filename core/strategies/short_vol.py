@@ -135,9 +135,26 @@ def simulate_short_vol_position(entry_pricing: dict,
                      "pnl_pct": _pnl(cur_value),
                      "leg_prices": leg_prices_today,
                      "max_risk": max_risk}
+    # v3.7.199: kline_db 没数据 → 拉 yfinance live
+    try:
+        from core.paper_positions import fetch_live_leg_prices
+        live_map = fetch_live_leg_prices(legs)
+    except Exception:
+        live_map = {}
+    if live_map and all(l[1] in live_map for l in legs):
+        leg_prices_live = []; cur_total = 0.0
+        for _lab, _code, _K, _qty in legs:
+            _p = float(live_map[_code])
+            leg_prices_live.append((_lab, _p))
+            cur_total += _qty * _p
+        cur_value = -cur_total
+        return {"is_closed": False, "current_value": cur_value,
+                 "hold_days": max(0, (today_dt - sig_d).days),
+                 "pnl_pct": _pnl(cur_value), "leg_prices": leg_prices_live,
+                 "max_risk": max_risk, "price_source": "yfinance_live"}
     # 真没数据 — 用 entry leg prices 当 OPEN MTM (无变化, hold_days 0)
     return {"is_closed": False, "current_value": entry_value,
              "hold_days": max(0, (today_dt - sig_d).days),
              "pnl_pct": 0.0,
              "leg_prices": ent_leg_prices,
-             "max_risk": max_risk}
+             "max_risk": max_risk, "price_source": "stale_entry"}

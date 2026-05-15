@@ -29,8 +29,21 @@ class FuturesConfig:
     v3.7.137: 统一用 margin % 表示 TP/SL (与 BC/SP/IC 对齐, 跟"策略盈亏"挂钩).
               spot % 通过 leverage 换算: spot_pct = margin_pct / leverage
     """
-    leverage: int = 20                   # 杠杆 (Binance XAUUSDT 上限 20)
-    maintenance_margin_rate: float = 0.005  # MM rate (5y XAUUSDT 实测)
+    leverage: int = 20                   # 杠杆 (默认/B tier, Binance XAUUSDT 上限 20)
+    maintenance_margin_rate: float = 0.005  # MM rate (Bracket 1 < $50k notional)
+
+    # v3.7.204: per-tier leverage 配置 (None = 用 leverage 默认)
+    # 高质量信号 (S/A 历史 100% WR) 上更高杠杆, 标准信号保守
+    # 注: lev=15 爆距 ≈ 6.2% spot, GC=F 单日 wick 3-19 -5.7% / 3-23 -5.8% 接近爆仓
+    #     用 v3.7.201 信号过滤后 Q1 残留 1 笔, lev=15 在 wick 期可能爆
+    tier_s_leverage: int = None          # 例 15 (S 最优, 100% WR)
+    tier_a_leverage: int = None          # 例 10
+    tier_b_leverage: int = None          # 例 5
+
+    # per-tier 仓位 fraction (None = 1.0 全仓; Kelly 推荐 S=1.0 A=0.8 B=0.5)
+    tier_s_position_frac: float = 1.0
+    tier_a_position_frac: float = 1.0
+    tier_b_position_frac: float = 1.0
 
     # 主退出参数 — margin % (策略盈亏视角, 但客观 grid 最优 = 100% margin = 5% spot)
     # v3.7.138: 之前 sl_margin=50% 是"心理可控"非客观最优. exit_params_grid 显示
@@ -55,9 +68,13 @@ class FuturesConfig:
     signal_reversal_bp_high: float = 0.85  # 区间上沿即视反转
     signal_reversal_min_profit: float = 0.0  # 反转 + 至少 0% 利润才平
 
-    # 费用
-    taker_fee: float = 0.0005            # 单边 0.05% (Binance regular)
-    funding_rate_8h: float = 0.0001      # 平均 (实测可拉)
+    # 费用 (v3.7.204: Binance USDM XAUUSDT 实测校准)
+    # taker_fee: Binance USDM standard taker 0.05% (regular, no VIP/BNB)
+    # funding_rate_8h: Binance XAUUSDT 33d 实测 mean=-0.00200% (long 净收 funding)
+    #   旧 0.0001 (long 付 0.01%/8h) 是 spot 期货笼统估算, 严重高估成本
+    #   实际 long 持仓: 年化 funding 收益 ~+2.2%, 不是 -10%+
+    taker_fee: float = 0.0005            # 单边 0.05% (Binance USDM standard taker)
+    funding_rate_8h: float = -0.00002    # -0.002%/8h (Binance XAUUSDT 实测 mean)
 
 
 def liquidation_distance_pct(cfg: FuturesConfig, side: str = "long") -> float:
@@ -94,16 +111,25 @@ def simulate_long_position(entry_d: pd.Timestamp,
                               live_spot: float = None,
                               live_high: float = None,
                               live_low: float = None,
-                              bp_high_series: pd.Series = None) -> dict:
+                              bp_high_series: pd.Series = None,
+                              signal_tier: str = None) -> dict:
     """模拟期货多头持仓 — 4 层退出: 爆仓 / SL / TP / Timeout.
 
     v3.7.134: 期货 24h 可交易 (Binance XAUUSDT / GC=F COMEX 23h).
       live_spot: 当前实时价 (用于 MTM, 不再用上日 close)
       live_high/low: 今日盘中 high/low (用于检查 SL/TP 是否已被触发)
                      若 None, 用 live_spot 当 high=low (保守 — 仅 close 检测)
+    v3.7.204: signal_tier (S/A/B) — 启用 per-tier leverage 覆盖.
     时间序: bar 内最坏先发 (保守).
     """
     if cfg is None: cfg = FuturesConfig()
+    # v3.7.204: per-tier leverage 覆盖
+    if signal_tier == "S" and cfg.tier_s_leverage is not None:
+        import copy as _copy; cfg = _copy.copy(cfg); cfg.leverage = cfg.tier_s_leverage
+    elif signal_tier == "A" and cfg.tier_a_leverage is not None:
+        import copy as _copy; cfg = _copy.copy(cfg); cfg.leverage = cfg.tier_a_leverage
+    elif signal_tier == "B" and cfg.tier_b_leverage is not None:
+        import copy as _copy; cfg = _copy.copy(cfg); cfg.leverage = cfg.tier_b_leverage
     sl = sl_spot_pct(cfg)        # spot % SL (= sl_margin_pct / leverage)
     tp = tp_spot_pct(cfg)        # spot % TP (= tp_margin_pct / leverage)
     liq_pct = liquidation_distance_pct(cfg, "long")  # 负值

@@ -286,6 +286,7 @@ def generate_chart(close, high, dates_all, upper_band, lower_band,
                    today_rv=0, oi_levels=None, oi_daily_range=None,
                    oi_events=None, oi_adj_bands=None,
                    oi_adj_bp030=0, oi_adj_bp090=0,
+                   eod_bp030=0, eod_bp090=0,  # v3.7.210: EOD-locked 阈值参照
                    asset_key="GLD",
                    spot_ratio=1.0, spot_label=None,
                    straddle_dates=None,
@@ -540,9 +541,12 @@ def generate_chart(close, high, dates_all, upper_band, lower_band,
         eff_bp030_d = eff_bp030 * _r
         ax.axhline(eff_bp030_d, color="#2196F3", lw=1.2, ls="-.",
                    alpha=0.5, zorder=2)
-        buy_label = f"BUY < ${eff_bp030_d:.1f}"
+        # v3.7.210: [实时] 标记 + EOD 锚定值参照
+        buy_label = f"[实时] BUY < ${eff_bp030_d:.1f}"
         if oi_adj_bp030 > 0 and next_bp030 > 0:
-            buy_label += f" (原${next_bp030 * _r:.1f})"
+            buy_label += f" (无OI ${next_bp030 * _r:.1f})"
+        if eod_bp030 > 0 and abs(eod_bp030 - next_bp030) > 0.5:
+            buy_label += f" | EOD ${eod_bp030 * _r:.1f}"
         ax.annotate(buy_label,
                     xy=(last_xi, eff_bp030_d),
                     xytext=(10, 0), textcoords="offset points",
@@ -552,9 +556,11 @@ def generate_chart(close, high, dates_all, upper_band, lower_band,
         eff_bp090_d = eff_bp090 * _r
         ax.axhline(eff_bp090_d, color="#F44336", lw=1.2, ls="-.",
                    alpha=0.5, zorder=2)
-        exit_label = f"EXIT > ${eff_bp090_d:.1f}"
+        exit_label = f"[实时] EXIT > ${eff_bp090_d:.1f}"
         if oi_adj_bp090 > 0 and next_bp090 > 0:
-            exit_label += f" (原${next_bp090 * _r:.1f})"
+            exit_label += f" (无OI ${next_bp090 * _r:.1f})"
+        if eod_bp090 > 0 and abs(eod_bp090 - next_bp090) > 0.5:
+            exit_label += f" | EOD ${eod_bp090 * _r:.1f}"
         ax.annotate(exit_label,
                     xy=(last_xi, eff_bp090_d),
                     xytext=(10, 0), textcoords="offset points",
@@ -1362,6 +1368,27 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     eff_bp030 = oi_adj_bp030 if oi_adj_bp030 > 0 else next_bp030
     eff_bp090 = oi_adj_bp090 if oi_adj_bp090 > 0 else next_bp090
 
+    # v3.7.210: EOD-locked 版本 (用前一交易日 close, 不随盘中 live spot 变化)
+    # 让用户看到 "实时阈值 vs EOD 锚定阈值" 的差异
+    eod_bp030 = eod_bp090 = 0
+    try:
+        # 找前一交易日
+        _loc = bp_dates.get_loc(last_date)
+        if _loc > 0:
+            _prev_date = bp_dates[_loc - 1]
+            _prev_close = close_d.get(_prev_date, 0)
+            if _prev_close > 0 and _prev_date in range_df.index:
+                # 用前一交易日的 close + 当天的预测 band 算 locked 阈值
+                _pu = range_df.loc[_prev_date, "pred_upper_pct"]
+                _pl = range_df.loc[_prev_date, "pred_lower_pct"]
+                _eod_upper = _prev_close * (1 + _pu / 100)
+                _eod_lower = _prev_close * (1 + _pl / 100)
+                if _eod_upper > _eod_lower:
+                    eod_bp030 = _eod_lower + 0.30 * (_eod_upper - _eod_lower)
+                    eod_bp090 = _eod_lower + 0.90 * (_eod_upper - _eod_lower)
+    except Exception:
+        pass
+
     # v3.7.62: SLV 用 si_slv_ratio (动态算), GLD 用 gc_gld_ratio
     # v3.7.104: 优先用实时 ratio (60s 缓存), 失败 fallback 60d 历史均值
     _live_ratio = _get_realtime_ratio(asset_key)
@@ -1650,15 +1677,25 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                       delta=_rv_zone)
         st.divider()
 
-        oi_tag = " (OI修正)" if oi_adj_bp030 > 0 else ""
+        # v3.7.210: 实时 vs EOD 锚定双显示 (用户问 "为何阈值一天变化" — live close + OI 修正)
+        oi_tag = " 🔴实时" if oi_adj_bp030 > 0 else " 🔴实时"
+        _eod_buy_delta = ""
+        _eod_exit_delta = ""
+        if eod_bp030 > 0 and abs(eod_bp030 - next_bp030) > 0.3:
+            _eod_buy_delta = f" | EOD锚 ${eod_bp030:.2f}"
+        if eod_bp090 > 0 and abs(eod_bp090 - next_bp090) > 0.3:
+            _eod_exit_delta = f" | EOD锚 ${eod_bp090:.2f}"
         st.markdown('<div class="signal-box">', unsafe_allow_html=True)
         c1, c2, c3 = st.columns(3)
         with c1:
             st.metric(f"看多 <{oi_tag}", f"${_buy_spot:{_price_fmt}}",
-                      delta=f"{_etf_label} < ${eff_bp030:.2f} | {_shfe_label} < ¥{_buy_shfe:.1f}")
+                      delta=f"{_etf_label} < ${eff_bp030:.2f}{_eod_buy_delta} | {_shfe_label} < ¥{_buy_shfe:.1f}",
+                      help="阈值跟随 live spot + OI 实时调整. EOD 锚是用昨日 close 算的固定参照, "
+                           "用于看清盘中波动了多少.")
         with c2:
             st.metric(f"看空/止盈 >{oi_tag}", f"${_exit_spot:{_price_fmt}}",
-                      delta=f"{_etf_label} > ${eff_bp090:.2f} | {_shfe_label} > ¥{_exit_shfe:.1f}")
+                      delta=f"{_etf_label} > ${eff_bp090:.2f}{_eod_exit_delta} | {_shfe_label} > ¥{_exit_shfe:.1f}",
+                      help="同看多 — 实时阈值跟随 live close 调整, EOD 锚是昨日 close 基准")
         with c3:
             # v3.7.62: session-aware 工具路由 — 默认期权, 非 US session 用期货补窗外
             # US 期权 regular session: SGT 21:30 ~ 04:00 (= US 9:30-16:00 EDT)
@@ -1691,14 +1728,26 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                 sig_text = "数据过期"
                 _delta_str = f"末数据 {_ld.date()} ({_bdays_age}bd) — 重启刷新"
             elif _raw_sig:
+                # v3.7.202: 加 S/A/B tier 前缀显示 (S 最优 100% WR20d, A 强, B 标准)
+                _tier = sig_df.loc[last_date].get("signal_tier", "") if last_date in sig_df.index else ""
+                _tier_emoji = {"S": "⭐ S", "A": "🔵 A", "B": "⚪ B"}.get(_tier, "")
                 sig_text = _sig_map.get(_raw_sig, _raw_sig)
+                if _tier_emoji:
+                    sig_text = f"[{_tier_emoji}] {sig_text}"
                 _sizing_tag = ""
                 if _sizing > 1.0 and _has_open_buy:
                     _sizing_tag = f" | 仓位 {_sizing:.0f}× ({_sizing_reasons})"
                 _bp_tag = f" | bp={bp_est:.2f}" if bp_est is not None else ""
+                _tier_tag = ""
+                if _tier == "S":
+                    _tier_tag = " | ⭐ 最优 (历史 WR20d 100%)"
+                elif _tier == "A":
+                    _tier_tag = " | 🔵 强 (WR20d 92%)"
+                elif _tier == "B":
+                    _tier_tag = " | ⚪ 标准 (WR20d 88%)"
                 # v3.7.138: 撤掉 sp_score 显示 — 那是回测分析, 不是盘中信号 (用户指正)
                 _delta_str = (f"Regime: {last_regime}{_bp_tag} | "
-                              f"RV={rv_pctile.get(last_date,0):.0%}{_sizing_tag}")
+                              f"RV={rv_pctile.get(last_date,0):.0%}{_sizing_tag}{_tier_tag}")
             else:
                 sig_text = "今日无信号"
                 _delta_str = (f"bp={bp_est:.2f} | RV={rv_pctile.get(last_date,0):.0%} | "
@@ -3859,6 +3908,9 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     except Exception:
         pass
 
+    # v3.7.199: 期权 OPEN 持仓需显示当前 ETF spot — 直拉 yfinance
+    _live_etf_now = _get_realtime_etf(asset_key)
+
     try:
         import json as _json
         with open(_ledger_path) as _f:
@@ -3922,26 +3974,50 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                 _gain_str = f"{r['pnl_pct']:+.1f}%"
                 _exit_label = f'OPEN ({r["hold_days"]}d)'
 
-            # v3.7.164: 期货行不显示"入场ETF/GC=F" (跟 ETF 解耦)
+            # v3.7.206: 统一 入场标的 / 现价标的 — 期货用 Binance, 期权用 ETF
+            # tier 列单独标 (来自 ledger row signal_tier)
+            _tier_v = r.get("signal_tier", "") or ""
+            _tier_disp = {"S": "⭐ S", "A": "🔵 A", "B": "⚪ B"}.get(_tier_v, "—")
             if _is_futures:
+                _ent_under = float(r.get("entry_perp", 0) or 0)
+                _cur_under = (_binance_mark if (not r["is_closed"] and _binance_mark)
+                                else _exit_v if r["is_closed"] else _ent_under)
+                _chg = ((_cur_under / _ent_under - 1) * 100) if _ent_under else 0
                 _rec = {
                     "信号日": _du.strftime("%m-%d"),
+                    "Tier": _tier_disp,
                     "策略": r["strategy"],
                     "合约": r["source"],
-                    "Binance 入场": f"${r.get('entry_perp', 0):.2f}",
-                    "入场详情": _ent_str,
-                    "现/平价": _exit_str,
+                    "入场标的": f"${_ent_under:.2f}",
+                    "现价标的": (f"${_cur_under:.2f} ({_chg:+.1f}%)"
+                                   if _cur_under else "—"),
                     "P&L%": _gain_str,
                     "状态": _exit_label,
                 }
             else:
+                _entry_etf_val = r.get("entry_etf", 0)
+                _credit_or_prem = r.get("entry_credit_or_premium", 0)
+                _cur_opt = r.get("current_value", _credit_or_prem) if not r["is_closed"] \
+                            else r.get("exit_value", 0)
+                _opt_kind = "收" if r["strategy"] in ("SELL PUT", "SHORT_VOL") else "付"
+                if r["is_closed"]:
+                    _cur_etf_str = "—"
+                elif _live_etf_now and _live_etf_now > 0:
+                    _etf_chg = (_live_etf_now / _entry_etf_val - 1) * 100 if _entry_etf_val else 0
+                    _cur_etf_str = f"${_live_etf_now:.2f} ({_etf_chg:+.1f}%)"
+                else:
+                    _cur_etf_str = "—"
+                _opt_now_str = (f"${_cur_opt:.2f}" if not r["is_closed"]
+                                 else f"平${_cur_opt:.2f}")
                 _rec = {
                     "信号日": _du.strftime("%m-%d"),
+                    "Tier": _tier_disp,
                     "策略": r["strategy"],
                     "合约": r["source"],
-                    "入场ETF": f"${r['entry_etf']:.2f}",
-                    "入场详情": _ent_str,
-                    "现/平价": _exit_str,
+                    "入场标的": f"${_entry_etf_val:.2f}",
+                    "现价标的": _cur_etf_str,
+                    "期权入场": f"{_opt_kind}${_credit_or_prem:.2f}",
+                    "期权现价": _opt_now_str,
                     "P&L%": _gain_str,
                     "状态": _exit_label,
                 }
@@ -3954,7 +4030,8 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     except Exception as _e:
         st.error(f"Ledger 加载错: {_e}")
 
-    st.subheader(f"📊 历史未平仓持仓 ({len(_ledger_open)} 笔)")
+    st.subheader(f"📊 历史未平仓持仓 — 近 3 个月 OPEN ({len(_ledger_open)} 笔)")
+    st.caption("数据源: positions_ledger.json (v3.7.201+ 信号过滤 + tier 后实际触发的 paper positions)")
     if _binance_mark:
         st.caption(f"💹 Binance {_binance_symbol} 实时 mark: **${_binance_mark:.2f}** "
                    f"(funding {_binance_funding*100:.4f}%/8h) — "
@@ -3971,10 +4048,13 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     else:
         st.caption("当前无未平仓信号 (ledger 空 — 跑 build_positions_ledger.py)")
 
-    # 近一月已平仓 (CLOSED) — v3.7.162 改名 (期权+期货统一)
+    # 近 3 个月已平仓 (CLOSED) — v3.7.211 统一窗口 90d
+    # ledger 默认 --days 90, 历史 OPEN / CLOSED / 3 月真实回测都是 90d
     st.divider()
     _closed_recs = _ledger_closed if _ledger_closed else _closed_recs
-    st.subheader(f"🎯 近一月已平仓持仓 ({len(_closed_recs)} 笔)")
+    st.subheader(f"🎯 近 3 个月已平仓持仓 — CLOSED ({len(_closed_recs)} 笔)")
+    st.caption("数据源: positions_ledger.json (同 OPEN 表, 是已平仓的子集). "
+               "跟 '3 个月真实交易回测' 不同 — 这里是实际触发的, 那里是历史信号全量回测.")
     if _closed_recs:
         st.dataframe(pd.DataFrame(_closed_recs).iloc[::-1],
                       use_container_width=True, hide_index=True)
@@ -3983,102 +4063,171 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         _wr_c = _wins_c / len(_closed_recs) * 100
         _avg_c = sum(float(r["P&L%"].rstrip("%"))
                       for r in _closed_recs) / len(_closed_recs)
-        c1, c2, c3 = st.columns(3)
+        _sum_c = sum(float(r["P&L%"].rstrip("%")) for r in _closed_recs)
+        c1, c2, c3, c4 = st.columns(4)
         c1.metric("已平笔数", len(_closed_recs))
         c2.metric("胜率", f"{_wr_c:.0f}%")
         c3.metric("均 P&L", f"{_avg_c:+.2f}%")
+        c4.metric("累计", f"{_sum_c:+.1f}%")
+        # v3.7.194: 按策略分别统计
+        _by_strat_c = {}
+        for r in _closed_recs:
+            s = r["策略"]
+            pl = float(r["P&L%"].rstrip("%"))
+            _by_strat_c.setdefault(s, []).append(pl)
+        _strat_rows_c = []
+        for s, pls in _by_strat_c.items():
+            n = len(pls)
+            wins = sum(1 for p in pls if p > 0)
+            _strat_rows_c.append({
+                "策略": s, "笔数": n,
+                "胜率": f"{wins / n * 100:.0f}%",
+                "均 P&L": f"{sum(pls) / n:+.2f}%",
+                "累计 P&L": f"{sum(pls):+.1f}%",
+                "最佳": f"{max(pls):+.1f}%",
+                "最差": f"{min(pls):+.1f}%",
+            })
+        if _strat_rows_c:
+            st.markdown("**按策略拆分:**")
+            st.dataframe(pd.DataFrame(_strat_rows_c),
+                          use_container_width=True, hide_index=True)
     else:
-        st.caption("近 60 天内无已平仓信号 (vol 都还在 hold 期内, 方向性无 EXIT trigger)")
+        st.caption("近 90 天内无已平仓信号 (vol 都还在 hold 期内, 方向性无 EXIT trigger)")
 
     # v3.7.140: 全历史回测分析 (sp_score/SL grid/paired/stage 等) 已移除
     # 这些是回测分析维度, 应在 mode=="回测分析" 页面查看 (Phase 5 重构)
     # 当前用户可直接看 scripts 输出 + backtest_history CSV
 
-    # ── (1) 日线简易回测 (180 天) ──
+    # ── (1) 3 个月真实交易回测 (v3.7.207: 期权 + 期货 unified) ──
+    # 期权: data/real_options_backtest/<asset>_real_pnl_hold5d.csv (yfinance/moomoo OCC kline)
+    # 期货: data/positions_ledger.json FUTURES_LONG (Binance perp 真实 entry/exit)
     st.divider()
-    st.subheader("📈 日线简易回测 (180 天 · 纽约金价位级)")
-    _bt_180_start = pd.Timestamp(today_sgt) - timedelta(days=180)
-    _bt_180_dates = sig_df.index[sig_df.index >= _bt_180_start]
-    _bt_180_sig = sig_df.loc[_bt_180_dates]
-    # v3.7.94: STRADDLE/SHORT_VOL 单独 detect (event-mode 跟主图一致)
-    from core.events import (detect_straddle_signal as _det_strad_180,
-                              detect_short_vol_signal as _det_sv_180)
-    _rv_s_180 = features.loc[close_d.index, "rv_10d"] if "rv_10d" in features.columns else pd.Series(dtype=float)
-    try:
-        _strad_180 = _det_strad_180(_rv_s_180, _bt_180_dates,
-                                       rv_pctile=rv_pctile, asset=asset_key)
-        _sv_180 = _det_sv_180(_rv_s_180, rv_pctile, _bt_180_dates,
-                                 regime=regime)
-    except Exception:
-        _strad_180 = pd.DataFrame(); _sv_180 = pd.DataFrame()
-    _bt_recs = []
-    _trades_idx = {t["entry_date"]: t for t in (trades or [])
-                    if t.get("entry_date") is not None}
-    for _d_b, _r_b in _bt_180_sig.iterrows():
-        # v3.7.94: STRADDLE/SHORT_VOL 来自 _strad_180/_sv_180 (event-mode)
-        _is_strad_b = (len(_strad_180) > 0 and _d_b in _strad_180.index
-                        and bool(_strad_180.loc[_d_b, "straddle_signal"]))
-        _is_sv_b = (len(_sv_180) > 0 and _d_b in _sv_180.index
-                     and bool(_sv_180.loc[_d_b, "short_vol_signal"]))
-        if _is_strad_b:
-            _ch = "STRADDLE"
-        elif _is_sv_b:
-            _ch = "SHORT_VOL"
-        elif _r_b.get("buy_signal", False):
-            _ch = _r_b.get("buy_type", "") or ""
-        else:
-            continue
-        if not _ch: continue
-        _entry_spot = float(close_d.get(_d_b, 0))
-        if _entry_spot <= 0: continue
-        # 找匹配的 trade
-        _t_match = _trades_idx.get(_d_b)
-        if _t_match and _t_match.get("exit_date"):
-            _exit_d = pd.Timestamp(_t_match["exit_date"])
-            _exit_spot = float(_t_match.get("exit_price", 0))
-            _exit_reason = _t_match.get("exit_type", "—")
-        else:
-            # 无 trade match (e.g. STRADDLE) → 入场后 5 天 close
-            _later = close_d.index[close_d.index > _d_b]
-            if len(_later) >= 5:
-                _exit_d = _later[4]
-                _exit_spot = float(close_d.get(_exit_d, _entry_spot))
-                _exit_reason = "+5d"
-            else:
-                continue
-        # P&L (spot 视角)
-        _is_short = "SELL PUT" in _ch or "SHORT_VOL" in _ch
-        _spot_chg = (_exit_spot / _entry_spot - 1) * 100
-        _pnl = -_spot_chg if _is_short else _spot_chg
-        if "STRADDLE" in _ch:
-            _pnl = abs(_spot_chg) - 0.3  # long vol 估算
-        _win = "✓" if _pnl > 0 else "✗"
-        _bt_recs.append({
-            "信号日": _d_b.strftime("%m-%d"),
-            "策略": _ch.split("+")[0].strip(),
-            "入场Spot": f"${_entry_spot:.2f}",
-            "退出日": _exit_d.strftime("%m-%d"),
-            "退出Spot": f"${_exit_spot:.2f}",
-            "退出原因": _exit_reason,
-            "Spot 涨跌": f"{_spot_chg:+.2f}%",
-            "策略 P&L": f"{_pnl:+.2f}%",
-            "结果": _win,
-        })
-    if _bt_recs:
-        _bt_df = pd.DataFrame(_bt_recs).iloc[::-1]
-        st.dataframe(_bt_df, use_container_width=True, hide_index=True)
-        # 累计统计
-        _wins = sum(1 for r in _bt_recs if r["结果"] == "✓")
-        _wr = _wins / len(_bt_recs) * 100
-        _avg = sum(float(r["策略 P&L"].rstrip("%")) for r in _bt_recs) / len(_bt_recs)
-        _sum = sum(float(r["策略 P&L"].rstrip("%")) for r in _bt_recs)
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("信号数", len(_bt_recs))
-        c2.metric("胜率", f"{_wr:.0f}%")
-        c3.metric("单笔均", f"{_avg:+.2f}%")
-        c4.metric("累计", f"{_sum:+.1f}%")
+    from pathlib import Path as _PathReal
+    _real_bt_path = _PathReal("/Users/yhdong/Gold/data/real_options_backtest") \
+        / f"{asset_key}_real_pnl_hold5d.csv"
+    if not _real_bt_path.exists():
+        st.subheader("📈 3 个月真实交易回测")
+        st.warning(f"未找到 `{_real_bt_path.name}` — 请先跑 "
+                   f"`python scripts/real_options_backtest.py --asset {asset_key} --hold 5`")
     else:
-        st.caption("180d 内无信号")
+        from datetime import datetime as _dt
+        _real_bt = pd.read_csv(_real_bt_path)
+        _real_bt["signal_date"] = pd.to_datetime(_real_bt["signal_date"])
+        _3m_start = pd.Timestamp(today_sgt) - timedelta(days=90)
+        _real_bt_3m = _real_bt[_real_bt["signal_date"] >= _3m_start].copy()
+        _mtime = _dt.fromtimestamp(_real_bt_path.stat().st_mtime)
+        _file_age_d = (_dt.now() - _mtime).days
+        st.subheader(f"📈 3 个月真实交易回测 — 历史信号全量 ({asset_key} · "
+                     f"数据 {_mtime.strftime('%m-%d %H:%M')})")
+        st.caption("数据源: real_options_backtest CSV (期权 yfinance/moomoo OCC kline hold=5d) "
+                   "+ positions_ledger FUTURES (Binance perp). "
+                   "**包含未经 v3.7.201 过滤的历史信号** — 用于验证过滤前后差异. "
+                   "跟 '近 3 个月已平仓' 不同 (那里是过滤后实际触发).")
+
+        # 信号类型 → P&L 字段 / strike / expiry
+        _pnl_map = {
+            "BUY CALL": ("long_call_entry", "long_call_pnl_pct"),
+            "SELL PUT": ("short_put_entry_premium", "short_put_pnl_pct"),
+            "STRADDLE": ("straddle_entry", "straddle_pnl_pct"),
+            "SHORT_VOL": ("ic_credit", "ic_pnl_pct_of_credit"),
+        }
+        _bt_recs = []
+        for _, r in _real_bt_3m.iterrows():
+            sig = r["signal_type"]
+            if sig not in _pnl_map: continue
+            entry_col, pnl_col = _pnl_map[sig]
+            entry_v = r.get(entry_col)
+            pnl_v = r.get(pnl_col)
+            if pd.isna(pnl_v): continue
+            _bt_recs.append({
+                "信号日": r["signal_date"].strftime("%m-%d"),
+                "策略": sig,
+                "Spot": f"${r['spot']:.2f}" if pd.notna(r.get('spot')) else "—",
+                "Strike": f"${r['strike_atm']:.0f}"
+                    if pd.notna(r.get('strike_atm')) else "—",
+                "到期": (pd.to_datetime(r['expiry']).strftime("%m-%d")
+                         if pd.notna(r.get('expiry')) else "—"),
+                "DTE": int(r['actual_dte'])
+                    if pd.notna(r.get('actual_dte')) else 0,
+                "入场权利金": f"${entry_v:.2f}"
+                    if pd.notna(entry_v) else "—",
+                "RV": f"{r['rv']:.1f}" if pd.notna(r.get('rv')) else "—",
+                "P&L%": f"{pnl_v:+.1f}%",
+                "结果": "✓" if pnl_v > 0 else "✗",
+            })
+        # v3.7.207: 加期货真实交易 (Binance perp) — 从 ledger.json 读
+        try:
+            import json as _json_bt
+            with open("/Users/yhdong/Gold/data/positions_ledger.json") as _flb:
+                _ledger_bt = _json_bt.load(_flb)
+            _fut_bt = [x for x in _ledger_bt
+                          if x.get("asset") == asset_key
+                          and x.get("strategy") == "FUTURES_LONG"
+                          and pd.to_datetime(x["signal_date"]) >= _3m_start]
+            for f in _fut_bt:
+                if not f.get("is_closed"): continue  # 未平仓不算
+                _ent_p = float(f.get("entry_perp", 0) or 0)
+                _ex_v = float(f.get("exit_value", 0) or 0)
+                _lev = int(f.get("leverage", 5))
+                _tier = f.get("signal_tier", "—")
+                _hold = int(f.get("hold_days", 0))
+                _pnl_pct = float(f.get("pnl_pct", 0) or 0)
+                _bt_recs.append({
+                    "信号日": pd.to_datetime(f["signal_date"]).strftime("%m-%d"),
+                    "策略": f"FUTURES {_lev}×",
+                    "Spot": f"${_ent_p:.2f}",
+                    "Strike": f"tier={_tier}",
+                    "到期": f"{_hold}d hold",
+                    "DTE": _hold,
+                    "入场权利金": f"${_ent_p:.0f} → ${_ex_v:.0f}",
+                    "RV": "—",
+                    "P&L%": f"{_pnl_pct:+.1f}%",
+                    "结果": "✓" if _pnl_pct > 0 else "✗",
+                })
+        except Exception as _e:
+            st.caption(f"期货数据加载失败: {_e}")
+
+        if not _bt_recs:
+            st.caption(f"近 90 天内 {asset_key} 无真实交易回测记录")
+        else:
+            _bt_df = pd.DataFrame(_bt_recs).iloc[::-1]
+            st.dataframe(_bt_df, use_container_width=True, hide_index=True)
+            # 总统计
+            _wins = sum(1 for r in _bt_recs if r["结果"] == "✓")
+            _wr = _wins / len(_bt_recs) * 100
+            _pls = [float(r["P&L%"].rstrip("%")) for r in _bt_recs]
+            _avg = sum(_pls) / len(_pls)
+            _sum = sum(_pls)
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("信号数", len(_bt_recs))
+            c2.metric("胜率", f"{_wr:.0f}%")
+            c3.metric("单笔均", f"{_avg:+.1f}%")
+            c4.metric("累计", f"{_sum:+.0f}%")
+            # 按策略
+            _by_strat_b = {}
+            for r in _bt_recs:
+                _by_strat_b.setdefault(r["策略"], []).append(
+                    float(r["P&L%"].rstrip("%")))
+            _strat_rows_b = []
+            for s, pls in _by_strat_b.items():
+                n = len(pls)
+                wins = sum(1 for p in pls if p > 0)
+                _strat_rows_b.append({
+                    "策略": s, "笔数": n,
+                    "胜率": f"{wins / n * 100:.0f}%",
+                    "均 P&L": f"{sum(pls) / n:+.1f}%",
+                    "累计 P&L": f"{sum(pls):+.0f}%",
+                    "最佳": f"{max(pls):+.1f}%",
+                    "最差": f"{min(pls):+.1f}%",
+                })
+            if _strat_rows_b:
+                st.markdown("**按策略拆分 (真实期权 P&L):**")
+                st.dataframe(pd.DataFrame(_strat_rows_b),
+                              use_container_width=True, hide_index=True)
+            if _file_age_d >= 3:
+                st.caption(f"⚠️ 数据 {_file_age_d}d 未更新 — "
+                           f"`python scripts/real_options_backtest.py "
+                           f"--asset {asset_key} --hold 5`")
 
     # ── 模型信息 ──
     with st.expander("模型信息"):
@@ -4102,6 +4251,36 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
 - **风控**: 连续 {CONSECUTIVE_STOP} 笔止损熔断 (bp>0.50 恢复)
 - **盘中数据**: {gld_1h_info}
 """)
+
+    # ── v3.7.204: 信号 S/A/B Tier 历史胜率 (nested 语义) ──
+    st.divider()
+    st.subheader("📊 信号 Tier 分级 (nested: S ⊂ A ⊂ 全通过)")
+    st.caption("当日信号显示**最高满足层级**. S 信号本身也满足 A 条件 (子集关系). "
+               "数据基于 GLD 5y BUY 信号 (futures_grid_5y.py + signal_filter_deep.py)")
+    _tier_df = pd.DataFrame([
+        {"Tier": "⭐ S 最优 (only S)", "条件": "rv<0.65 ∧ ret_20d>0 ∧ bp_low≤0.20",
+         "n (5y)": 13, "WR 5日 spot": "84.6%", "WR 20日 spot": "100%",
+         "WR 期货 lev=10": "100%", "mean ROI": "+30.7%",
+         "建议 lev": "10× ★"},
+        {"Tier": "🔵 A 累计 (含 S)", "条件": "rv<0.75 ∧ ret_20d>−1% ∧ bp_low≤0.20",
+         "n (5y)": 26, "WR 5日 spot": "84.6%", "WR 20日 spot": "96.2%",
+         "WR 期货 lev=10": "100%", "mean ROI": "+29.1%",
+         "建议 lev": "10× (同 S)"},
+        {"Tier": "⚪ B 累计 (全通过)", "条件": "rv<0.75 ∧ ret_20d>−3%",
+         "n (5y)": 83, "WR 5日 spot": "75.6%", "WR 20日 spot": "90.2%",
+         "WR 期货 lev=10": "92.8%", "mean ROI": "+22.3%",
+         "建议 lev": "5× (有 1 残留 wick)"},
+        {"Tier": "🚫 被过滤", "条件": "rv≥0.75 ∨ ret_20d≤−3%",
+         "n (5y)": "~70", "WR 5日 spot": "≈36%", "WR 20日 spot": "—",
+         "WR 期货 lev=10": "—", "mean ROI": "−3.5%",
+         "建议 lev": "不开仓"},
+    ])
+    st.dataframe(_tier_df, use_container_width=True, hide_index=True)
+    st.caption("**期货 cfg (v3.7.209)**: S/A lev=10× / B lev=5× (S 是 A 的子集, lev 必 ≥ A; lev≥15 wick 爆). "
+               "**hold=45d** (多窗口 5y/3y/1y 一致最优, sum +65~110% vs 30d, WR 95-100%). "
+               "**SL=100% margin** (spot −10% 兜底, 5y 未触发). **无早平** (撤 v3.7.184 锁利, 5y grid sum 翻 2.3x). "
+               "**funding** Binance XAUUSDT 实测 mean=−0.002%/8h, long 净赚 ~2%/y. "
+               "**期权 cfg**: BC pt=2.5/sl=0.3, SP GLD pt=70 (v3.7.205 5y grid 优化)")
 
 
 # ══════════════════════════════════════════════════════════
@@ -4376,8 +4555,19 @@ def main():
     bp_s = bp.reindex(bp_dates)
     rv_p = rv_pctile.reindex(bp_dates)
     is_bull = regime.reindex(bp_dates) == "Bull"
-    buy_call, sell_put, exit_sig = generate_signals(bp_s, rv_p, is_bull,
-                                                         asset=asset_key)
+    # v3.7.196: 改用 generate_daily_signals (signals_v2) — 跟盘中信号 / ledger /
+    # 全部回测脚本统一. 旧 generate_signals 用 rv>=0.45 单切 BC/SP, 会跟 v2
+    # 的 IV 三阶过滤 + 技术 confirm 分歧 (5/13: 旧→SELL PUT vs v2→BUY CALL).
+    from core.signals_v2 import generate_daily_signals as _gds_main
+    _sig_df_main = _gds_main(
+        close.reindex(bp_dates), high.reindex(bp_dates), low.reindex(bp_dates),
+        upper_band.reindex(bp_dates), lower_band.reindex(bp_dates),
+        regime.reindex(bp_dates), rv_p, asset=asset_key)
+    buy_call = (_sig_df_main["buy_type"] == "BUY CALL").reindex(bp_dates).fillna(False)
+    sell_put = (_sig_df_main["buy_type"] == "SELL PUT").reindex(bp_dates).fillna(False)
+    # exit_sig 沿用老逻辑 (bp>0.90 或 bull regime flip)
+    bull_exit = is_bull.shift(1).fillna(False) & (~is_bull)
+    exit_sig = (bp_s > 0.90) | bull_exit
 
     # last_date = 最后一天有模型预测的日期 (用于 Band / 信号)
     # price_date = 最新的现货收盘价日期 (用于顶部指标 / 图表)
@@ -4577,6 +4767,172 @@ def main():
 
         st.caption(f"注: 回测基于标的({asset_key})价格变化, 非期权实际损益. "
                    "期权杠杆效应会放大实际收益/亏损.")
+
+        # ── v3.7.198: 接回 backtest_pipeline 全套结果 ──
+        st.divider()
+        st.subheader("🧪 全策略回测套件 (5 策略 × 真实 + 模拟)")
+
+        from pathlib import Path as _PathBT
+        import json as _jsonBT
+
+        # 1. strategy_stats.json — 各策略 real_1y + all_history WR + Kelly
+        _stats_p = _PathBT("/Users/yhdong/Gold/data/strategy_stats.json")
+        if _stats_p.exists():
+            try:
+                _stats = _jsonBT.loads(_stats_p.read_text())
+                _meta = _stats.get("_meta", {})
+                _stats_age = _meta.get("generated_at", "")
+                st.markdown(f"**Strategy stats** (生成 {_stats_age[:16]}, "
+                            f"real窗口: {_meta.get('data_window_real', '—')}, "
+                            f"all_history: {_meta.get('data_window_5y', '—')})")
+                if asset_key in _stats:
+                    _stats_rows = []
+                    for strat, sd in _stats[asset_key].items():
+                        r1 = sd.get("real_1y", {})
+                        ah = sd.get("all_history", {})
+                        _stats_rows.append({
+                            "策略": strat,
+                            "1y n": r1.get("n", 0),
+                            "1y WR": (f"{r1.get('wr_pct'):.0f}%"
+                                       if r1.get("wr_pct") is not None else "—"),
+                            "1y avg": (f"{r1.get('avg_pct'):+.1f}%"
+                                        if r1.get("avg_pct") is not None else "—"),
+                            "All n": ah.get("n", 0),
+                            "All WR": (f"{ah.get('wr_pct'):.0f}%"
+                                        if ah.get("wr_pct") is not None else "—"),
+                            "All avg": (f"{ah.get('avg_pct'):+.1f}%"
+                                         if ah.get("avg_pct") is not None else "—"),
+                            "½Kelly": f"{sd.get('recommended_half_kelly', 0):.1f}%",
+                            "¼Kelly": f"{sd.get('recommended_qtr_kelly', 0):.1f}%",
+                        })
+                    st.dataframe(pd.DataFrame(_stats_rows),
+                                  use_container_width=True, hide_index=True)
+            except Exception as _e_stats:
+                st.warning(f"strategy_stats.json 解析失败: {_e_stats}")
+        else:
+            st.caption("strategy_stats.json 不存在 — 跑 "
+                       "`python scripts/compute_strategy_stats.py`")
+
+        # 2. backtest_pipeline 最新版本 — stage3 summary + stage2 per-trade
+        _pipe_dir = _PathBT("/Users/yhdong/Gold/data/backtest_pipeline/versions")
+        _latest_v = None
+        if _pipe_dir.exists():
+            _versions = sorted(
+                [d for d in _pipe_dir.iterdir() if d.is_dir()],
+                key=lambda p: p.stat().st_mtime, reverse=True)
+            if _versions: _latest_v = _versions[0]
+
+        if _latest_v is None:
+            st.info("未找到 backtest_pipeline 历史 — 跑 "
+                    "`python scripts/backtest_pipeline.py all`")
+        else:
+            st.markdown(f"**Pipeline 版本**: `{_latest_v.name}`")
+            # Stage3 summary
+            _s3_files = sorted((_latest_v / "stage3").glob("summary_*.parquet"))
+            if _s3_files:
+                _s3 = pd.read_parquet(_s3_files[-1])
+                _s3_a = _s3[_s3["asset"] == asset_key].copy()
+                if len(_s3_a):
+                    st.markdown(f"**Stage3 — {asset_key} 真实 vs 模拟 加权 ScoreB**")
+                    _s3_disp = _s3_a.copy()
+                    for c in ("real_wr", "sim_wr"):
+                        _s3_disp[c] = _s3_disp[c].apply(
+                            lambda v: f"{v:.0f}%" if pd.notna(v) else "—")
+                    for c in ("real_avg", "sim_avg"):
+                        _s3_disp[c] = _s3_disp[c].apply(
+                            lambda v: f"{v:+.2f}%" if pd.notna(v) else "—")
+                    for c in ("real_scoreB", "sim_scoreB", "weighted_scoreB"):
+                        _s3_disp[c] = _s3_disp[c].apply(
+                            lambda v: f"{v:+.2f}" if pd.notna(v) else "—")
+                    st.dataframe(_s3_disp.drop(columns=["asset"]),
+                                  use_container_width=True, hide_index=True)
+
+            # Stage2 — per-trade by strategy
+            _s2_dir = _latest_v / "stage2"
+            if _s2_dir.exists():
+                _asset_tag = asset_key.lower()
+                _trade_files = sorted(_s2_dir.glob(f"pnl_{_asset_tag}_*.parquet"))
+                if _trade_files:
+                    st.markdown(f"**Stage2 — {asset_key} 各策略每笔回测明细**")
+                    _strategy_tabs = []
+                    _strategy_dfs = {}
+                    for f in _trade_files:
+                        df_p = pd.read_parquet(f)
+                        if len(df_p) == 0: continue
+                        # filename: pnl_<asset>_<strategy>_<source>_<date>.parquet
+                        parts = f.stem.split("_")
+                        # strategy = parts[2] / source = parts[3]
+                        strat = parts[2].replace(" ", " ").upper()
+                        source = parts[3] if len(parts) >= 4 else "?"
+                        # 重新拼: SELL_PUT/BUY_CALL 有空格的特殊处理
+                        if "SELL" in f.stem: strat = "SELL PUT"
+                        elif "BUY" in f.stem: strat = "BUY CALL"
+                        elif "FUTURES" in f.stem: strat = "FUTURES_LONG"
+                        elif "STRADDLE" in f.stem: strat = "STRADDLE"
+                        elif "SHORT" in f.stem: strat = "SHORT_VOL"
+                        label = f"{strat} · {source}"
+                        _strategy_tabs.append(label)
+                        _strategy_dfs[label] = df_p
+
+                    if _strategy_tabs:
+                        _sel = st.selectbox("查看策略明细", _strategy_tabs)
+                        _df_sel = _strategy_dfs[_sel].sort_values(
+                            "signal_date", ascending=False).copy()
+                        _df_sel["signal_date"] = pd.to_datetime(
+                            _df_sel["signal_date"]).dt.strftime("%Y-%m-%d")
+                        _df_sel["pnl_pct"] = _df_sel["pnl_pct"].apply(
+                            lambda v: f"{v:+.1f}%")
+                        st.dataframe(_df_sel,
+                                      use_container_width=True, hide_index=True)
+                        # 累计 P&L 曲线 — 用原始 numeric (重读)
+                        _df_raw = _strategy_dfs[_sel].sort_values("signal_date")
+                        _df_raw["cum"] = _df_raw["pnl_pct"].cumsum()
+                        fig_c, ax_c = plt.subplots(figsize=(10, 3))
+                        ax_c.plot(pd.to_datetime(_df_raw["signal_date"]),
+                                  _df_raw["cum"], marker="o", ms=3, lw=1.0,
+                                  color="#1976D2")
+                        ax_c.axhline(0, color="k", lw=0.5, ls="--", alpha=0.4)
+                        ax_c.set_title(f"{_sel} 累计 P&L (n={len(_df_raw)})")
+                        ax_c.set_ylabel("累计 %")
+                        ax_c.grid(alpha=0.3)
+                        plt.tight_layout()
+                        st.pyplot(fig_c, use_container_width=True)
+                        plt.close(fig_c)
+
+        # 3. 真实期权回测 CSV (90d hold5)
+        _real_p = _PathBT("/Users/yhdong/Gold/data/real_options_backtest") \
+            / f"{asset_key}_real_pnl_hold5d.csv"
+        if _real_p.exists():
+            _r_df = pd.read_csv(_real_p)
+            _r_df["signal_date"] = pd.to_datetime(_r_df["signal_date"])
+            st.markdown(f"**真实期权回测 (yfinance/moomoo OCC)** — "
+                        f"`{_real_p.name}` n={len(_r_df)}, "
+                        f"窗口 {_r_df['signal_date'].min().date()} → "
+                        f"{_r_df['signal_date'].max().date()}")
+            # 聚合: signal_type 维度
+            _pnl_cols = {
+                "BUY CALL": "long_call_pnl_pct",
+                "SELL PUT": "short_put_pnl_pct",
+                "STRADDLE": "straddle_pnl_pct",
+                "SHORT_VOL": "ic_pnl_pct_of_credit",
+            }
+            _agg_rows = []
+            for sig, col in _pnl_cols.items():
+                if col not in _r_df.columns: continue
+                _sub = _r_df[(_r_df["signal_type"] == sig) &
+                              _r_df[col].notna()]
+                if not len(_sub): continue
+                _agg_rows.append({
+                    "策略": sig, "笔数": len(_sub),
+                    "胜率": f"{(_sub[col] > 0).mean() * 100:.0f}%",
+                    "均 P&L": f"{_sub[col].mean():+.1f}%",
+                    "累计": f"{_sub[col].sum():+.0f}%",
+                    "最佳": f"{_sub[col].max():+.1f}%",
+                    "最差": f"{_sub[col].min():+.1f}%",
+                })
+            if _agg_rows:
+                st.dataframe(pd.DataFrame(_agg_rows),
+                              use_container_width=True, hide_index=True)
         return  # 回测模式不显示其他内容
 
     if mode == "盘中信号":
@@ -4874,6 +5230,8 @@ def main():
         oi_levels=oi_chart_levels, oi_daily_range=oi_daily,
         oi_events=oi_events, oi_adj_bands=oi_hist_bands,
         oi_adj_bp030=oi_adj_bp030, oi_adj_bp090=oi_adj_bp090,
+        eod_bp030=locals().get("eod_bp030", 0),  # v3.7.210
+        eod_bp090=locals().get("eod_bp090", 0),
         asset_key=asset_key,
         spot_ratio=_spot_ratio_chart,
         spot_label=_spot_label_chart,

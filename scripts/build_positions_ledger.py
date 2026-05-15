@@ -26,6 +26,8 @@ _pp._KLINE_DB_CACHE = None
 _pp._KLINE_DB_MTIME = None
 
 from core.signals_v2 import generate_daily_signals
+from core.signals import build_band
+from core.data import load_oos_predictions, load_config
 from core.events import detect_short_vol_signal, detect_straddle_signal
 from core.regime import RegimeClassifier
 from core.paper_positions import (price_strategy_at, simulate_option_exit)
@@ -53,14 +55,30 @@ def build_for_asset(asset: str, days_back: int, today_dt: pd.Timestamp,
                   if asset == "GLD" else
                   "/Users/yhdong/Gold/data/processed/features_slv.parquet")
     features = pd.read_parquet(feat_path)
-    common = ohlc.index.intersection(features.index)
-    close_d = ohlc.loc[common, "Close"]
-    high_d = ohlc.loc[common, "High"]
-    low_d = ohlc.loc[common, "Low"]
-    sma = close_d.rolling(20).mean()
-    std = close_d.rolling(20).std()
-    upper = sma + 2 * std
-    lower = sma - 2 * std
+    # v3.7.193: 用 OOS 模型 band, 跟 dashboard / build_futures_signals 一致
+    # (旧版用 BB SMA±2σ, bp_low 算错, 5/12 等信号被吞)
+    cfg = load_config()
+    if asset == "GLD":
+        oos = load_oos_predictions(cfg)  # dl_range_gc_oos
+    else:
+        slv_oos_path = Path(cfg["data_root"]) / "models/dl_range_slv_oos.parquet"
+        oos = pd.read_parquet(slv_oos_path) if slv_oos_path.exists() else None
+    if oos is not None:
+        common = ohlc.index.intersection(features.index).intersection(oos.index)
+        close_d = ohlc.loc[common, "Close"]
+        high_d = ohlc.loc[common, "High"]
+        low_d = ohlc.loc[common, "Low"]
+        upper, lower, _ = build_band(oos.loc[common], close_d)
+    else:
+        common = ohlc.index.intersection(features.index)
+        close_d = ohlc.loc[common, "Close"]
+        high_d = ohlc.loc[common, "High"]
+        low_d = ohlc.loc[common, "Low"]
+        sma = close_d.rolling(20).mean()
+        std = close_d.rolling(20).std()
+        upper = sma + 2 * std
+        lower = sma - 2 * std
+        print(f"[ledger] {asset} OOS 缺失, fallback BB")
 
     rv = features.loc[common, "rv_10d"]
     rv_pctile = rv.rank(pct=True)
@@ -186,10 +204,13 @@ def build_for_asset(asset: str, days_back: int, today_dt: pd.Timestamp,
                 _cfg = get_futures_config(asset)
                 # Live mark (今日盘中)
                 _live = binance_live_mark or _df_perp.iloc[-1]["Close"]
+                # v3.7.204: 传 signal_tier 启用 per-tier leverage
+                # 期货读 sig_df_fut (GC/SI scale), 不是 ETF sig_df
+                _tier_val = sig_df_fut.loc[_du].get("signal_tier", "") if _du in sig_df_fut.index else ""
                 _sim_res = simulate_long_position(
                     entry_d=_du, entry_spot=_entry_perp,
                     ohlc=_df_perp, today=today_dt, cfg=_cfg,
-                    live_spot=_live)
+                    live_spot=_live, signal_tier=_tier_val)
                 _is_closed = _sim_res.get("closed", False)
                 _exit_d_obj = _sim_res.get("exit_date")
                 _exit_d_iso = (_exit_d_obj.isoformat()
@@ -198,13 +219,16 @@ def build_for_asset(asset: str, days_back: int, today_dt: pd.Timestamp,
                 _ret_lev = max(-100.0, float(
                     _sim_res.get("ret_levered_pct", 0) or 0))
                 _hold_d = int(_sim_res.get("hold_days", 0) or 0)
+                # v3.7.204: 实际生效 leverage (per-tier 已覆盖)
+                _eff_lev = int(_sim_res.get("leverage", _cfg.leverage))
                 row = {
                     "asset": asset, "signal_date": _du.isoformat(),
                     "strategy": "FUTURES_LONG",
                     "entry_etf": eO, "entry_perp": _entry_perp,
                     "binance_symbol": binance_sym,
-                    "leverage": _cfg.leverage,
-                    "source": f"{binance_sym} 多头 @ ${_entry_perp:.2f} ({_cfg.leverage}×)",
+                    "leverage": _eff_lev,
+                    "signal_tier": _tier_val,
+                    "source": f"{binance_sym} 多头 @ ${_entry_perp:.2f} ({_eff_lev}× tier={_tier_val})",
                     "entry_credit_or_premium": _entry_perp,
                     "legs": [], "entry_leg_prices": [], "exit_legs": [],
                     "is_closed": _is_closed,
@@ -229,9 +253,12 @@ def build_for_asset(asset: str, days_back: int, today_dt: pd.Timestamp,
             sim = simulate_option_exit(ent, _du, strat, today_dt,
                                             live_spot=eC, live_high=eH, live_low=eL)
             is_closed = sim.get("is_closed", False)
+            # v3.7.206: 期权也写 signal_tier (从 ETF sig_df)
+            _opt_tier = sig_df.loc[_du].get("signal_tier", "") if _du in sig_df.index else ""
             row = {
                 "asset": asset, "signal_date": _du.isoformat(),
                 "strategy": strat,
+                "signal_tier": _opt_tier,
                 "entry_etf": eO, "entry_open": eO, "entry_close": eC,
                 "source": ent.get("source", "—"),
                 "entry_credit_or_premium": float(ent.get("entry_price", 0) or 0),

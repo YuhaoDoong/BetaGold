@@ -73,8 +73,21 @@ def main():
 
     buys = detect_triggers(kline, thresholds, cfg_buy, asset=cfg_a["tag"])
     exits = detect_triggers(kline, thresholds, cfg_exit, asset=cfg_a["tag"])
-    if len(buys): buys = dedupe_intraday(buys, side="BUY", min_drop_pct=0.3)
-    if len(exits): exits = dedupe_intraday(exits, side="EXIT", min_drop_pct=0.3)
+
+    # v3.7.195: 按日 dedupe — 跨天的 trigger 不应该因为前一天价格低而被吃掉
+    # 之前是全历史 dedupe, 导致 5/11 02:00 ($4656) 把 5/12 ($4692) 全过滤
+    def _dedupe_per_day(df, side):
+        if df is None or len(df) == 0: return df
+        df = df.copy()
+        df["trigger_time"] = pd.to_datetime(df["trigger_time"])
+        out = []
+        for _, grp in df.groupby(df["trigger_time"].dt.date):
+            d = dedupe_intraday(grp, side=side, min_drop_pct=0.3)
+            if len(d): out.append(d)
+        return pd.concat(out, ignore_index=True) if out else df.iloc[0:0]
+
+    if len(buys): buys = _dedupe_per_day(buys, "BUY")
+    if len(exits): exits = _dedupe_per_day(exits, "EXIT")
 
     print(f"  触发: BUY={len(buys)} EXIT={len(exits)}")
     if len(buys):

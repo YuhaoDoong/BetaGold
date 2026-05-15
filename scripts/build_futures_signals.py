@@ -1,8 +1,9 @@
-"""v3.7.190 期货信号链 (独立 GC=F 24h pipeline)
+"""v3.7.195 期货信号链 (独立 GC=F 24h pipeline)
 
 期货 vs 期权 严格分离:
   期货链:
-    daily csv:    gc.csv / si.csv (24h, 周末跨日 = 周一 bar)
+    daily csv:    gold_futures.csv / silver.csv (auto_refresh 维护的 24h 日线,
+                  原 gc.csv/si.csv 已弃用 — 5/11 起不再更新)
     OOS model:    dl_range_gc_oos.parquet (GC=F trained)
     sig_df_gc:    GC scale threshold (bp030_price ~$4621)
     intraday:     gc_1h.csv / si_1h.csv (24h)
@@ -43,10 +44,12 @@ def build_sig_df(asset: str) -> pd.DataFrame:
     asset: 'GLD' (→GC=F) or 'SLV' (→SI=F).
     """
     if asset == "GLD":
-        fut_path = Path(CFG["data_root"]) / "raw/market/gc.csv"
+        # v3.7.195: 切到 gold_futures.csv (auto_refresh_market_data 维护),
+        # 原 gc.csv 5/11 起停滞
+        fut_path = Path(CFG["data_root"]) / "raw/market/gold_futures.csv"
         oos = load_oos_predictions(CFG)  # dl_range_gc_oos
     else:
-        fut_path = Path(CFG["data_root"]) / "raw/market/si.csv"
+        fut_path = Path(CFG["data_root"]) / "raw/market/silver.csv"
         slv_oos = Path(CFG["data_root"]) / "models/dl_range_slv_oos.parquet"
         if not slv_oos.exists():
             print(f"  [warn] {slv_oos.name} 不存在, 跳过 SLV")
@@ -69,13 +72,22 @@ def build_sig_df(asset: str) -> pd.DataFrame:
     rv_pct = compute_rv_pctile(feat["rv_10d"])
 
     common2 = common.intersection(regime.index)
+    # v3.7.207: 传 gvz_series 启用 IV 三阶过滤
+    # 旧: 没传 → 5/14 GC sig 没被 IV filter 拦 (但 ETF sig 被拦) → 期货开仓期权没开
+    try:
+        import yfinance as yf
+        gvz = yf.Ticker("^GVZ").history(period="5y")
+        gvz.index = pd.to_datetime(gvz.index).tz_localize(None).normalize()
+        gvz_s = gvz["Close"]
+    except Exception:
+        gvz_s = None
     sig = generate_daily_signals(
         fut.loc[common2, "Close"],
         fut.loc[common2, "High"],
         fut.loc[common2, "Low"],
         upper.reindex(common2), lower.reindex(common2),
         regime.reindex(common2), rv_pct.reindex(common2),
-        asset=asset)
+        asset=asset, gvz_series=gvz_s)
     return sig
 
 
