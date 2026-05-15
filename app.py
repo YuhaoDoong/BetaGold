@@ -3380,6 +3380,33 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     st.divider()
     st.subheader(f"⚡ 今日新开仓 ({today_sgt})")
     _today = pd.Timestamp(today_sgt).normalize()
+
+    # v3.7.217: 算今日 prospective tier (复用给所有 today rows append)
+    _today_tier_disp = "—"
+    try:
+        if _today in sig_df.index:
+            _today_tier = sig_df.loc[_today].get("signal_tier", "") or ""
+            if not _today_tier:  # filter 拦下 → 算 prospective
+                from core.strategy_config import get_config as _gcfg217
+                _ac217 = _gcfg217(asset_key)
+                _row_t217 = sig_df.loc[_today]
+                _rv217 = float(_row_t217.get("rv_pctile", 0.5))
+                _ret217_v = _row_t217.get("ret_20d", 0)
+                _ret217 = float(_ret217_v) if not pd.isna(_ret217_v) else 0
+                _bp217 = float(_row_t217.get("bp_low", 1))
+                if (_rv217 < getattr(_ac217, "tier_s_rv_max", 0.65) and
+                    _ret217 > getattr(_ac217, "tier_s_ret_20d_min", 0.0) and
+                    _bp217 <= getattr(_ac217, "tier_s_bp_low_max", 0.20)):
+                    _today_tier = "S"
+                elif (_rv217 < getattr(_ac217, "tier_a_rv_max", 0.75) and
+                      _ret217 > getattr(_ac217, "tier_a_ret_20d_min", -0.01) and
+                      _bp217 <= getattr(_ac217, "tier_a_bp_low_max", 0.20)):
+                    _today_tier = "A"
+                else:
+                    _today_tier = "B"
+            _today_tier_disp = {"S": "⭐ S", "A": "🔵 A", "B": "⚪ B"}.get(_today_tier, "—")
+    except Exception:
+        pass
     _today_log = _intra_log_asset[
         pd.to_datetime(_intra_log_asset["date"]).dt.normalize() == _today
     ] if len(_intra_log_asset) else _intra_log_asset
@@ -3579,34 +3606,9 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             _entry_etf = _ul
             _entry_gc = _ul * gc_gld_r
             _exit_etf = float(locals().get("gld_est") or _C_today)
-            # v3.7.216: 加 Tier 列 (跟持仓表一致)
-            _today_tier = ""
-            if _today in sig_df.index:
-                _today_tier = sig_df.loc[_today].get("signal_tier", "") or ""
-                if not _today_tier:  # filter 拦下 → 算 prospective tier
-                    try:
-                        from core.strategy_config import get_config as _gcfg216
-                        _ac216 = _gcfg216(asset_key)
-                        _row_t = sig_df.loc[_today]
-                        _rv_t216 = float(_row_t.get("rv_pctile", 0.5))
-                        _ret_t216 = float(_row_t.get("ret_20d", 0)) if not pd.isna(_row_t.get("ret_20d", 0)) else 0
-                        _bp_t216 = float(_row_t.get("bp_low", 1))
-                        if (_rv_t216 < getattr(_ac216, "tier_s_rv_max", 0.65) and
-                            _ret_t216 > getattr(_ac216, "tier_s_ret_20d_min", 0.0) and
-                            _bp_t216 <= getattr(_ac216, "tier_s_bp_low_max", 0.20)):
-                            _today_tier = "S"
-                        elif (_rv_t216 < getattr(_ac216, "tier_a_rv_max", 0.75) and
-                              _ret_t216 > getattr(_ac216, "tier_a_ret_20d_min", -0.01) and
-                              _bp_t216 <= getattr(_ac216, "tier_a_bp_low_max", 0.20)):
-                            _today_tier = "A"
-                        else:
-                            _today_tier = "B"
-                    except Exception:
-                        _today_tier = ""
-            _tier_disp = {"S": "⭐ S", "A": "🔵 A", "B": "⚪ B"}.get(_today_tier, "—")
             _rows1.append({
                 "时间(ET)": _t.strftime("%m-%d %H:%M"),
-                "Tier": _tier_disp,
+                "Tier": _today_tier_disp,  # v3.7.217: 用 prospective tier
                 "信号": r["side"],
                 "策略": _strat,
                 "合约": _opt_code,
@@ -3643,10 +3645,11 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                                     else f" → ${_credit_v:.2f}")
                     _rows1.append({
                         "时间(ET)": _t_vol.strftime("%m-%d %H:%M") + " (日级)",
+                        "Tier": _today_tier_disp,  # v3.7.217
                         "信号": "BUY",
                         "策略": _vol_strat,
                         "合约": _ent_v["source"],
-                        "入场ETF": f"${_O_today:.2f}",  # v3.7.149: Open (09:30 入场)
+                        "入场ETF": f"${_O_today:.2f}",
                         "入场GC=F": f"${_O_today * gc_gld_r:.0f}",
                         "入场期权": _ent_str_v,
                         "现ETF": f"${float(locals().get('gld_est') or _C_today):.2f}",
@@ -3729,6 +3732,7 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                     _exit_str_v = "(kline_db 暂无)"
                 _vol_only_rows.append({
                     "时间(ET)": _t_v.strftime("%m-%d %H:%M") + " (日级)",
+                    "Tier": _today_tier_disp,  # v3.7.217
                     "信号": "BUY",
                     "策略": _vs,
                     "合约": _ent_v["source"],
