@@ -202,6 +202,17 @@ ASSET_CONFIGS: Dict[str, AssetConfig] = {
         ma_trend_threshold=0.0,            # v3.7.146 实证: SLV 0.99 滤 67% 信号换 +17%
                                           # 但 0~0.98 累计几乎一样 (+801 vs +821);
                                           # 设 0 = 不过滤, 月月有信号, 累计 -14% 可接受
+        # v3.7.218: SLV per-asset tier 边界 (SLV-4 grid 实证)
+        # SLV 完全反 GLD: 高 rv 段 20d WR 93%, 深破 [0.05,0.10] 是甜点
+        # GLD tier (rv<0.65) 在 SLV 上 S/A 各 n=4-7 太少, 多数信号被吞进 B
+        # SLV-4 (S: bp<=0.10, 不限 rv): S n=22 WR 77%/20d 91%, A n=30 67%/83%
+        # 跟 GLD 反向 — SLV 看深破不看 rv
+        tier_s_rv_max=2.0,                # SLV 不限 rv (GLD 0.65)
+        tier_s_ret_20d_min=-1.0,          # SLV 不限 ret (GLD 0.0)
+        tier_s_bp_low_max=0.10,           # SLV 深破 ≤0.10 (GLD 0.20)
+        tier_a_rv_max=2.0,                # SLV 不限 rv (GLD 0.75)
+        tier_a_ret_20d_min=-1.0,          # SLV 不限 ret (GLD -0.01)
+        tier_a_bp_low_max=0.20,           # SLV bp ≤0.20 (GLD 0.20, 同)
         short_vol_rv_pctile_lo=0.25,
         short_vol_rv_pctile_hi=0.775,
         straddle_rv_abs_max=25.0,
