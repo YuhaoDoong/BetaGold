@@ -78,7 +78,8 @@ def build_snapshot(asset: str, cfg: dict) -> SignalSnapshot:
     upper, lower, _ = build_band(oos, close_d)
     rv_pct = compute_rv_pctile(features.loc[common, "rv_10d"])
     feat_cols = [c for c in features.columns if not c.startswith("fwd_")]
-    regime = RegimeClassifier().classify(features[feat_cols])["regime"]
+    regime = RegimeClassifier(min_hold_days=1).classify(
+        features[feat_cols])["regime"]  # v3.7.233 explicit no-lookahead
 
     # 1h synthesis (跟 dashboard 一致)
     _close = close_d.copy(); _high = high_d.copy(); _low = low_d.copy()

@@ -45,7 +45,8 @@ def build_signals_for(asset: str) -> tuple:
     upper, lower, _ = build_band(oos.loc[common], close)
     rv_p = compute_rv_pctile(feat.loc[common, "rv_10d"])
     feat_cols = [c for c in feat.columns if not c.startswith("fwd_")]
-    regime = RegimeClassifier().classify(feat.loc[common, feat_cols])["regime"]
+    regime = RegimeClassifier(min_hold_days=1).classify(
+        feat.loc[common, feat_cols])["regime"]  # v3.7.233 explicit no-lookahead
     gvz = yf.Ticker("^GVZ").history(period="10y")
     gvz.index = pd.to_datetime(gvz.index).tz_localize(None).normalize()
     sig = generate_daily_signals(close, high, low, upper, lower, regime, rv_p,

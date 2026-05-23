@@ -82,7 +82,8 @@ def _build_daily_thresholds(asset: str, cfg: dict) -> pd.DataFrame:
     # Regime + RV
     features = load_features(cfg)
     feat_cols = [c for c in features.columns if not c.startswith("fwd_")]
-    regime = RegimeClassifier().classify(features[feat_cols])["regime"]
+    regime = RegimeClassifier(min_hold_days=1).classify(
+        features[feat_cols])["regime"]  # v3.7.233 explicit no-lookahead
     rv_10d = features.get("rv_10d")
     rv_pctile = compute_rv_pctile(rv_10d) if rv_10d is not None \
         else pd.Series(0.5, index=features.index)

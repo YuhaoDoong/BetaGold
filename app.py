@@ -109,7 +109,8 @@ def load_all(_data_token):
     gld = gld.loc[common]
 
     feat_cols = [c for c in features.columns if not c.startswith("fwd_")]
-    regime = RegimeClassifier().classify(features[feat_cols])["regime"]
+    regime = RegimeClassifier(min_hold_days=1).classify(
+        features[feat_cols])["regime"]
 
     rv_10d = features["rv_10d"] if "rv_10d" in features.columns else None
     rv_pctile = compute_rv_pctile(rv_10d)

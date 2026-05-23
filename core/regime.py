@@ -21,7 +21,12 @@ class RegimeClassifier:
     }
 
     def __init__(self, bull_threshold=0.2, bear_threshold=-0.2,
-                 smooth_window=60, min_hold_days=20):
+                 smooth_window=60, min_hold_days=1):
+        # v3.7.233: default min_hold_days 20→1.
+        # 20-day debounce 会向后看一段 regime 是否持续再回写历史 regime,
+        # 这在生产/在线信号里是 look-ahead. backtest framework 早已 explicit
+        # =1, 现在把 default 拉齐. 研究脚本若需历史回写式去抖, 必须显式
+        # 传 min_hold_days=20 并 in-line 注明 look-ahead 是预期行为.
         self.bull_threshold = bull_threshold
         self.bear_threshold = bear_threshold
         self.smooth_window = smooth_window

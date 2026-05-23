@@ -68,7 +68,8 @@ def build_sig_df(asset: str) -> pd.DataFrame:
 
     feat = load_features(CFG)
     feat_cols = [c for c in feat.columns if not c.startswith("fwd_")]
-    regime = RegimeClassifier().classify(feat[feat_cols])["regime"]
+    regime = RegimeClassifier(min_hold_days=1).classify(
+        feat[feat_cols])["regime"]  # v3.7.233 explicit no-lookahead
     rv_pct = compute_rv_pctile(feat["rv_10d"])
 
     common2 = common.intersection(regime.index)

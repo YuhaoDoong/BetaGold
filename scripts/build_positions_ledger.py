@@ -89,7 +89,8 @@ def build_for_asset(asset: str, days_back: int, today_dt: pd.Timestamp,
     from core.signals import compute_rv_pctile
     rv_pctile = compute_rv_pctile(features["rv_10d"]).reindex(common)
     feat_cols = [c for c in features.columns if not c.startswith("fwd_")]
-    regime = RegimeClassifier().classify(features.loc[common, feat_cols])["regime"]
+    regime = RegimeClassifier(min_hold_days=1).classify(
+        features.loc[common, feat_cols])["regime"]  # v3.7.233 explicit no-lookahead
 
     sig_df = generate_daily_signals(close_d, high_d, low_d, upper, lower,
                                        regime, rv_pctile, asset=asset, gvz_series=gvz)
