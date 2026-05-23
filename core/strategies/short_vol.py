@@ -70,6 +70,13 @@ def simulate_short_vol_position(entry_pricing: dict,
         raw = (entry_value - cv) / max_risk * 100
         return max(-100.0, min(100.0, raw))
 
+    # v3.7.239: 到期日已过 → spot intrinsic 强平; iron_condor 分支自行用
+    # max(call_wing, put_wing) - entry_value 算 max_risk (asymmetric-aware)
+    from core.strategies.options_exit import force_close_at_expiry
+    forced = force_close_at_expiry(legs, entry_value, today_dt, signal_date,
+                                      strategy_kind="iron_condor")
+    if forced is not None: return forced
+
     first_kdb = db[db["code"] == legs[0][1]]
     if not len(first_kdb):
         return {"is_closed": False, "reason": "no db data"}

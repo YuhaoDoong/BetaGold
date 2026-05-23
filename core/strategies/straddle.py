@@ -31,6 +31,11 @@ def simulate_straddle_position(entry_pricing: dict,
     if abs(entry_value) < 0.01:
         return {"is_closed": False, "reason": "entry~0"}
     legs = entry_pricing["legs"]
+    # v3.7.239: 到期日已过 → spot intrinsic 强平 (kline_db 缺合约时兜底)
+    from core.strategies.options_exit import force_close_at_expiry
+    forced = force_close_at_expiry(legs, entry_value, today_dt, signal_date,
+                                      strategy_kind="long_vol")
+    if forced is not None: return forced
     profit_target = entry_value * cfg.profit_target_mult
     first_kdb = db[db["code"] == legs[0][1]]
     if not len(first_kdb):

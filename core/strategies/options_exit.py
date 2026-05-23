@@ -254,7 +254,13 @@ def force_close_at_expiry(legs, entry_value: float,
 
     Args:
         legs: ``[(label, code, K, qty), ...]``.
-        strategy_kind: ``"long_call"`` | ``"credit_spread"`` | ``"long_vol"``.
+        strategy_kind:
+            * ``"long_call"`` — sum of qty×intrinsic; pnl = (cur/entry - 1)
+            * ``"credit_spread"`` — debit to close; pnl = (entry - cur) / max_risk
+            * ``"long_vol"`` — STRADDLE, same math as ``long_call``
+            * ``"iron_condor"`` — SHORT_VOL 4-leg IC; computes asymmetric
+              ``max_risk = max(call_wing_width, put_wing_width) - entry_value``
+              from the legs themselves, ignoring any ``max_risk`` kwarg.
 
     Returns:
         closed-position dict, or ``None`` if not past expiry / unparseable.
@@ -276,11 +282,33 @@ def force_close_at_expiry(legs, entry_value: float,
         intrinsic = max(spot - K, 0.0) if typ == "C" else max(K - spot, 0.0)
         leg_prices.append((lab, intrinsic))
         cur_total += qty * intrinsic
-    if strategy_kind == "credit_spread":
-        cur_value = -cur_total  # debit to close
-        if max_risk is None or max_risk <= 0:
-            max_risk = max(0.01, entry_value)
-        pnl_pct = (entry_value - cur_value) / max_risk * 100
+    if strategy_kind in ("credit_spread", "iron_condor"):
+        cur_value = -cur_total  # debit to close (both branches share this)
+        if strategy_kind == "iron_condor":
+            # v3.7.239 + DEC-6: asymmetric IC, max loss is on the wider wing.
+            # Parse strikes per option type; pair short with long on the same
+            # side; use abs wing widths so symmetric IC degenerates correctly.
+            call_short_K = call_long_K = put_short_K = put_long_K = None
+            for lab, code, K, qty in legs:
+                p = parse_option_code(code)
+                if not p: continue
+                typ = p[2]
+                if typ == "C" and qty < 0: call_short_K = K
+                elif typ == "C" and qty > 0: call_long_K = K
+                elif typ == "P" and qty < 0: put_short_K = K
+                elif typ == "P" and qty > 0: put_long_K = K
+            call_wing = (abs(call_long_K - call_short_K)
+                          if (call_short_K is not None and call_long_K is not None)
+                          else 0.0)
+            put_wing = (abs(put_short_K - put_long_K)
+                         if (put_short_K is not None and put_long_K is not None)
+                         else 0.0)
+            wider = max(call_wing, put_wing)
+            max_risk_eff = max(0.01, wider - float(entry_value))
+        else:
+            max_risk_eff = max_risk if (max_risk and max_risk > 0) \
+                            else max(0.01, entry_value)
+        pnl_pct = (entry_value - cur_value) / max_risk_eff * 100
     else:
         cur_value = cur_total
         pnl_pct = ((cur_value / entry_value) - 1) * 100 \
