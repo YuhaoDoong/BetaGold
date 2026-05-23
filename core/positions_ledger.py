@@ -34,7 +34,9 @@ from typing import Optional
 LEDGER_PATH = "/Users/yhdong/Gold/data/positions_ledger.parquet"
 LEDGER_COLS = [
     "signal_date", "asset", "strategy",
-    "entry_spot", "entry_credit", "legs_json", "entry_leg_prices_json",
+    "underlying_entry_price",  # v3.7.235 new, semantically correct
+    "entry_spot",              # v3.7.235 alias of underlying_entry_price; remove in v3.8
+    "entry_credit", "legs_json", "entry_leg_prices_json",
     "source", "entry_timestamp", "max_risk",
     "exit_date", "exit_value", "exit_reason", "exit_pnl_pct",
 ]
@@ -80,12 +82,18 @@ def upsert_position(signal_date, asset: str, strategy: str,
         ]
         if len(existing) and not force_update:
             return False  # 已存在, snapshot 锁定不变
+    # v3.7.235: rename — entry_spot 旧值实际是 option daily close,
+    # 名字误导. 新字段 underlying_entry_price 才是 ETF spot. 保留
+    # entry_spot 作 1-release alias 防 downstream reader 断裂.
+    _ul_entry = float(entry_pricing.get("underlying_entry_price", 0) or 0.0)
+    _opt_close = float(entry_pricing.get("daily_close_price", 0)
+                        or entry_pricing.get("entry_price", 0))
     new_row = {
         "signal_date": pd.Timestamp(signal_date).normalize(),
         "asset": asset,
         "strategy": strategy,
-        "entry_spot": float(entry_pricing.get("daily_close_price", 0)
-                              or entry_pricing.get("entry_price", 0)),
+        "underlying_entry_price": _ul_entry,
+        "entry_spot": _ul_entry if _ul_entry else _opt_close,  # alias, prefer new field
         "entry_credit": float(entry_pricing.get("entry_price", 0)),
         "legs_json": json.dumps([list(l) for l in entry_pricing.get("legs", [])]),
         "entry_leg_prices_json": json.dumps(
