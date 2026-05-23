@@ -12,3 +12,6 @@ requests
 # 模型训练 (可选, 仅 --train 模式需要)
 torch
 scikit-learn
+
+# Test harness (v3.7.235 onward; offline pytest with cached fixtures)
+pytest>=7.0
