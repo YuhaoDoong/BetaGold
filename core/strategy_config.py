@@ -162,30 +162,28 @@ ASSET_CONFIGS: Dict[str, AssetConfig] = {
     # GLD: v3.7.29 网格搜索最优
     # 5y 数据, 38 笔 BUY/SELL, 胜 82%, 总 +48.9%, Sharpe 0.638
     "GLD": AssetConfig(
-        # v3.7.123 — sp_score 替代单切 (paired 验证 acc 42% → 86%, mean +22% → +66%)
+        # v3.7.230 trailing 多窗 (10y/5y/3y/1y) walk-forward 验证后:
+        # - buy_bp 0.30→0.20 (3/4 窗 robust, uplift +1.47)
+        # - iv_filter_high_min 25 ✓ 跨 4 窗一致
+        # - ret_20d_min_hard 不限 ✓ 跨 4 窗一致
+        # - ret_20d_max_hard 0.03 sum 角度仍最优
         rv_filter_enabled=True,
-        rv_filter_low=0.45,              # 兜底 (sp_score 关闭时用)
+        rv_filter_low=0.45,
         rv_filter_high=0.45,
         sp_score_enabled=True,
-        sp_score_threshold=3.5,           # paired chosen sum 最大 (thr=3.5 +3279% vs 3.0 +3164%)
-        ma_trend_threshold=0.975,          # v3.7.146 实证: 滤 7 笔全输 (-290%累计), 真 alpha
-        # v3.7.200: 三 lever grid 验证 — 中高 IV (GVZ 25-28) 漏网导致 5/12-14 BC 全亏 -85%.
-        # 28→25 拦 5/12-14 全 3 笔 (10y 总损失 sum -2% / WR +0.1%, 远好于 ma_trend 0.99)
-        # 不仅拦 BC, 也让 GVZ 26 深破时强制转 SP (用户提的关键 alpha)
-        iv_filter_high_min=25.0,
-        # v3.7.201: 信号双因子硬过滤 (signal_filter_deep.py 3y grid 验证)
-        # v3.7.214: ret_20d 撤底拦顶 (5y grid + 多窗口验证)
-        #   旧 ret_20d>-3% (拦底): 1y sum -36, 错杀超跌反弹
-        #   新 ret_20d<+3% (拦顶): 5y/3y/1y WR +7pp, 1y sum -7 (减亏 80%)
-        rv_pctile_max_hard=0.75,
-        ret_20d_min_hard=-1.0,            # v3.7.214: 撤底拦 (旧 -0.03 错杀)
-        ret_20d_max_hard=0.03,            # v3.7.214: 顶部追高拦下
+        sp_score_threshold=3.5,
+        ma_trend_threshold=0.975,          # 跨窗 3/4 一致 (10y=0.99, 5y/3y/1y=0.975)
+        iv_filter_high_min=25.0,           # ★ 跨 4 窗一致 (v3.7.230)
+        buy_bp=0.20,                       # ★ v3.7.230: 0.30→0.20 (3/4 窗 robust)
+        rv_pctile_max_hard=0.75,           # 跨窗不一致, 保留 prod (撤回有争议)
+        ret_20d_min_hard=-1.0,             # ★ 跨 4 窗一致 (不限)
+        ret_20d_max_hard=0.03,             # sum 角度仍最优
         short_vol_rv_pctile_lo=0.45,
         short_vol_rv_pctile_hi=0.80,
         straddle_rv_abs_max=30.0,
         straddle_rv_pctile_max=1.00,
-        last_tuned="2026-05-15",
-        notes="v3.7.201 双因子硬过滤 rv<0.75 + ret_20d>-3% (Q1 拦 19/20, WR +5pp)",
+        last_tuned="2026-05-18",
+        notes="v3.7.230 trailing 多窗 robust: buy_bp 0.20, iv 25, ma_trend 0.975",
     ),
 
     # SLV: v3.7.30 SLV 单独 grid search
@@ -193,33 +191,34 @@ ASSET_CONFIGS: Dict[str, AssetConfig] = {
     # SHORT_VOL 5y, 0.25/0.775: 77 笔 88% +73.7% Sharpe 0.848
     # 与 GLD 显著不同 — SLV 笔数翻倍, 单笔波动更大
     "SLV": AssetConfig(
-        # v3.7.123 — sp_score 替代单切 (paired 验证 acc 38% → 68%, sum +113% → +862%)
+        # v3.7.230 trailing 多窗 (5y/3y/1y) walk-forward 验证后:
+        # - buy_bp 0.30→0.20 (2/3 窗 robust)
+        # - iv_filter_high_min 28→25 (★ 3/3 窗一致, 跟 GLD 统一)
+        # - ma_trend_threshold 0.0→0.99 (★ 3/3 窗一致, 之前误判)
+        # - ret_20d_max_hard 不限→0.03 (★ 3/3 窗一致)
         rv_filter_enabled=True,
-        rv_filter_low=0.75,               # 兜底
+        rv_filter_low=0.75,
         rv_filter_high=0.75,
         sp_score_enabled=True,
-        sp_score_threshold=2.5,           # paired chosen sum 最大 (thr=2.5 +862% vs 3.0 +738%)
-        ma_trend_threshold=0.0,            # v3.7.146 实证: SLV 0.99 滤 67% 信号换 +17%
-                                          # 但 0~0.98 累计几乎一样 (+801 vs +821);
-                                          # 设 0 = 不过滤, 月月有信号, 累计 -14% 可接受
-        # v3.7.218: SLV per-asset tier 边界 (SLV-4 grid 实证)
-        # SLV 完全反 GLD: 高 rv 段 20d WR 93%, 深破 [0.05,0.10] 是甜点
-        # GLD tier (rv<0.65) 在 SLV 上 S/A 各 n=4-7 太少, 多数信号被吞进 B
-        # SLV-4 (S: bp<=0.10, 不限 rv): S n=22 WR 77%/20d 91%, A n=30 67%/83%
-        # 跟 GLD 反向 — SLV 看深破不看 rv
-        tier_s_rv_max=2.0,                # SLV 不限 rv (GLD 0.65)
-        tier_s_ret_20d_min=-1.0,          # SLV 不限 ret (GLD 0.0)
-        tier_s_bp_low_max=0.10,           # SLV 深破 ≤0.10 (GLD 0.20)
-        tier_a_rv_max=2.0,                # SLV 不限 rv (GLD 0.75)
-        tier_a_ret_20d_min=-1.0,          # SLV 不限 ret (GLD -0.01)
-        tier_a_bp_low_max=0.20,           # SLV bp ≤0.20 (GLD 0.20, 同)
+        sp_score_threshold=2.5,
+        buy_bp=0.20,                       # ★ v3.7.230: 0.30→0.20 (跨窗 robust)
+        ma_trend_threshold=0.99,           # ★ v3.7.230: 0.0→0.99 (3/3 窗一致)
+        iv_filter_high_min=25.0,           # ★ v3.7.230: 28→25 (跟 GLD 一致, 3/3 窗)
+        ret_20d_max_hard=0.03,             # ★ v3.7.230: 不限→0.03 (3/3 窗一致)
+        # v3.7.218 SLV per-asset tier 边界 (SLV-4 grid 实证)
+        tier_s_rv_max=2.0,
+        tier_s_ret_20d_min=-1.0,
+        tier_s_bp_low_max=0.10,            # SLV 深破 ≤0.10
+        tier_a_rv_max=2.0,
+        tier_a_ret_20d_min=-1.0,
+        tier_a_bp_low_max=0.20,
         short_vol_rv_pctile_lo=0.25,
         short_vol_rv_pctile_hi=0.775,
         straddle_rv_abs_max=25.0,
         straddle_rv_pctile_max=1.00,
         straddle_priority_score=6,
-        last_tuned="2026-05-06",
-        notes="v3.7.123 sp_score thr=2.5 (paired 68% acc / 54% wr / +23%/笔)",
+        last_tuned="2026-05-18",
+        notes="v3.7.230 trailing 多窗 robust: buy_bp 0.20, iv 25, ma 0.99, ret_max 0.03",
     ),
 
     # 未来扩展示例 (留位):

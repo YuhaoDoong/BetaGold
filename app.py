@@ -1220,6 +1220,30 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             st.sidebar.caption(f"⚠️ {_1h_fname} 过期 → yfinance 补齐 "
                                f"({_yf_1h.index[-1].strftime('%m/%d %H:%M')})")
 
+    # v3.7.222: ETF 1h 脏 tick 实时检测 — 用 GC=F 23h 干净期货当 reference
+    # 原理: 正常 GC=F.Close/ETF.Close 比例稳定 (~10.86), 脏 bar (yfinance 盘后合成)
+    #       ratio 失衡 >2% → 标脏 → drop
+    # 例: 5/15 16:00 ETF Low=396.45 (实际 414.12), GC=F 4537 → synth_low=418
+    #     → low_dev_pct=4.66% → 脏 → 丢
+    if gld_1h is not None and len(gld_1h) > 0:
+        try:
+            _gc_ticker = "GC=F" if asset_key == "GLD" else "SI=F"
+            _gc_1h_fname = "gc_1h.csv" if asset_key == "GLD" else "si_1h.csv"
+            _gc_1h_path = os.path.normpath(os.path.join(
+                os.path.dirname(os.path.abspath(__file__)),
+                "..", "Gold", "data", "raw", "market", _gc_1h_fname))
+            if os.path.exists(_gc_1h_path):
+                _gc_1h = pd.read_csv(_gc_1h_path, index_col=0, parse_dates=True)
+                from core.etf_dirty_filter import clean_etf_using_futures
+                _n_before = len(gld_1h)
+                gld_1h, _n_dropped = clean_etf_using_futures(
+                    gld_1h, _gc_1h, ratio_window=60, threshold_pct=2.0)
+                if _n_dropped > 0:
+                    st.sidebar.caption(
+                        f"🧹 ETF 1h 去脏: 丢 {_n_dropped} 笔 (GC=F ratio 偏离 >2%)")
+        except Exception as _clean_e:
+            st.sidebar.caption(f"⚠️ ETF 脏 tick 检测失败: {_clean_e}")
+
     # 信号 (v3.7.19 实时化: 用 1h 数据 + 实时金价 更新今日 H/L 后再算信号)
     # 让 sig_df 反映 latest 1h close + intraday range, 而非陈旧 daily close
     _close_for_sig = close_d.copy()
@@ -2293,6 +2317,9 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         except Exception:
             return None
 
+    # v3.7.221: 收集 dashboard 实际 rendering 的 marker (用于 snapshot)
+    _snapshot_main_markers = []
+    _snapshot_sub_markers = []
     # v3.7.160: ledger-driven 主图 marker (跟历史 section 同源, 修 5-5/5-6 marker 缺)
     try:
         import json as _json_m
@@ -2326,6 +2353,17 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                         marker=_mark_l, s=_sz_l, color=_color_l,
                         edgecolors="black", linewidths=1.0, zorder=8,
                         label="_nolegend_")
+            # v3.7.221: snapshot 记录
+            _snapshot_main_markers.append({
+                "date": pd.Timestamp(_d_l).isoformat(),
+                "price": float(_y_l),
+                "strategy": _strat_l,
+                "color": _color_l,
+                "marker_shape": _mark_l,
+                "source": "ledger",
+                "signal_tier": _row_l.get("signal_tier", ""),
+                "is_closed": _row_l.get("is_closed", False),
+            })
     except Exception as _e_l:
         pass  # ledger 不存在或损坏, 忽略
 
@@ -2935,10 +2973,10 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                     label="▲ SELL PUT 期权 (盘中)"),
             Line2D([0],[0], marker="D", color="w", markerfacecolor="#2196F3",
                     markeredgecolor="black", markersize=10,
-                    label="◇ BUY 期货 (非盘中, 24h)"),
+                    label="◇ 期货 BUY (非盘中, 当日策略=BC)"),
             Line2D([0],[0], marker="D", color="w", markerfacecolor="#FF9800",
                     markeredgecolor="black", markersize=10,
-                    label="◇ SELL 期货 (非盘中)"),
+                    label="◇ 期货 BUY (非盘中, 当日策略=SP)"),
             Line2D([0],[0], marker="v", color="w", markerfacecolor="#F44336",
                     markeredgecolor="black", markersize=10,
                     label="▼ EXIT"),
@@ -3059,10 +3097,17 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                      "SHORT_VOL": ("#FF6F00", "P")}
 
         def _trig_palette(trig_row, side):
-            # 用当日 sig_df 的 buy_type 决定 BUY 颜色
+            # v3.7.220: 优先读 sig_df_history snapshot (冻结), fallback 实时 sig_df
             d = pd.Timestamp(trig_row["trigger_time"]).normalize()
-            if side == "BUY" and d in sig_df.index:
-                bt = sig_df.loc[d].get("buy_type")
+            if side == "BUY":
+                bt = None
+                try:
+                    from core.sig_df_history import lookup as _snap_lookup
+                    bt = _snap_lookup(d, asset_key, "buy_type")
+                except Exception:
+                    bt = None
+                if bt is None and d in sig_df.index:
+                    bt = sig_df.loc[d].get("buy_type")
                 if bt in ("BUY CALL", "SELL PUT"):
                     return _SIG_PAL[bt]
                 return _SIG_PAL["BUY CALL"]  # default
@@ -3095,6 +3140,7 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                                      marker=_marker_opt, s=180, color=_color,
                                      edgecolors="black", lw=1.2, zorder=10)
                     _label_tag = ""
+                    _shape_used = _marker_opt
                 else:
                     # 期货: ◇ 菱形, 颜色仍按 BC/SP, 加 "F" 文字标
                     _fut_marker = "D" if _side == "BUY" else "d"  # D 实心菱形
@@ -3102,6 +3148,26 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                                      marker=_fut_marker, s=180, color=_color,
                                      edgecolors="black", lw=1.2, zorder=10)
                     _label_tag = " (期货)"
+                    _shape_used = _fut_marker
+                # v3.7.221: 副图 marker 进 snapshot
+                # 解析 type: 颜色反查 — 蓝=BUY CALL/BUY, 橙=SELL PUT/SELL, 红=EXIT
+                # 期货端永远是 BUY 触发 (intraday_log 只 record BUY/EXIT);
+                # 颜色反映当日方向性策略 (BC 蓝 / SP 橙)
+                _color_type_map = {
+                    "#2196F3": "BUY CALL" if _in_us else "期货 BUY (当日策略=BC)",
+                    "#FF9800": "SELL PUT" if _in_us else "期货 BUY (当日策略=SP)",
+                    "#F44336": "EXIT",
+                }
+                _snapshot_sub_markers.append({
+                    "trigger_time": _t.isoformat(),
+                    "price": float(_r2["price"]),
+                    "futures_price": float(_y),
+                    "side": _side,
+                    "type": _color_type_map.get(_color, "UNKNOWN"),
+                    "color": _color,
+                    "marker_shape": _shape_used,
+                    "in_us_session": bool(_in_us),
+                })
                 # 价位 + 时间 + 工具类型 标注
                 ax_price.annotate(
                     f"${_y:.0f}{_label_tag}",
@@ -3110,6 +3176,25 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                     textcoords="offset points",
                     fontsize=7, color=_color,
                     fontweight="bold")
+
+        # v3.7.221: 写 dashboard 快照 (覆盖式, daily) — 反映实际画的 marker
+        try:
+            from core.dashboard_snapshot import save as _snap_save
+            _intra_log_window = _intra_log_asset[
+                (_intra_log_asset["date"].astype(str) >=
+                  viz_dates[0].strftime("%Y-%m-%d")) &
+                (_intra_log_asset["date"].astype(str) <=
+                  viz_dates[-1].strftime("%Y-%m-%d"))] \
+                if len(_intra_log_asset) else _intra_log_asset
+            _snap_path = _snap_save(
+                asset=asset_key, viz_dates=viz_dates, sig_df=sig_df,
+                ledger_rows=_ledger_asset if "_ledger_asset" in locals() else [],
+                intraday_log_window=_intra_log_window,
+                unified_viz=_unified_viz_raw,
+                main_chart_markers=_snapshot_main_markers,
+                sub_chart_markers=_snapshot_sub_markers)
+        except Exception as _snap_e:
+            print(f"[snapshot] 失败: {_snap_e}")
 
         # (v3.7.23: Stoch RSI 子图已移到主图下方, 此 K线 panel 仅保留 K线 + Squeeze)
 
@@ -5239,9 +5324,19 @@ def main():
             if SHORT_VOL_DISABLED:  # v3.7.182: 今日预测主图同步屏蔽
                 _short_vol_chart = _short_vol_chart.copy()
                 _short_vol_chart["short_vol_signal"] = False
+            # v3.7.222: 传 gvz_series — 让 IV filter 在今日预测页生效
+            # (之前 bug: 今日预测无 IV filter → sig_df.buy_type 跟盘中信号页不一致)
+            try:
+                import yfinance as _yf_pred
+                _gvz_pred = _yf_pred.Ticker("^GVZ").history(period="5y")
+                _gvz_pred.index = pd.to_datetime(_gvz_pred.index).tz_localize(None).normalize()
+                _gvz_pred_s = _gvz_pred["Close"]
+            except Exception:
+                _gvz_pred_s = None
             _sig_chart = _gds_chart(close, high, low,
                                      upper_band, lower_band,
-                                     regime, rv_pctile, asset=asset_key)
+                                     regime, rv_pctile, asset=asset_key,
+                                     gvz_series=_gvz_pred_s)
             _uni_raw_chart = _bus_chart(_sig_chart, _str_df,
                                          close, high, low,
                                          short_vol_df=_short_vol_chart)
