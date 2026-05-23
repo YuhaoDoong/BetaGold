@@ -42,8 +42,8 @@ Repair the GLD/SLV trading system's correctness floor and the DL Range predictor
 | task-f1 | AC-10 | done (Round 0, pending verification) | coding | claude | v3.7.236-prep: pytest>=7.0 in requirements.txt; tests/conftest.py + fixtures/; first regime no-leak regression test PASSES |
 | task-b1 | AC-6 | done (Round 1, pending verification) | coding | claude | v3.7.236: max_fallback_days=7 + _kline_db_freshness_status + price_strategy_at PENDING_KLINE source |
 | task-b2 | AC-6 | done (Round 1, pending verification) | coding | claude | v3.7.237: core/data_freshness.py FRESH/STALE/FROZEN + ledger daemon log + build_positions_ledger [freshness] skip print + 7 pytest cases PASS |
-| task-c1 | AC-3 | pending | coding | claude | get_option_exit_config(asset, strategy) resolver + simulate_option_exit asset propagation |
-| task-c2 | AC-4 | pending | coding | claude | force_close_at_expiry → STRADDLE (long_vol) + SHORT_VOL (IC, max wing) |
+| task-c1 | AC-3 | done (Round 2, pending verification) | coding | claude | v3.7.238: get_option_exit_config resolver + simulate_option_exit asset 穿透 + DeprecationWarning + 6 pytest PASS |
+| task-c2 | AC-4 | done (Round 2, pending verification) | coding | claude | v3.7.239: force_close_at_expiry 扩 long_vol/iron_condor + asymmetric IC max_risk + 17 pytest PASS (含 asymmetric wing fixture) |
 | task-d1 | AC-15 | pending | coding | claude | max_move_{h}d explicit indexed-window helper + pytest fixture |
 | task-d2 | AC-7 | pending | coding | claude | Layer 2 sample disposition reporting + per-leg DTE filter |
 | task-e1 | AC-5 | pending | coding | claude | select_gld_sync_strategy pure function + caller-side write_shadow_record |
