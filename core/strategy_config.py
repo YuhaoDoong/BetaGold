@@ -232,6 +232,71 @@ def get_config(asset: str) -> AssetConfig:
     return ASSET_CONFIGS.get(asset.upper(), DEFAULT_CONFIG)
 
 
+# v3.7.238: per-asset exit-config overrides.
+#
+# AssetConfig 持有 signal-side thresholds (RV / IV filter / MA / ret_20d / tier).
+# 期权 exit thresholds (BC pt/sl, SP credit%, STRADDLE hold_max, ShortVol pt%)
+# 由各 strategy 模块自己的 dataclass 默认值承载. 这里维护一层 per-asset 覆盖:
+# key (asset, strategy) → dict[field_name → value]. 仅记录与 dataclass 默认不同
+# 的字段, 减少冗余. 缺省时 get_option_exit_config 返回 dataclass 默认值.
+_OPTION_EXIT_OVERRIDES: Dict[tuple, Dict[str, float]] = {
+    # GLD SELL PUT: v3.7.184 grid → pt=70% (vs 50% 默认) sum +1726%
+    ("GLD", "SELL PUT"): {"profit_target_credit_pct": 70.0},
+    # SLV SELL PUT: v3.7.184 per-asset 拆分 → pt=30% wr=92% sum=+709%
+    ("SLV", "SELL PUT"): {"profit_target_credit_pct": 30.0},
+    # 其他 BC / STRADDLE / SHORT_VOL: 跨 asset robust 跨窗一致, 用 dataclass 默认
+}
+
+
+def get_option_exit_config(asset: str, strategy: str):
+    """Per-asset exit-config resolver (v3.7.238).
+
+    Args:
+        asset: 'GLD' | 'SLV' | ...
+        strategy: 'BUY CALL' | 'SELL PUT' | 'STRADDLE' | 'SHORT_VOL'
+
+    Returns:
+        A dataclass instance of the strategy's config type with any per-asset
+        overrides applied. Falls back to defaults when (asset, strategy) is
+        not in ``_OPTION_EXIT_OVERRIDES``.
+
+    Raises:
+        KeyError: if ``strategy`` is not recognized.
+    """
+    # 局部 import 避免循环依赖 (strategies → strategy_config → strategies)
+    from core.strategies.buy_call import BCConfig
+    from core.strategies.sell_put import SPConfig
+    from core.strategies.straddle import StraddleConfig
+    from core.strategies.short_vol import ShortVolConfig
+
+    _ctor_map = {
+        "BUY CALL": BCConfig,
+        "SELL PUT": SPConfig,
+        "STRADDLE": StraddleConfig,
+        "SHORT_VOL": ShortVolConfig,
+    }
+    strat = strategy.upper().strip()
+    ctor = _ctor_map.get(strat)
+    if ctor is None:
+        raise KeyError(f"Unknown option strategy: {strategy!r}")
+
+    asset_u = asset.upper()
+    overrides = _OPTION_EXIT_OVERRIDES.get((asset_u, strat), {})
+    if not overrides:
+        return ctor()  # dataclass default
+    # 验证 override field names 都在 dataclass 上 (避免 silent typo)
+    cfg = ctor()
+    field_names = {f.name for f in cfg.__dataclass_fields__.values()}
+    for k in overrides:
+        if k not in field_names:
+            raise KeyError(
+                f"Override field {k!r} not in {ctor.__name__} for "
+                f"({asset_u}, {strat})")
+    return ctor(**{**{f.name: getattr(cfg, f.name)
+                       for f in cfg.__dataclass_fields__.values()},
+                    **overrides})
+
+
 def list_assets() -> list:
     """已校准资产列表."""
     return list(ASSET_CONFIGS.keys())

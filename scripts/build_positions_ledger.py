@@ -280,7 +280,8 @@ def build_for_asset(asset: str, days_back: int, today_dt: pd.Timestamp,
                             flush=True)
                 continue
             sim = simulate_option_exit(ent, _du, strat, today_dt,
-                                            live_spot=eC, live_high=eH, live_low=eL)
+                                            live_spot=eC, live_high=eH, live_low=eL,
+                                            asset=asset)  # v3.7.238 per-asset cfg
             is_closed = sim.get("is_closed", False)
             # v3.7.206: 期权也写 signal_tier (从 ETF sig_df)
             _opt_tier = sig_df.loc[_du].get("signal_tier", "") if _du in sig_df.index else ""
@@ -407,7 +408,8 @@ def _refresh_open_position(row: dict, today_dt: pd.Timestamp,
         live_spot = row.get("entry_etf", 0); live_high = live_spot; live_low = live_spot
     sim = simulate_option_exit(entry_pricing, sig_d, strat, today_dt,
                                   live_spot=live_spot, live_high=live_high,
-                                  live_low=live_low)
+                                  live_low=live_low,
+                                  asset=asset)  # v3.7.238 per-asset cfg
     is_closed = sim.get("is_closed", False)
     row["is_closed"] = is_closed
     row["exit_legs"] = [list(p) for p in sim.get("leg_prices", [])]
@@ -552,7 +554,8 @@ def main():
                         continue
                     sim = simulate_option_exit(ent, d, _cstrat, today_dt,
                                                       live_spot=eC, live_high=eH,
-                                                      live_low=eL)
+                                                      live_low=eL,
+                                                      asset="GLD")  # cross-asset target is always GLD
                     row = {
                         "asset": "GLD", "signal_date": d.isoformat(),
                         "strategy": _cstrat,

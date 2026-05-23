@@ -689,7 +689,8 @@ def simulate_option_exit(entry_pricing: dict, signal_date: pd.Timestamp,
                             today_dt: pd.Timestamp,
                             live_spot: float = None,
                             live_high: float = None,
-                            live_low: float = None) -> dict:
+                            live_low: float = None,
+                            asset: Optional[str] = None) -> dict:
     """逐日扫 kline_db 真实期权 OHLC, 应用真实退出规则.
 
     SELL PUT credit spread:
@@ -742,19 +743,41 @@ def simulate_option_exit(entry_pricing: dict, signal_date: pd.Timestamp,
     db = _load_kline_db()
     if db is None or not entry_pricing.get("legs"):
         return {"is_closed": False}
+    # v3.7.238: per-asset cfg resolution; legacy asset=None emits warning
+    cfg = None
+    if asset is None:
+        import warnings
+        warnings.warn(
+            "simulate_option_exit called without asset; per-asset exit "
+            "configuration is bypassed and default cfg will be used. "
+            "Pass asset='GLD' or asset='SLV' explicitly (v3.7.238+).",
+            DeprecationWarning, stacklevel=2)
+    else:
+        try:
+            from core.strategy_config import get_option_exit_config
+            # Map dispatch keyword to canonical strategy name used in registry
+            _canon = ("BUY CALL" if "BUY CALL" in strategy
+                       else "SELL PUT" if "SELL PUT" in strategy
+                       else "STRADDLE" if "STRADDLE" in strategy
+                       else "SHORT_VOL" if "SHORT_VOL" in strategy
+                       else None)
+            if _canon is not None:
+                cfg = get_option_exit_config(asset, _canon)
+        except Exception:
+            cfg = None  # fall back to module default
     try:
         if "BUY CALL" in strategy:
             from core.strategies.buy_call import simulate_bc_position
-            return simulate_bc_position(entry_pricing, signal_date, today_dt, db)
+            return simulate_bc_position(entry_pricing, signal_date, today_dt, db, cfg=cfg)
         if "SELL PUT" in strategy:
             from core.strategies.sell_put import simulate_sp_position
-            return simulate_sp_position(entry_pricing, signal_date, today_dt, db)
+            return simulate_sp_position(entry_pricing, signal_date, today_dt, db, cfg=cfg)
         if "STRADDLE" in strategy:
             from core.strategies.straddle import simulate_straddle_position
-            return simulate_straddle_position(entry_pricing, signal_date, today_dt, db)
+            return simulate_straddle_position(entry_pricing, signal_date, today_dt, db, cfg=cfg)
         if "SHORT_VOL" in strategy:
             from core.strategies.short_vol import simulate_short_vol_position
-            return simulate_short_vol_position(entry_pricing, signal_date, today_dt, db)
+            return simulate_short_vol_position(entry_pricing, signal_date, today_dt, db, cfg=cfg)
     except Exception as e:
         # fallback 到旧 inline 逻辑 (debug 用)
         pass
