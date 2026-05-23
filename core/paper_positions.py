@@ -349,11 +349,38 @@ def _load_kline_db() -> Optional[pd.DataFrame]:
     return df
 
 
+KLINE_MAX_FALLBACK_DAYS = 7  # v3.7.236: hard cap on stale-kline pricing
+
+
+def _kline_db_freshness_status(signal_date: pd.Timestamp,
+                                  max_fallback_days: int = KLINE_MAX_FALLBACK_DAYS
+                                  ) -> tuple:
+    """Return (status, gap_days) where status ∈
+    {'FRESH', 'PENDING_KLINE', 'NO_DB'}.
+
+    v3.7.236: explicit freshness state distinct from 'no liquid contract'.
+    Callers can mark `source='PENDING_KLINE'` when status is PENDING_KLINE so
+    the ledger daemon can defer the entry and retry later, rather than the
+    old silent stale-pricing behavior.
+    """
+    db = _load_kline_db()
+    if db is None: return ("NO_DB", None)
+    sig_d = pd.Timestamp(signal_date).normalize()
+    avail = db.loc[db["date"] <= sig_d, "date"]
+    if not len(avail): return ("NO_DB", None)
+    gap = (sig_d - avail.max()).days
+    if gap > max_fallback_days:
+        return ("PENDING_KLINE", gap)
+    return ("FRESH", gap)
+
+
 def pick_liquid_monthly_option(asset: str, signal_date: pd.Timestamp,
                                   ul_price: float, right: str,
                                   dte_target: int = 45,
                                   strike_tolerance: float = 8.0,
-                                  min_dte: int = 14) -> Optional[dict]:
+                                  min_dte: int = 14,
+                                  max_fallback_days: int = KLINE_MAX_FALLBACK_DAYS
+                                  ) -> Optional[dict]:
     """从 kline_db 挑期权: strike 接近 ul_price 优先 (覆盖 ATM), 月度 opex 偏好,
     DTE 接近 target, 成交量降序.
 
@@ -363,6 +390,11 @@ def pick_liquid_monthly_option(asset: str, signal_date: pd.Timestamp,
 
     v3.7.200: 加 min_dte 硬下限 (默认 14d) 防末日期权.
     kline_db fallback 到旧日时, real DTE = dte_at_date - (sig_d - fallback_d).
+
+    v3.7.236: max_fallback_days 硬上限 (默认 7 交易日 ≈ 10 自然日).
+    超过时返回 None — 调用方 (price_strategy_at) 应通过
+    _kline_db_freshness_status 区分 PENDING_KLINE (stale db) 和
+    NO_CONTRACT (db fresh but no liquid match).
     """
     db = _load_kline_db()
     if db is None: return None
@@ -376,6 +408,9 @@ def pick_liquid_monthly_option(asset: str, signal_date: pd.Timestamp,
         if not len(avail_dates): return None
         nearest = avail_dates.max()
         fallback_offset_days = (sig_d - nearest).days
+        # v3.7.236: 拒绝 fallback 超过 max_fallback_days 的陈旧 kline
+        if fallback_offset_days > max_fallback_days:
+            return None
         day_data = db[db["date"] == nearest]
         if not len(day_data): return None
     asset_data = day_data[day_data["code"].str.contains(asset, na=False)]
@@ -474,6 +509,16 @@ def price_strategy_at(asset: str, strategy: str,
     out = {"legs": [], "entry_price": 0.0, "daily_open_price": 0.0,
            "daily_close_price": 0.0, "kline_codes": [], "source": "—",
            "underlying_entry_price": float(spot_at_trigger or 0.0)}
+    # v3.7.236: 检查 kline_db 新鲜度 — chronic stale 时返回 PENDING_KLINE
+    # 让 ledger daemon 推迟此 signal_date 的 entry, 留待 db 刷新后重试.
+    # 与 NO_CONTRACT (db fresh but no liquid match) 通过 source 字段区分.
+    _kline_status, _kline_gap = _kline_db_freshness_status(signal_date)
+    if _kline_status == "PENDING_KLINE":
+        out["source"] = f"PENDING_KLINE ({_kline_gap}d stale)"
+        return out
+    if _kline_status == "NO_DB":
+        out["source"] = "NO_KLINE_DB"
+        return out
     if "BUY CALL" in strategy:
         # v3.7.97: 根据"买点深度+IV"决定单腿还是价差
         # 单腿 BUY CALL: 买点深 (spot 低) + IV 小 → 期权便宜, 杠杆好
