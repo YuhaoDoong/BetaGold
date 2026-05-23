@@ -46,8 +46,8 @@ Repair the GLD/SLV trading system's correctness floor and the DL Range predictor
 | task-c2 | AC-4 | done (Round 2, pending verification) | coding | claude | v3.7.239: force_close_at_expiry 扩 long_vol/iron_condor + asymmetric IC max_risk + 17 pytest PASS (含 asymmetric wing fixture) |
 | task-d1 | AC-15 | pending | coding | claude | max_move_{h}d explicit indexed-window helper + pytest fixture |
 | task-d2 | AC-7 | pending | coding | claude | Layer 2 sample disposition reporting + per-leg DTE filter |
-| task-e1 | AC-5 | pending | coding | claude | select_gld_sync_strategy pure function + caller-side write_shadow_record |
-| task-e2 | AC-5 | pending | analyze | codex | replay March SLV-S triggers under new selector; document P&L delta |
+| task-e1 | AC-5 | done (Round 3, pending verification) | coding | claude | v3.7.240: select_gld_sync_strategy pure fn + write_shadow_record + live_cutover_allowed + 19 pytest PASS |
+| task-e2 | AC-5 | done (Round 3, pending verification) | analyze | claude | v3.7.240 replay archive: 5/5 March BC entries would switch to SP; native SP same-month +66.7% vs BC -334.3% = +401pp counterfactual |
 | task-e3 | AC-14 | pending | coding | claude | Dashboard run_backtest wrapper + parity assertion + DeprecationWarning |
 | task-f2 | AC-4 | pending | coding | claude | tests/test_expiry_intrinsic.py — 16 scenarios incl asymmetric IC fixture |
 | task-f3 | AC-3 | pending | coding | claude | tests/test_per_asset_cfg.py |
