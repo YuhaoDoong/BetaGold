@@ -18,18 +18,17 @@ import pandas as pd
 class BCConfig:
     """BC 入场 + 退出参数.
 
-    v3.7.205: 5y BS proxy + 真实 kline_db (n=83, v3.7.201 信号过滤) grid 实证:
-      36 combo (pt 1.2-3.0 × sl 0.3-0.8):
-        pt=2.5/sl=0.3 ★ WR=86.7% sum=+11851% mean=+143% scoreB=476 (推荐)
-        pt=3.0/sl=0.3   WR=83.1% sum=+13360% (最高 sum 但 WR 略低)
-        pt=1.5/sl=0.5 旧 WR=74.7% sum=+4078% scoreB=121 (旧 cfg)
-      反直觉发现: SL 越紧 (0.3 = premium 跌 70% 才止损) WR 反而越高
-                  因 BC 杠杆 + theta, 早 SL 错过反弹; 等到 expiry 也 max -100%
-      旧 v3.7.170 是 90d n=11 小样本 grid, 已被 5y n=83 推翻
+    v3.7.205: 5y BS proxy + 真实 kline_db (n=83) grid:
+      pt=2.5/sl=0.3 WR=86.7% sum=+11851% scoreB=476 (旧推荐)
+      pt=3.0/sl=0.3 WR=83.1% sum=+13360% (最高 sum)
+    v3.7.230 trailing 多窗 (1y/3y) 重测:
+      GLD ALL: pt=3.0 跨窗一致, 1y scoreB=392 (vs 2.5 scoreB=323), sum +20%
+      SLV ALL: pt=4.0 跨窗一致, 1y sum=5644% (但 sample 偏 2025 H2 大涨)
+      折中选 3.0 (GLD-aligned, SLV 仍有 alpha)
     """
-    profit_target_mult: float = 2.5      # +150% premium 才平 (BC 长线持仓)
-    stop_loss_mult: float = 0.3          # premium 跌 70% 才止损 (容忍深亏等反弹)
-    base_dte: int = 30                   # 近 DTE theta 优势
+    profit_target_mult: float = 3.0      # v3.7.230: 2.5 → 3.0 (多窗 robust)
+    stop_loss_mult: float = 0.3          # 跨窗一致 (premium 跌 70% 才 SL)
+    base_dte: int = 30
 
 
 def simulate_bc_position(entry_pricing: dict,
@@ -53,6 +52,12 @@ def simulate_bc_position(entry_pricing: dict,
     if abs(entry_value) < 0.01:
         return {"is_closed": False, "reason": "entry~0"}
     legs = entry_pricing["legs"]
+    # v3.7.232: 到期日已过 → 用 spot intrinsic 强平
+    # (kline_db 缺到期合约时, 下面的 days_after 循环不进入 → expiry 分支永远不触发)
+    from core.strategies.options_exit import force_close_at_expiry
+    forced = force_close_at_expiry(legs, entry_value, today_dt, signal_date,
+                                      strategy_kind="long_call")
+    if forced is not None: return forced
     profit_target = entry_value * cfg.profit_target_mult
     stop_loss = entry_value * cfg.stop_loss_mult
     # Expiry

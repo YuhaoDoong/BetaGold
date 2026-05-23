@@ -719,6 +719,14 @@ def simulate_option_exit(entry_pricing: dict, signal_date: pd.Timestamp,
     max_risk = (spread_width - entry_value) if (is_credit and spread_width > 0) \
                 else entry_value
     if max_risk <= 0: max_risk = max(0.01, entry_value)
+    # v3.7.232: 到期日已过 → 用 spot intrinsic 强平 (kline_db 缺合约兜底)
+    from core.strategies.options_exit import force_close_at_expiry
+    _kind = ("credit_spread" if is_credit
+              else "long_vol" if is_long_vol
+              else "long_call")
+    forced = force_close_at_expiry(legs, entry_value, today_dt, signal_date,
+                                      strategy_kind=_kind, max_risk=max_risk)
+    if forced is not None: return forced
     # 取首 leg 的 expiry
     first_code = legs[0][1]
     first_kdb = db[db["code"] == first_code]

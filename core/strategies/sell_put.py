@@ -68,6 +68,13 @@ def simulate_sp_position(entry_pricing: dict,
 
     def _pnl(cv): return (entry_value - cv) / max_risk * 100
 
+    # v3.7.232: 到期日已过 → 用 spot intrinsic 强平 (kline_db 缺合约时兜底)
+    from core.strategies.options_exit import force_close_at_expiry
+    forced = force_close_at_expiry(legs, entry_value, today_dt, signal_date,
+                                      strategy_kind="credit_spread",
+                                      max_risk=max_risk)
+    if forced is not None: return forced
+
     first_kdb = db[db["code"] == legs[0][1]]
     if not len(first_kdb):
         return {"is_closed": False, "reason": "no db data"}

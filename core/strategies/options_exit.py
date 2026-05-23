@@ -200,3 +200,98 @@ def _sp_exit(d_ts, cur_value, hold, leg_prices, pnl_pct, reason):
              "exit_value": cur_value, "exit_reason": reason,
              "hold_days": hold, "pnl_pct": pnl_pct,
              "leg_prices": leg_prices}
+
+
+# ── v3.7.232: expiry-aware 强平 (kline_db 缺到期合约时兜底) ─────────────
+import re as _re
+
+_OPT_CODE_RE = _re.compile(r"^US\.([A-Z]+?)(\d{6})([CP])(\d+)$")
+_SPOT_CACHE = {}
+
+
+def parse_option_code(code: str):
+    """Parse OpenAPI option code → (asset, expiry_dt, opt_type, strike).
+
+    e.g. ``US.GLD260515P445000`` → ("GLD", 2026-05-15, "P", 445.0).
+    """
+    m = _OPT_CODE_RE.match(str(code or ""))
+    if not m: return None
+    asset, yymmdd, typ, k = m.groups()
+    try:
+        exp = pd.Timestamp(year=2000 + int(yymmdd[:2]),
+                            month=int(yymmdd[2:4]),
+                            day=int(yymmdd[4:6]))
+    except Exception:
+        return None
+    return asset, exp, typ, int(k) / 1000.0
+
+
+def _load_spot_daily(asset: str):
+    if asset in _SPOT_CACHE: return _SPOT_CACHE[asset]
+    try:
+        df = pd.read_csv(f"/Users/yhdong/Gold/data/raw/market/{asset.lower()}.csv",
+                          index_col=0, parse_dates=True)
+        df.index = pd.to_datetime(df.index).tz_localize(None).normalize()
+        _SPOT_CACHE[asset] = df
+    except Exception:
+        _SPOT_CACHE[asset] = None
+    return _SPOT_CACHE[asset]
+
+
+def spot_close_on_or_before(asset: str, dt: pd.Timestamp):
+    df = _load_spot_daily(asset)
+    if df is None or df.empty: return None
+    sub = df[df.index <= pd.Timestamp(dt).normalize()]
+    if sub.empty: return None
+    return float(sub.iloc[-1]["Close"])
+
+
+def force_close_at_expiry(legs, entry_value: float,
+                            today_dt, signal_date,
+                            strategy_kind: str,
+                            max_risk: float = None):
+    """If ``today_dt > parsed_expiry`` → close at intrinsic value.
+
+    Args:
+        legs: ``[(label, code, K, qty), ...]``.
+        strategy_kind: ``"long_call"`` | ``"credit_spread"`` | ``"long_vol"``.
+
+    Returns:
+        closed-position dict, or ``None`` if not past expiry / unparseable.
+    """
+    if not legs: return None
+    parsed = parse_option_code(legs[0][1])
+    if not parsed: return None
+    asset, expiry_dt, _, _ = parsed
+    today = pd.Timestamp(today_dt).normalize()
+    if today <= expiry_dt: return None
+    spot = spot_close_on_or_before(asset, expiry_dt)
+    if spot is None: return None
+    cur_total = 0.0; leg_prices = []
+    for lab, code, K, qty in legs:
+        p = parse_option_code(code)
+        if not p:
+            return None
+        typ = p[2]
+        intrinsic = max(spot - K, 0.0) if typ == "C" else max(K - spot, 0.0)
+        leg_prices.append((lab, intrinsic))
+        cur_total += qty * intrinsic
+    if strategy_kind == "credit_spread":
+        cur_value = -cur_total  # debit to close
+        if max_risk is None or max_risk <= 0:
+            max_risk = max(0.01, entry_value)
+        pnl_pct = (entry_value - cur_value) / max_risk * 100
+    else:
+        cur_value = cur_total
+        pnl_pct = ((cur_value / entry_value) - 1) * 100 \
+                    if abs(entry_value) > 0.01 else 0.0
+    sig_d = pd.Timestamp(signal_date).normalize()
+    return {
+        "is_closed": True,
+        "exit_date": expiry_dt,
+        "exit_value": cur_value,
+        "exit_reason": f"expiry intrinsic (db missing) spot={spot:.2f}",
+        "pnl_pct": pnl_pct,
+        "hold_days": max(0, (expiry_dt - sig_d).days),
+        "leg_prices": leg_prices,
+    }
