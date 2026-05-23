@@ -512,8 +512,12 @@ def main():
         from core.cross_asset_signal import (find_cross_entries,
                                                    should_add_gld_sync,
                                                    CROSS_ENABLED,
-                                                   CROSS_STRATEGY)
+                                                   CROSS_STRATEGY,
+                                                   select_gld_sync_strategy,
+                                                   write_shadow_record)
         from core.sig_df_history import load_history
+        # v3.7.240: live_cutover 默认 False; shadow_logging 一直开
+        CROSS_LIVE_CUTOVER = False
         if CROSS_ENABLED:
             sig_hist = load_history()
             slv_sig = sig_hist[sig_hist["asset"] == "SLV"].copy()
@@ -526,8 +530,6 @@ def main():
             gld_sig_hist["date"] = pd.to_datetime(gld_sig_hist["date"])
             gld_sig_for_check = gld_sig_hist.set_index("date").sort_index()
             cross_rows = []
-            _cross_strats = (CROSS_STRATEGY if isinstance(CROSS_STRATEGY, (list, tuple))
-                              else [CROSS_STRATEGY])
             _g_ohlc = pd.read_csv(
                 "/Users/yhdong/Gold/data/raw/market/gld.csv",
                 index_col=0, parse_dates=True)
@@ -541,6 +543,33 @@ def main():
                 eC = float(_g_ohlc.loc[d, "Close"])
                 eH = float(_g_ohlc.loc[d, "High"])
                 eL = float(_g_ohlc.loc[d, "Low"])
+                # v3.7.240: IV-aware selector — pure-fn decision + shadow log
+                _gld_row = (gld_sig_for_check.loc[d]
+                              if d in gld_sig_for_check.index else {})
+                _gvz_avail = gvz_close.loc[gvz_close.index <= d]
+                if len(_gvz_avail):
+                    _gvz_val = float(_gvz_avail.iloc[-1])
+                    _gvz_asof = _gvz_avail.index[-1]
+                else:
+                    _gvz_val = None
+                    _gvz_asof = None
+                _decision = select_gld_sync_strategy(d, _gld_row, _gvz_val,
+                                                          _gvz_asof)
+                try:
+                    write_shadow_record(_decision, d, slv_tier="S",
+                                            inputs={"bp_low": _gld_row.get("bp_low")
+                                                        if hasattr(_gld_row, "get") else None,
+                                                     "gvz_value": _gvz_val,
+                                                     "gvz_asof_date": _gvz_asof})
+                except Exception as _se:
+                    print(f"[cross-asset] shadow log write 失败: {_se}", flush=True)
+                # 决策应用: live_cutover 关时仍用 BUY CALL fallback;
+                # 开时使用 selector 输出的 strategy.
+                _chosen_strat = (_decision["strategy"] if CROSS_LIVE_CUTOVER
+                                  else CROSS_STRATEGY)
+                _cross_strats = ([_chosen_strat] if not
+                                   isinstance(_chosen_strat, (list, tuple))
+                                  else list(_chosen_strat))
                 for _cstrat in _cross_strats:
                     ent = price_strategy_at("GLD", _cstrat, d,
                                                   d + pd.Timedelta(hours=9, minutes=30),

@@ -40,7 +40,175 @@ CROSS_ENABLED = True             # 一键开关
 #   SELL PUT:  WR=89%, mean=+27%, sum=+239%   高 WR 稳健
 #   FUTURES 5x: WR=40%, sum=-203%             ❌ 灾难
 CROSS_TIERS = ("S", "A")         # 触发 tier 集合 (S+A 综合最优)
-CROSS_STRATEGY = "BUY CALL"      # "BUY CALL" / "SELL PUT" / 双开
+# v3.7.240: CROSS_STRATEGY 不再是固定常量 — 由 select_gld_sync_strategy
+# 按 GLD 当日 bp_low + GVZ 决策 BUY CALL vs SELL PUT.
+# 2026-03 5/5 GLD BC 全亏 (sum -334%) 主因正是固定 BUY CALL 不感知 IV,
+# 在高 IV 深破日 (GVZ ≥25, bp_low ≤0.10) 应改 SELL PUT.
+
+# Tunables for the IV-aware selector (DEC-5: trend targets, not hard limits).
+CROSS_GVZ_HIGH_THRESHOLD = 25.0   # 高 IV regime 下沿
+CROSS_BP_LOW_DEEP_BREAK = 0.10    # 深破阈值
+CROSS_GVZ_STALE_MAX_DAYS = 2      # GVZ stale 容忍 (trading days vs signal_date)
+
+# Shadow log location (caller writes; selector itself is pure)
+CROSS_SHADOW_LOG_PATH = "/Users/yhdong/Gold/data/cross_asset_shadow_log.jsonl"
+CROSS_LIVE_CUTOVER_MIN_DAYS = 14   # 14 个日历日 shadow 累积才允许 live flip
+
+
+def select_gld_sync_strategy(signal_date,
+                                 gld_signal_row,
+                                 gvz_value,
+                                 gvz_asof_date) -> dict:
+    """Pure IV-aware cross-asset strategy selector (v3.7.240).
+
+    Args:
+        signal_date: SLV-S 触发日 (pd.Timestamp). 用作 GVZ staleness 的参考时间锚,
+            NOT wall-clock today (回放语义一致).
+        gld_signal_row: GLD 当日 sig_df 单行 (Series/dict). 必须含 'bp_low'.
+        gvz_value: GLD GVZ at signal_date (float or None/NaN).
+        gvz_asof_date: GVZ 数据点对应的日期 (pd.Timestamp or None).
+
+    Returns:
+        ``{"strategy": "BUY CALL" | "SELL PUT", "reason": str, "gvz_status": str}``
+
+    Truth table (evaluated in order):
+        1. ``gvz_value`` 是 None / NaN, 或 ``signal_date − gvz_asof_date``
+           超过 ``CROSS_GVZ_STALE_MAX_DAYS`` 交易日 →
+           ``BUY CALL`` reason='GVZ_UNAVAILABLE' status='missing'|'stale'.
+        2. ``gld_signal_row.bp_low ≤ CROSS_BP_LOW_DEEP_BREAK`` AND
+           ``gvz_value ≥ CROSS_GVZ_HIGH_THRESHOLD`` →
+           ``SELL PUT`` reason='DEEP_BREAK_HIGH_IV' status='fresh'.
+        3. 其他 → ``BUY CALL`` reason='DEFAULT' status='fresh'.
+
+    This function MUST be pure (no I/O, no globals beyond constants). Shadow
+    logging is the caller's responsibility via ``write_shadow_record``.
+    """
+    import math
+    sig_d = pd.Timestamp(signal_date).normalize()
+    # ---- GVZ availability + staleness ----
+    if gvz_value is None or (isinstance(gvz_value, float) and math.isnan(gvz_value)):
+        return {"strategy": "BUY CALL", "reason": "GVZ_UNAVAILABLE",
+                  "gvz_status": "missing"}
+    if gvz_asof_date is None:
+        return {"strategy": "BUY CALL", "reason": "GVZ_UNAVAILABLE",
+                  "gvz_status": "missing"}
+    asof = pd.Timestamp(gvz_asof_date).normalize()
+    if asof > sig_d:
+        gap_td = 0  # GVZ ahead of signal_date is allowed (no leak risk here)
+    else:
+        # Trading-day gap (Mon-Fri); see core.data_freshness._trading_day_gap.
+        gap_td = max(0, len(pd.bdate_range(asof + pd.Timedelta(days=1), sig_d)))
+    if gap_td > CROSS_GVZ_STALE_MAX_DAYS:
+        return {"strategy": "BUY CALL", "reason": "GVZ_UNAVAILABLE",
+                  "gvz_status": "stale"}
+    # ---- bp_low extraction ----
+    try:
+        bp_low = float(gld_signal_row["bp_low"]
+                          if hasattr(gld_signal_row, "__getitem__")
+                          else gld_signal_row.bp_low)
+    except (KeyError, AttributeError, TypeError, ValueError):
+        # GLD signal row missing bp_low → fallback to default BC, do not raise
+        return {"strategy": "BUY CALL", "reason": "GLD_BP_LOW_MISSING",
+                  "gvz_status": "fresh"}
+    if isinstance(bp_low, float) and math.isnan(bp_low):
+        return {"strategy": "BUY CALL", "reason": "GLD_BP_LOW_MISSING",
+                  "gvz_status": "fresh"}
+    # ---- Truth table ----
+    if (bp_low <= CROSS_BP_LOW_DEEP_BREAK and
+        float(gvz_value) >= CROSS_GVZ_HIGH_THRESHOLD):
+        return {"strategy": "SELL PUT", "reason": "DEEP_BREAK_HIGH_IV",
+                  "gvz_status": "fresh"}
+    return {"strategy": "BUY CALL", "reason": "DEFAULT",
+              "gvz_status": "fresh"}
+
+
+def write_shadow_record(decision: dict,
+                            signal_date,
+                            slv_tier: str,
+                            inputs: dict,
+                            log_path: str = CROSS_SHADOW_LOG_PATH) -> None:
+    """Append a shadow-log record to JSONL. Caller-side I/O (v3.7.240).
+
+    Args:
+        decision: 返回自 ``select_gld_sync_strategy``.
+        signal_date: SLV-S 触发日.
+        slv_tier: 触发的 SLV tier (通常 'S' 或 'A').
+        inputs: 选择器 inputs 的字典 (bp_low, gvz_value, gvz_asof_date),
+            用于事后审计.
+        log_path: 输出 JSONL 路径.
+
+    Each line is a self-contained JSON record. Append-only, line-buffered
+    flush. Safe for concurrent appends because each line is whole.
+    """
+    import json
+    from pathlib import Path
+    rec = {
+        "signal_date": pd.Timestamp(signal_date).normalize().isoformat(),
+        "slv_tier": slv_tier,
+        "decision": decision,
+        "inputs": {
+            "bp_low": (None if inputs.get("bp_low") is None
+                        else float(inputs["bp_low"])),
+            "gvz_value": (None if inputs.get("gvz_value") is None
+                           else float(inputs["gvz_value"])),
+            "gvz_asof_date": (None if inputs.get("gvz_asof_date") is None
+                               else pd.Timestamp(inputs["gvz_asof_date"])
+                                       .normalize().isoformat()),
+        },
+        "written_at": pd.Timestamp.now(tz="UTC").isoformat(),
+    }
+    Path(log_path).parent.mkdir(parents=True, exist_ok=True)
+    with open(log_path, "a") as f:
+        f.write(json.dumps(rec, default=str) + "\n")
+        f.flush()
+
+
+def live_cutover_allowed(today,
+                            log_path: str = CROSS_SHADOW_LOG_PATH,
+                            min_days: int = CROSS_LIVE_CUTOVER_MIN_DAYS) -> tuple:
+    """Check whether shadow log has accumulated ≥ ``min_days`` calendar days.
+
+    Args:
+        today: 当前评估日 (pd.Timestamp).
+        log_path: JSONL log location.
+        min_days: 最小累积天数 (默认 14, AC-5).
+
+    Returns:
+        ``(allowed: bool, first_record_at: Optional[str], days_accumulated: int)``
+    """
+    import json
+    from pathlib import Path
+    today = pd.Timestamp(today).normalize()
+    p = Path(log_path)
+    if not p.exists():
+        return (False, None, 0)
+    first = None
+    try:
+        with open(log_path) as f:
+            for line in f:
+                line = line.strip()
+                if not line: continue
+                rec = json.loads(line)
+                d = pd.Timestamp(rec.get("written_at",
+                                              rec.get("signal_date")))
+                # 统一为 tz-naive 后比较, 避免 jsonl 含 tz-aware
+                # written_at 时与 caller-supplied tz-naive today 直接相减失败.
+                if d.tzinfo is not None:
+                    d = d.tz_convert("UTC").tz_localize(None)
+                d = d.normalize()
+                if first is None or d < first:
+                    first = d
+    except Exception:
+        return (False, None, 0)
+    if first is None:
+        return (False, None, 0)
+    days = (today - first).days
+    return (days >= min_days, first.isoformat(), days)
+
+
+# v3.7.240: legacy alias kept for one release; new code should import the
+# selector and call it through the caller-side write path.
+CROSS_STRATEGY = "BUY CALL"      # deprecated default; subject to selector override
 
 
 def find_cross_entries(slv_sig_df: pd.DataFrame,
