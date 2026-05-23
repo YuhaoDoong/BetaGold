@@ -35,6 +35,15 @@ def _rebuild_loop():
         try:
             with open(LOG_FILE, "a") as f:
                 f.write(f"\n=== {time.strftime('%Y-%m-%d %H:%M:%S')} 重建 ledger ===\n")
+                # v3.7.237: kline_db 新鲜度状态先记日志, 供运维诊断
+                try:
+                    from core.data_freshness import kline_db_state
+                    import pandas as pd
+                    _rec = kline_db_state(pd.Timestamp.today().normalize())
+                    f.write(f"=== kline_db freshness: {_rec.state} "
+                            f"(max={_rec.max_date}, gap={_rec.gap_trading_days}d) ===\n")
+                except Exception as _e:
+                    f.write(f"=== freshness probe failed: {_e} ===\n")
                 # v3.7.190: 先重建期货 sig_df (GC/SI scale), ledger 才能读到最新
                 proc_fut = subprocess.run(
                     [sys.executable, FUT_SIGNALS],

@@ -273,6 +273,11 @@ def build_for_asset(asset: str, days_back: int, today_dt: pd.Timestamp,
                                        dte_target=(14 if strat == "STRADDLE" else 30))
             legs = ent.get("legs", [])
             if not legs:
+                # v3.7.237: distinguish freshness-gated skips from no-contract skips
+                _src = ent.get("source", "")
+                if _src.startswith("PENDING_KLINE") or _src == "NO_KLINE_DB":
+                    print(f"[freshness] skip {asset} {strat} @ {_du.date()}: {_src}",
+                            flush=True)
                 continue
             sim = simulate_option_exit(ent, _du, strat, today_dt,
                                             live_spot=eC, live_high=eH, live_low=eL)
@@ -540,6 +545,10 @@ def main():
                                                   eO, eO, eC, eH, eL, dte_target=30)
                     legs = ent.get("legs", [])
                     if not legs:
+                        _src = ent.get("source", "")
+                        if _src.startswith("PENDING_KLINE") or _src == "NO_KLINE_DB":
+                            print(f"[freshness] skip cross-asset GLD {_cstrat} "
+                                    f"@ {d.date()}: {_src}", flush=True)
                         continue
                     sim = simulate_option_exit(ent, d, _cstrat, today_dt,
                                                       live_spot=eC, live_high=eH,
