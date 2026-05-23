@@ -176,7 +176,15 @@ def close_position(data_root: str, asset: str, exit_time: pd.Timestamp,
         else:
             entry_ul = df.loc[idx, "open_ul_price"]
             strategy = df.loc[idx, "strategy"]
-            sign = 1 if strategy in ("BUY CALL", "SPOT") else -1
+            # v3.7.234: SELL PUT delta 同向 (+30%, 见 _strategy_pnl_formula),
+            # bullish move 增益, 之前误归入 -1 是 sign 反.
+            # 非方向性 (STRADDLE/SHORT_VOL) sign=0, 用 spot 单边代理不合适.
+            if strategy in ("BUY CALL", "SELL PUT", "SPOT", "FUTURES_LONG"):
+                sign = 1
+            elif strategy in ("STRADDLE", "SHORT_VOL"):
+                sign = 0
+            else:
+                sign = -1
             if entry_ul > 0:
                 df.loc[idx, "realized_pnl_pct"] = float(
                     sign * (ul_price / entry_ul - 1) * 100)
@@ -460,8 +468,12 @@ def price_strategy_at(asset: str, strategy: str,
     其他 → SPOT
     返回 {legs, entry_price, daily_open_price, daily_close_price, kline_codes, source}
     """
+    # v3.7.235: underlying_entry_price = ETF spot at trigger; previously stored
+    # as "entry_spot" in ledger but field name was misleading (entry_spot used
+    # to be populated from daily_close_price which is the option close).
     out = {"legs": [], "entry_price": 0.0, "daily_open_price": 0.0,
-           "daily_close_price": 0.0, "kline_codes": [], "source": "—"}
+           "daily_close_price": 0.0, "kline_codes": [], "source": "—",
+           "underlying_entry_price": float(spot_at_trigger or 0.0)}
     if "BUY CALL" in strategy:
         # v3.7.97: 根据"买点深度+IV"决定单腿还是价差
         # 单腿 BUY CALL: 买点深 (spot 低) + IV 小 → 期权便宜, 杠杆好
