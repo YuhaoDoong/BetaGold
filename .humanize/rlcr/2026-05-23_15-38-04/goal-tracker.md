@@ -1,0 +1,84 @@
+# Goal Tracker
+
+## IMMUTABLE SECTION
+
+### Ultimate Goal
+Repair the GLD/SLV trading system's correctness floor and the DL Range predictor's calibration floor through a sequence of small, independently verifiable patches that each (a) target one root cause, (b) ship with a focused validation script or pytest case, (c) can be reverted without cascading state corruption, and (d) integrate cleanly with the existing "改 cfg → 跑 grid → 归档版本" workflow. Calibration goal is coverage repair (current GLD v2 OOS: 54.9% versus 80% training target, 5-day forward labels, width ratios 1.95×/1.66×) NOT unconditional band narrowing. Plan covers exactly the AC enumerated below; OI mainline / risk controls migration / yfinance bid-ask fallback / exposure caps are explicitly out of scope and tracked separately.
+
+### Acceptance Criteria
+- AC-1: Calibration audit reproducible and uses correct 5-day forward label definition (per `src/models/train_dl_range.py:build_targets`).
+- AC-2: Production `RegimeClassifier` has no forward lookback; every production call site passes `min_hold_days=1`.
+- AC-3: Exit simulation receives per-asset configuration via `get_option_exit_config(asset, strategy)` resolver; legacy `cfg=None` silent path is deprecated.
+- AC-4: Expiry-intrinsic force-close covers BC/SP/STRADDLE/SHORT_VOL with strategy-specific intrinsic; SHORT_VOL uses `max(call_wing, put_wing) - credit` for asymmetric wings.
+- AC-5: Cross-asset strategy selector is a pure function `select_gld_sync_strategy(signal_date, gld_signal_row, gvz_value, gvz_asof_date)` returning `{strategy, reason, gvz_status}`; shadow log is caller-side; `live_cutover` requires ≥14-day shadow accumulation.
+- AC-6: Data freshness gate blocks new option entries when `kline_db max_date < today - 3 trading days`; futures + MTM + expiry-intrinsic unaffected; PENDING_KLINE distinct from NO_CONTRACT; dedup by signal_date.
+- AC-7: Layer 2 backtest reports `n_signal/n_entered/n_closed/n_open/n_skipped_stale/n_skipped_no_contract`; per-leg DTE filter.
+- AC-8: Calibrated bands shadow-first; live cutover requires Layer 1 grid gate pass; conformal scaler uses horizon-aware maturity lag (`label_end_date < calibration_as_of_date`), not generic `shift(1)`.
+- AC-9: Calibration-gated retrain trigger with 5-day hysteresis + 7-day cooldown + zero-width guard.
+- AC-10: Test harness reproducible via `pytest tests/` from clean `gold` env; per-tag VALIDATION.md archive.
+- AC-11: No plan-progress markers ("AC-", "Milestone", "Phase A", "Step N") leak into source files.
+- AC-12: SELL PUT realized P&L sign correct in spot fallback path (sign = +1 for SP, reflecting positive delta).
+- AC-13: `entry_spot` schema migration: new `underlying_entry_price` field, one-release alias, migration note in `positions_ledger_meta.json`.
+- AC-14: Dashboard `run_backtest` deprecation preserves intraday exit semantics (StopLoss/Pullback/ACTIVE within ±1); signal-column drift audited via `signal_drift_attribution.csv`.
+- AC-15: Layer 1 `max_move_{h}d` window has no off-by-one (explicit `entry_i`/`exit_i` indexing).
+
+---
+
+## MUTABLE SECTION
+
+### Plan Version: 1 (Updated: Round 0)
+
+#### Plan Evolution Log
+| Round | Change | Reason | Impact on AC |
+|-------|--------|--------|--------------|
+| 0 | Initial plan | - | - |
+
+#### Active Tasks
+| Task | Target AC | Status | Tag | Owner | Notes |
+|------|-----------|--------|-----|-------|-------|
+| task-a1 | AC-2 | done (Round 0, pending verification) | coding | claude | v3.7.233: default → 1, 6 production sites explicit, 24 research sites use new default, doc archive |
+| task-a2 | AC-12, AC-11 | done (Round 0, pending verification) | coding | claude | v3.7.234: SP sign -1 → +1; STRADDLE/SHORT_VOL sign=0; grep audit clean |
+| task-a3 | AC-13, AC-11 | done (Round 0, pending verification) | coding | claude | v3.7.235: underlying_entry_price field added; entry_spot alias; meta migration note |
+| task-f1 | AC-10 | done (Round 0, pending verification) | coding | claude | v3.7.236-prep: pytest>=7.0 in requirements.txt; tests/conftest.py + fixtures/; first regime no-leak regression test PASSES |
+| task-b1 | AC-6 | pending | coding | claude | pick_liquid_monthly_option max_fallback_days=7 + PENDING_KLINE state |
+| task-b2 | AC-6 | pending | coding | claude | core/data_freshness.py + ledger_daemon gate wire-in |
+| task-c1 | AC-3 | pending | coding | claude | get_option_exit_config(asset, strategy) resolver + simulate_option_exit asset propagation |
+| task-c2 | AC-4 | pending | coding | claude | force_close_at_expiry → STRADDLE (long_vol) + SHORT_VOL (IC, max wing) |
+| task-d1 | AC-15 | pending | coding | claude | max_move_{h}d explicit indexed-window helper + pytest fixture |
+| task-d2 | AC-7 | pending | coding | claude | Layer 2 sample disposition reporting + per-leg DTE filter |
+| task-e1 | AC-5 | pending | coding | claude | select_gld_sync_strategy pure function + caller-side write_shadow_record |
+| task-e2 | AC-5 | pending | analyze | codex | replay March SLV-S triggers under new selector; document P&L delta |
+| task-e3 | AC-14 | pending | coding | claude | Dashboard run_backtest wrapper + parity assertion + DeprecationWarning |
+| task-f2 | AC-4 | pending | coding | claude | tests/test_expiry_intrinsic.py — 16 scenarios incl asymmetric IC fixture |
+| task-f3 | AC-3 | pending | coding | claude | tests/test_per_asset_cfg.py |
+| task-f4 | AC-8, AC-9 | pending | coding | claude | tests/test_calibration.py — maturity lag invariant + retrain hysteresis |
+| task-g1 | AC-1 | pending | coding | claude | scripts/eval/model_calibration_audit.py + per-month per-regime report |
+| task-g2 | AC-1 | pending | analyze | codex | re-run audit, document corrected 1.95×/1.66× / 54.9% figures into gate_report |
+| task-g3 | AC-8 | pending | coding | claude | core/calibration.py:apply_rolling_conformal_scaler + horizon-aware maturity lag |
+| task-g4 | AC-9 | pending | coding | claude | calibration-gated retrain trigger + retrain_queue.jsonl + zero-width guard |
+| task-g5 | AC-8 | pending | coding | claude | per-regime conformal alpha (Bull/Bear/Sideways) + n≥20 fallback |
+| task-g6 | AC-8 | pending | analyze | codex | Layer 1 grid gate with --use-calibrated flag; gate_report.md decides live_cutover |
+| task-h1 | AC-10 | pending | coding | claude | make validate-patch TAG=<tag> + timestamp/seed normalization |
+| task-h2 | AC-11 | pending | analyze | codex | grep audit for plan-progress markers in modified source files |
+
+### Blocking Side Issues
+| Issue | Discovered Round | Blocking AC | Resolution Path |
+|-------|-----------------|-------------|-----------------|
+
+### Queued Side Issues
+| Issue | Discovered Round | Why Not Blocking | Revisit Trigger |
+|-------|-----------------|------------------|-----------------|
+| Moomoo daily 100 kline quota requires multi-day backfill to reach near-real-time kline_db | 0 | Not blocking correctness floor; AC-6 freshness gate handles staleness gracefully | When AC-6 freshness banner shows persistent FROZEN state >14 days |
+| Stale duplicate `kline_db` parquet in `GoldDash/data/options_history/` (74 codes, max 2026-03-10) | 0 | Not referenced by any production code path (verified by grep); delete deferred to housekeeping | When freshness gate UX is implemented |
+
+### Completed and Verified
+| AC | Task | Completed Round | Verified Round | Evidence |
+|----|------|-----------------|----------------|----------|
+
+### Explicitly Deferred
+| Task | Original AC | Deferred Since | Justification | When to Reconsider |
+|------|-------------|----------------|---------------|-------------------|
+| OI mainline correction promotion | (out-of-scope) | Plan inception | DEC-7 user-confirmed defer; optimization-tier not blocking correctness | v3.8 follow-on plan |
+| Full risk controls migration (exposure caps, max_open_per_asset, ≥2 consecutive-loss circuit) | (out-of-scope) | Plan inception | DEC-7 user-confirmed defer | v3.8 follow-on plan |
+| yfinance bid/ask mid fallback | (out-of-scope) | Plan inception | DEC-7 user-confirmed defer | v3.8 follow-on plan |
+| Full FRESH/STALE/FROZEN tiered freshness UX (binary gate suffices for Lower Bound) | (AC-6 reduced scope) | Round 0 | Lower Bound allows binary gate; tiered UX is upper bound optional | When sidebar UX is being touched |
