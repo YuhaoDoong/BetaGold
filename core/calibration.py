@@ -45,6 +45,7 @@ DEFAULT_HORIZON = 5            # 5-day forward labels per train_dl_range.build_t
 DEFAULT_WINDOW = 60            # rolling residual pool length
 DEFAULT_TARGET_COVERAGE = 0.80  # training target per AC-8 + DEC-5
 MIN_POOL_SIZE = 20             # below this → no calibration applied
+MIN_REGIME_POOL_SIZE = 20      # v3.7.246: per-regime same-regime sample floor
 
 
 @dataclass(frozen=True)
@@ -77,6 +78,8 @@ def apply_rolling_conformal_scaler(
     window: int = DEFAULT_WINDOW,
     target_coverage: float = DEFAULT_TARGET_COVERAGE,
     min_pool: int = MIN_POOL_SIZE,
+    regime: Optional[pd.Series] = None,
+    min_regime_pool: int = MIN_REGIME_POOL_SIZE,
 ) -> tuple:
     """Per-date split-conformal calibrated bounds (horizon-aware, per-side).
 
@@ -131,6 +134,17 @@ def apply_rolling_conformal_scaler(
     res_lower = (pred_lower - actual_lower).values
     n = len(dates)
 
+    # v3.7.246: per-regime alpha — when caller supplies regime per date, the
+    # pool for date t is restricted to past dates whose regime equals
+    # regime[t]. NaN regimes are coalesced to 'UNKNOWN' so they still get a
+    # consistent pool (instead of mixing with arbitrary labeled regimes).
+    if regime is not None:
+        regime = pd.Series(regime, index=dates).astype(object)
+        regime = regime.where(regime.notna(), "UNKNOWN")
+        regime_arr = regime.values
+    else:
+        regime_arr = None
+
     # Map each date index → its label_end_date index (business-day shifted)
     # We use the index position because `dates` IS the bdate index.
     out_upper = pred_upper.copy()
@@ -150,6 +164,18 @@ def apply_rolling_conformal_scaler(
         rl = res_lower[pool_slice]
         # Drop NaN residuals (label not materialized yet for s in pool)
         mask = np.isfinite(ru) & np.isfinite(rl)
+        # v3.7.246: per-regime restriction layered on top of NaN mask
+        regime_fallback = None
+        if regime_arr is not None:
+            current_regime = regime_arr[t]
+            pool_regimes = regime_arr[pool_slice]
+            regime_mask = (pool_regimes == current_regime)
+            same_regime_count = int((mask & regime_mask).sum())
+            if same_regime_count >= min_regime_pool:
+                mask = mask & regime_mask
+            else:
+                # Insufficient same-regime samples → fall back to global pool
+                regime_fallback = f"regime_undersampled[{current_regime}:{same_regime_count}]"
         ru = ru[mask]; rl = rl[mask]
         n_eligible = int(mask.sum())
         if n_eligible < min_pool:
@@ -169,7 +195,7 @@ def apply_rolling_conformal_scaler(
             delta_lower=delta_l,
             realized_coverage_upper=cov_u,
             realized_coverage_lower=cov_l,
-            fallback_reason=None,
+            fallback_reason=regime_fallback,  # None unless per-regime fallback
         ))
 
     meta_df = pd.DataFrame(
