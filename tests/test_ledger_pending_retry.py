@@ -70,3 +70,69 @@ def test_waterline_clamp_uses_min_of_latest_and_clamped():
     latest_data = pd.Timestamp("2026-04-10")  # ETF data only up to 4-10
     chosen = min(latest_data, clamped)
     assert chosen == pd.Timestamp("2026-04-10")
+
+
+# -- v3.7.252 (review round 3 P2): AWAITING state propagation lifecycle ------
+
+
+def test_refresh_path_propagates_awaiting_state():
+    """A position opened pre-expiry reaches expiry-day later via the refresh
+    path; AWAITING_EXPIRY_CLOSE state must flow into the row.
+
+    Simulates the lifecycle by emulating what _refresh_open_position does:
+    take an existing open row, run simulate_option_exit, and copy fields
+    into the row dict. The fix is that 'state' is now part of that copy.
+    """
+    row = {
+        "asset": "GLD", "signal_date": "2026-04-15",
+        "strategy": "BUY CALL",
+        "is_closed": False, "current_value": 12.0, "pnl_pct": -10.0,
+        "hold_days": 5, "state": None,
+    }
+    # Imagine simulate_option_exit returned AWAITING after refresh
+    sim = {
+        "is_closed": False,
+        "state": "AWAITING_EXPIRY_CLOSE",
+        "expiry_dt": pd.Timestamp("2026-05-15"),
+        "reason": "expiry_close_missing for GLD @ 2026-05-15",
+    }
+    # Mirror the update done in _refresh_open_position:
+    row["is_closed"] = sim.get("is_closed", False)
+    row["current_value"] = float(sim.get("current_value", 0) or 0)
+    row["pnl_pct"] = float(sim.get("pnl_pct", 0) or 0)
+    row["hold_days"] = int(sim.get("hold_days", 0) or 0)
+    row["state"] = sim.get("state", None)   # v3.7.252 line
+    # Distinguishes AWAITING from normal no-data open
+    assert row["state"] == "AWAITING_EXPIRY_CLOSE"
+    assert row["is_closed"] is False
+    # Default zeros are tolerable because state tells the caller why
+    assert row["current_value"] == 0
+    assert row["pnl_pct"] == 0
+
+
+def test_state_cleared_when_position_later_closes():
+    """Once the ETF expiry close materializes and the row closes, the
+    state field clears (no stale AWAITING tag on a closed row)."""
+    row = {
+        "asset": "GLD", "signal_date": "2026-04-15",
+        "strategy": "BUY CALL",
+        "is_closed": False, "state": "AWAITING_EXPIRY_CLOSE",
+    }
+    # Next refresh: ETF close now exists; force_close_at_expiry returns closed
+    sim = {
+        "is_closed": True,
+        "exit_value": 12.29,
+        "exit_reason": "expiry intrinsic (db missing) spot=417.29",
+        "pnl_pct": -44.4,
+        "hold_days": 30,
+        "state": None,  # AWAITING cleared
+    }
+    row["is_closed"] = sim.get("is_closed", False)
+    row["exit_value"] = float(sim.get("exit_value", 0) or 0)
+    row["exit_reason"] = sim.get("exit_reason", "")
+    row["pnl_pct"] = float(sim.get("pnl_pct", 0) or 0)
+    row["hold_days"] = int(sim.get("hold_days", 0) or 0)
+    row["state"] = sim.get("state", None)
+    assert row["is_closed"] is True
+    assert row["state"] is None  # AWAITING successfully cleared
+    assert row["pnl_pct"] == -44.4

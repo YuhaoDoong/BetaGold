@@ -439,6 +439,11 @@ def _refresh_open_position(row: dict, today_dt: pd.Timestamp,
     row["current_value"] = float(sim.get("current_value", 0) or 0)
     row["pnl_pct"] = float(sim.get("pnl_pct", 0) or 0)
     row["hold_days"] = int(sim.get("hold_days", 0) or 0)
+    # v3.7.252 (review round 3 P2): propagate AWAITING_EXPIRY_CLOSE state on
+    # refresh too. The common lifecycle is open-before-expiry then refresh
+    # reaches expiry day with ETF close missing — must NOT silently set
+    # current_value=0/pnl_pct=0 like a generic no-data open.
+    row["state"] = sim.get("state", None)
     return row
 
 
@@ -634,6 +639,8 @@ def main():
                         "current_value": float(sim.get("current_value", 0) or 0),
                         "pnl_pct": float(sim.get("pnl_pct", 0) or 0),
                         "hold_days": int(sim.get("hold_days", 0) or 0),
+                        # v3.7.252: propagate AWAITING_EXPIRY_CLOSE state in cross-asset path
+                        "state": sim.get("state", None),
                         "created_at": datetime.now(ZoneInfo("Asia/Singapore")).isoformat(),
                         "config_version": config_version,
                         "cross_asset_origin": "SLV-S",
