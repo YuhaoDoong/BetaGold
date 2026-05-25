@@ -57,7 +57,7 @@ Repair the GLD/SLV trading system's correctness floor and the DL Range predictor
 | task-g3 | AC-8 | done (Round 6, pending verification) | coding | claude | v3.7.244: core/calibration.py:apply_rolling_conformal_scaler + horizon-aware maturity-lag + per-side split-conformal + 12 pytest; smoke on GLD 113d cov_both +4.4pp |
 | task-g4 | AC-9 | done (Round 7, pending verification) | coding | claude | v3.7.245: evaluate_retrain_trigger 纯函数 + hysteresis(5)+cooldown(7)+zero_width_floor + 11 pytest |
 | task-g5 | AC-8 closure | done (Round 7, pending verification) | coding | claude | v3.7.246: apply_rolling_conformal_scaler 加 regime + min_regime_pool=20 fallback + 6 pytest |
-| task-g6 | AC-8 | pending | analyze | codex | Layer 1 grid gate with --use-calibrated flag; gate_report.md decides live_cutover |
+| task-g6 | AC-8 closure | done (Round 8, pending verification) | analyze | claude | v3.7.247: calibration_gate_grid.py 5 windows × 2 assets + 9 pytest. 实测 gate_passed=False for both (joint coverage_both 在长窗回退); 验证 gate 设计目的, scaler ship shadow-only |
 | task-h1 | AC-10 | pending | coding | claude | make validate-patch TAG=<tag> + timestamp/seed normalization |
 | task-h2 | AC-11 | pending | analyze | codex | grep audit for plan-progress markers in modified source files |
 
