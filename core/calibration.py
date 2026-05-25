@@ -246,6 +246,7 @@ def evaluate_retrain_trigger(
     ratio_threshold_queue: float = DEFAULT_RETRAIN_RATIO_QUEUE,
     ratio_threshold_immediate: float = DEFAULT_RETRAIN_RATIO_IMMEDIATE,
     zero_width_floor: float = DEFAULT_RETRAIN_ZERO_WIDTH_FLOOR,
+    pred_widths: Optional[pd.Series] = None,
 ) -> dict:
     """Decide whether to queue / immediately run / suppress a model retrain.
 
@@ -302,29 +303,27 @@ def evaluate_retrain_trigger(
     if meta_df is None or not len(meta_df):
         return _retrain_no_action(today, cooldown_until)
     aw = pd.Series(actual_widths).reindex(meta_df.index)
-    pw_upper = meta_df["delta_upper"] + (aw / 2.0)  # not used directly; placeholder
-    # pred_width per date is (pred_upper - pred_lower) but we do not carry
-    # those raw values in meta. Reconstruct via delta + actual:
-    #   pred_upper = actual_upper - delta_upper (only on the calibration day t,
-    #   inverted from delta = quantile(actual - pred)).
-    # Simpler and correct: take pred_width directly from caller via aw plus
-    # the recorded deltas: pred_width = (pred_upper - pred_lower) = aw +
-    # delta_upper + delta_lower (this is the per-side total compensation that
-    # the scaler ALREADY applies). We track raw vs calibrated overshoot via
-    # ``aw`` and the per-side residual proxies in meta. For the trigger, we
-    # use the unsigned per-side residual magnitudes which are what
-    # ``meta_df.delta_*`` quantify — a positive ``|delta_upper| + |delta_lower|``
-    # represents the historical overshoot that motivated the retrain.
-    res_total = meta_df[["delta_upper", "delta_lower"]].abs().sum(axis=1)
-    valid = aw.notna() & res_total.notna() & (aw.abs() >= zero_width_floor)
     excluded = int((aw.notna() & (aw.abs() < zero_width_floor)).sum())
-    if valid.sum() == 0:
-        return _retrain_no_action(today, cooldown_until,
-                                       zero_width_excluded_count=excluded)
-    # Ratio = (|res| + actual_width) / actual_width ≈ implied predicted_width /
-    # actual_width. (Equivalent to mean(pred_width/actual_width) when residuals
-    # dominate the absolute width.)
-    ratios = (res_total.abs() + aw.abs()) / aw.abs()
+    # v3.7.250 (review fix P1#4): the plan contract defines the ratio as
+    # mean(pred_width / actual_width), so caller MUST supply pred_widths.
+    # Fall back to the legacy residual-magnitude proxy only when pred_widths
+    # is omitted (older callers); the proxy is documented as approximate.
+    if pred_widths is not None:
+        pw = pd.Series(pred_widths).reindex(meta_df.index)
+        valid = (aw.notna() & pw.notna()
+                  & (aw.abs() >= zero_width_floor) & (pw.abs() > 0))
+        if valid.sum() == 0:
+            return _retrain_no_action(today, cooldown_until,
+                                           zero_width_excluded_count=excluded)
+        ratios = (pw.abs() / aw.abs())
+    else:
+        # Legacy proxy: residual_magnitude + actual_width, divided by actual_width.
+        res_total = meta_df[["delta_upper", "delta_lower"]].abs().sum(axis=1)
+        valid = aw.notna() & res_total.notna() & (aw.abs() >= zero_width_floor)
+        if valid.sum() == 0:
+            return _retrain_no_action(today, cooldown_until,
+                                           zero_width_excluded_count=excluded)
+        ratios = (res_total.abs() + aw.abs()) / aw.abs()
     ratios_valid = ratios[valid].iloc[-window:]
     smoothed = float(ratios_valid.mean()) if len(ratios_valid) else float("nan")
 

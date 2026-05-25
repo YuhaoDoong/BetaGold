@@ -239,6 +239,13 @@ def _load_spot_daily(asset: str):
 
 
 def spot_close_on_or_before(asset: str, dt: pd.Timestamp):
+    """Return ETF daily Close at or before ``dt``. May fall back to earlier dates.
+
+    .. warning::
+       Do NOT use for expiry-day settlement. Stale-spot fallback creates a
+       silent P&L mis-mark. Use ``spot_close_on_exact_date`` for force-close
+       at expiry.
+    """
     df = _load_spot_daily(asset)
     if df is None or df.empty: return None
     sub = df[df.index <= pd.Timestamp(dt).normalize()]
@@ -246,11 +253,32 @@ def spot_close_on_or_before(asset: str, dt: pd.Timestamp):
     return float(sub.iloc[-1]["Close"])
 
 
+def spot_close_on_exact_date(asset: str, dt: pd.Timestamp):
+    """Return ETF daily Close at exactly ``dt``, or ``None`` if missing.
+
+    v3.7.250 (review fix P1#2): expiry intrinsic must settle against the
+    actual expiry-date close. Earlier-date fallback would mis-mark P&L.
+    """
+    df = _load_spot_daily(asset)
+    if df is None or df.empty: return None
+    d = pd.Timestamp(dt).normalize()
+    if d not in df.index: return None
+    return float(df.loc[d, "Close"])
+
+
 def force_close_at_expiry(legs, entry_value: float,
                             today_dt, signal_date,
                             strategy_kind: str,
                             max_risk: float = None):
-    """If ``today_dt > parsed_expiry`` → close at intrinsic value.
+    """Close at expiry-day intrinsic when settlement data is available.
+
+    v3.7.250 (review fix P1#1 + P1#2): per the plan contract for AC-4:
+      * ``today < expiry_dt`` → return ``None`` (let normal exit logic run).
+      * ``today >= expiry_dt`` AND exact ``expiry_dt`` close in ETF CSV →
+        close at intrinsic against that exact close.
+      * ``today >= expiry_dt`` AND exact close NOT yet in CSV → return
+        ``{"is_closed": False, "state": "AWAITING_EXPIRY_CLOSE", ...}``
+        so the caller can defer; do NOT mis-mark with a stale earlier close.
 
     Args:
         legs: ``[(label, code, K, qty), ...]``.
@@ -261,18 +289,23 @@ def force_close_at_expiry(legs, entry_value: float,
             * ``"iron_condor"`` — SHORT_VOL 4-leg IC; computes asymmetric
               ``max_risk = max(call_wing_width, put_wing_width) - entry_value``
               from the legs themselves, ignoring any ``max_risk`` kwarg.
-
-    Returns:
-        closed-position dict, or ``None`` if not past expiry / unparseable.
     """
     if not legs: return None
     parsed = parse_option_code(legs[0][1])
     if not parsed: return None
     asset, expiry_dt, _, _ = parsed
     today = pd.Timestamp(today_dt).normalize()
-    if today <= expiry_dt: return None
-    spot = spot_close_on_or_before(asset, expiry_dt)
-    if spot is None: return None
+    if today < expiry_dt: return None
+    # On-or-past expiry: require EXACT expiry-day close, not stale fallback.
+    spot = spot_close_on_exact_date(asset, expiry_dt)
+    if spot is None:
+        # AWAITING: ETF daily CSV does not yet carry expiry_dt close. Defer.
+        return {
+            "is_closed": False,
+            "state": "AWAITING_EXPIRY_CLOSE",
+            "expiry_dt": expiry_dt,
+            "reason": f"expiry_close_missing for {asset} @ {expiry_dt.date()}",
+        }
     cur_total = 0.0; leg_prices = []
     for lab, code, K, qty in legs:
         p = parse_option_code(code)

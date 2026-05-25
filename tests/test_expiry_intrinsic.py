@@ -82,15 +82,18 @@ def test_bc_today_before_expiry(bc_legs):
 
 
 def test_bc_today_equals_expiry_close_known(bc_legs):
-    """today == expiry, ETF spot CSV carries 5-15 close ($417.29) → force-close."""
+    """today == expiry, ETF spot CSV carries 5-15 close ($417.29) → force-close.
+
+    v3.7.250 (review fix): when the exact expiry-day close is available in
+    the ETF daily CSV, settle at intrinsic on the expiry date itself.
+    """
     res = force_close_at_expiry(bc_legs, entry_value=22.0,
                                    today_dt=pd.Timestamp("2026-05-15"),
                                    signal_date=SIGNAL_DATE,
                                    strategy_kind="long_call")
-    # NB: helper closes whenever today > expiry; equal day returns None per
-    # current implementation. This is the AWAITING_EXPIRY_CLOSE semantic
-    # (intraday close not yet known).
-    assert res is None
+    assert res is not None
+    assert res.get("is_closed") is True
+    assert abs(res["exit_value"] - 12.29) < 0.05  # intrinsic at $417.29 - $405
 
 
 def test_bc_today_past_expiry_kline_missing(bc_legs):
@@ -128,12 +131,14 @@ def test_sp_today_before_expiry(sp_legs):
 
 
 def test_sp_today_equals_expiry(sp_legs):
+    """v3.7.250: with exact 5-15 close available, settle on expiry day."""
     res = force_close_at_expiry(sp_legs, entry_value=7.0,
                                    today_dt=pd.Timestamp("2026-05-15"),
                                    signal_date=SIGNAL_DATE,
                                    strategy_kind="credit_spread",
                                    max_risk=13.0)
-    assert res is None  # awaiting-expiry-close
+    assert res is not None and res["is_closed"]
+    assert abs(res["exit_value"] - 20.0) < 0.05  # full spread width
 
 
 def test_sp_today_past_expiry_kline_missing(sp_legs):
@@ -173,11 +178,13 @@ def test_straddle_today_before_expiry(straddle_legs):
 
 
 def test_straddle_today_equals_expiry(straddle_legs):
+    """v3.7.250: exact 5-15 close available → settle on expiry day."""
     res = force_close_at_expiry(straddle_legs, entry_value=10.0,
                                    today_dt=pd.Timestamp("2026-05-15"),
                                    signal_date=SIGNAL_DATE,
                                    strategy_kind="long_vol")
-    assert res is None  # awaiting-expiry-close
+    assert res is not None and res["is_closed"]
+    assert abs(res["exit_value"] - 0.29) < 0.05
 
 
 def test_straddle_today_past_expiry_kline_missing(straddle_legs):
@@ -217,11 +224,12 @@ def test_short_vol_today_before_expiry(symmetric_ic_legs):
 
 
 def test_short_vol_today_equals_expiry(symmetric_ic_legs):
+    """v3.7.250: exact 5-15 close available → settle on expiry day."""
     res = force_close_at_expiry(symmetric_ic_legs, entry_value=1.50,
                                    today_dt=pd.Timestamp("2026-05-15"),
                                    signal_date=SIGNAL_DATE,
                                    strategy_kind="iron_condor")
-    assert res is None
+    assert res is not None and res["is_closed"]
 
 
 def test_short_vol_symmetric_pin_between_shorts(symmetric_ic_legs):
@@ -249,6 +257,24 @@ def test_short_vol_asymmetric_max_risk_uses_wider_wing(asymmetric_ic_legs):
     # cur_value ≈ 0 (between shorts), max_risk_eff = max(5, 10) - 1.50 = 8.50
     # pnl = (1.50 - 0)/8.50 * 100 ≈ +17.65%, NOT +42.86%
     assert abs(res["pnl_pct"] - 17.65) < 0.5
+
+
+def test_awaiting_expiry_close_when_etf_csv_missing_date():
+    """v3.7.250 (review fix P1#2 + P3#1): when ETF CSV does NOT have the exact
+    expiry date close, helper returns ``state='AWAITING_EXPIRY_CLOSE'`` rather
+    than mis-marking against a stale earlier-day close."""
+    # Construct legs with a far-future expiry that the real ETF CSV cannot
+    # possibly carry (year 2099). Today >= expiry triggers force-close path;
+    # exact close missing → AWAITING.
+    legs = [("long_call", "US.GLD990515C400000", 400.0, 1)]
+    res = force_close_at_expiry(
+        legs, entry_value=10.0,
+        today_dt=pd.Timestamp("2099-06-01"),
+        signal_date=pd.Timestamp("2099-04-01"),
+        strategy_kind="long_call")
+    assert res is not None
+    assert res.get("is_closed") is False
+    assert res.get("state") == "AWAITING_EXPIRY_CLOSE"
 
 
 def test_short_vol_codes_unparseable_skip():

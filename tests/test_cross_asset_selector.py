@@ -103,6 +103,18 @@ def test_selector_gvz_stale_uses_signal_date_anchor():
     assert dec["gvz_status"] == "stale"
 
 
+def test_selector_rejects_future_gvz_asof_date():
+    """v3.7.250 (review fix P2#2): gvz_asof_date later than signal_date is a
+    future-information leak and must be rejected by the pure selector,
+    regardless of how the production caller is written."""
+    sig_d = pd.Timestamp("2026-03-15")
+    asof = pd.Timestamp("2026-03-20")  # 5 days AFTER signal_date
+    dec = select_gld_sync_strategy(sig_d, {"bp_low": 0.05}, 28.0, asof)
+    assert dec["strategy"] == "BUY CALL"
+    assert dec["reason"] == "GVZ_UNAVAILABLE"
+    assert dec["gvz_status"] == "future_asof_invalid"
+
+
 def test_selector_gvz_within_tolerance_is_fresh():
     """gap ≤ CROSS_GVZ_STALE_MAX_DAYS trading days → FRESH."""
     sig_d = pd.Timestamp("2026-03-16")

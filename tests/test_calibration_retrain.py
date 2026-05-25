@@ -201,6 +201,38 @@ def test_trigger_is_deterministic():
 # -- Empty meta ---------------------------------------------------------------
 
 
+def test_pred_widths_canonical_ratio_path():
+    """v3.7.250 (review fix P1#4): caller can supply pred_widths so the
+    ratio computation matches the plan contract exactly (pred_width /
+    actual_width). Without pred_widths the legacy residual-proxy is used."""
+    dates = pd.bdate_range("2026-04-01", periods=20)
+    deltas_u = [0.5] * 20
+    deltas_l = [0.5] * 20
+    aw = _build_aw([1.0] * 20, dates)
+    pred_widths = pd.Series([5.0] * 20, index=dates)  # ratio = 5.0 exactly
+    meta = _build_meta(deltas_u, deltas_l, dates)
+    res = evaluate_retrain_trigger(meta, aw, today=dates[-1],
+                                          pred_widths=pred_widths)
+    # ratio = 5.0 > 4.0 → immediate, AND smoothed equals exactly 5.0
+    assert res["outcome"] == "immediate"
+    assert abs(res["ratio_value"] - 5.0) < 1e-9
+
+
+def test_pred_widths_under_predict_does_not_trigger():
+    """When pred_width < actual_width (model under-widens), the canonical ratio
+    is < 1.0 — no retrain should fire even though residuals could be large."""
+    dates = pd.bdate_range("2026-04-01", periods=20)
+    deltas_u = [5.0] * 20  # large residual magnitude (legacy proxy would fire)
+    deltas_l = [5.0] * 20
+    aw = _build_aw([2.0] * 20, dates)
+    pred_widths = pd.Series([1.0] * 20, index=dates)  # ratio = 0.5
+    meta = _build_meta(deltas_u, deltas_l, dates)
+    res = evaluate_retrain_trigger(meta, aw, today=dates[-1],
+                                          pred_widths=pred_widths)
+    assert res["outcome"] == "no_action"
+    assert res["ratio_value"] < 1.0
+
+
 def test_empty_meta_no_action():
     dates = pd.DatetimeIndex([])
     meta = _build_meta([], [], dates)

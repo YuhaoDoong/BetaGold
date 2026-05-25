@@ -94,10 +94,14 @@ def select_gld_sync_strategy(signal_date,
                   "gvz_status": "missing"}
     asof = pd.Timestamp(gvz_asof_date).normalize()
     if asof > sig_d:
-        gap_td = 0  # GVZ ahead of signal_date is allowed (no leak risk here)
-    else:
-        # Trading-day gap (Mon-Fri); see core.data_freshness._trading_day_gap.
-        gap_td = max(0, len(pd.bdate_range(asof + pd.Timedelta(days=1), sig_d)))
+        # v3.7.250 (review fix P2#2): asof > signal_date is a future leak
+        # under the pure-function contract — must be rejected as invalid.
+        # Production caller currently guards this with `gvz_close.loc[:d]`,
+        # but the selector must defend itself too.
+        return {"strategy": "BUY CALL", "reason": "GVZ_UNAVAILABLE",
+                  "gvz_status": "future_asof_invalid"}
+    # Trading-day gap (Mon-Fri); see core.data_freshness._trading_day_gap.
+    gap_td = max(0, len(pd.bdate_range(asof + pd.Timedelta(days=1), sig_d)))
     if gap_td > CROSS_GVZ_STALE_MAX_DAYS:
         return {"strategy": "BUY CALL", "reason": "GVZ_UNAVAILABLE",
                   "gvz_status": "stale"}

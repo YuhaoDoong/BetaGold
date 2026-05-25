@@ -46,6 +46,13 @@ LEDGER_JSON = "/Users/yhdong/Gold/data/positions_ledger.json"
 # v3.7.219: 评估水位线 — 每个 asset 最后一次"已评估到"的日期 (>=该日的决策才允许新写入)
 LEDGER_META = "/Users/yhdong/Gold/data/positions_ledger_meta.json"
 
+# v3.7.250 (review fix P1#3): track signal dates skipped due to PENDING_KLINE
+# state so the run-end waterline clamps to one trading day before the
+# earliest pending date per asset. Without this, the waterline advances past
+# the pending entry and the signal is permanently skipped.
+# Populated inside build_for_asset; consumed at the LEDGER_META write site.
+PENDING_KLINE_DATES: dict = {}
+
 
 def build_for_asset(asset: str, days_back: int, today_dt: pd.Timestamp,
                        gvz: pd.Series, evaluated_through: pd.Timestamp = None,
@@ -276,6 +283,11 @@ def build_for_asset(asset: str, days_back: int, today_dt: pd.Timestamp,
                 # v3.7.237: distinguish freshness-gated skips from no-contract skips
                 _src = ent.get("source", "")
                 if _src.startswith("PENDING_KLINE") or _src == "NO_KLINE_DB":
+                    # v3.7.250 (review fix P1#3): record earliest pending date
+                    # so the caller can clamp the waterline and retry on next
+                    # refresh. Without this clamp the waterline advances past
+                    # the pending signal and the entry is permanently skipped.
+                    PENDING_KLINE_DATES.setdefault(asset, []).append(_du)
                     print(f"[freshness] skip {asset} {strat} @ {_du.date()}: {_src}",
                             flush=True)
                 continue
@@ -514,10 +526,22 @@ def main():
                                                    CROSS_ENABLED,
                                                    CROSS_STRATEGY,
                                                    select_gld_sync_strategy,
-                                                   write_shadow_record)
+                                                   write_shadow_record,
+                                                   live_cutover_allowed)
         from core.sig_df_history import load_history
-        # v3.7.240: live_cutover 默认 False; shadow_logging 一直开
-        CROSS_LIVE_CUTOVER = False
+        # v3.7.240: live_cutover 默认 False; shadow_logging 一直开.
+        # v3.7.250 (review fix P1#5): if anyone flips this True in the future,
+        # the run_end manifest preflight enforces the 14-day shadow accumulation
+        # gate before live cutover. Fail-loud rather than silently flipping.
+        CROSS_LIVE_CUTOVER = os.environ.get(
+            "GOLD_CROSS_LIVE_CUTOVER", "false").lower() == "true"
+        if CROSS_LIVE_CUTOVER:
+            _allowed, _first, _days = live_cutover_allowed(today_dt)
+            if not _allowed:
+                print(f"[cross-asset] LIVE_CUTOVER requested but shadow gate "
+                        f"NOT passed (first_record_at={_first}, days={_days} "
+                        f"< 14). Falling back to shadow-only.", flush=True)
+                CROSS_LIVE_CUTOVER = False
         if CROSS_ENABLED:
             sig_hist = load_history()
             slv_sig = sig_hist[sig_hist["asset"] == "SLV"].copy()
@@ -627,9 +651,24 @@ def main():
                     indent=2, default=str, ensure_ascii=False)
 
     # 写水位线 meta
+    # v3.7.250 (review fix P1#3): clamp waterline to one trading day before
+    # the EARLIEST PENDING_KLINE date per asset so the next refresh re-evaluates
+    # that signal date when kline catches up. Existing ledger rows are keyed
+    # by (asset, signal_date, strategy) so retry remains idempotent.
     new_evaluated_through = dict(evaluated_through)
     for asset, _d in latest_data_dates.items():
-        new_evaluated_through[asset] = _d
+        pending = PENDING_KLINE_DATES.get(asset, [])
+        if pending:
+            earliest_pending = min(pending)
+            clamped = (pd.bdate_range(end=earliest_pending - pd.Timedelta(days=1),
+                                            periods=1)[-1]
+                        if earliest_pending is not None else _d)
+            new_evaluated_through[asset] = min(_d, clamped)
+            print(f"[ledger] {asset}: waterline clamped to "
+                    f"{new_evaluated_through[asset].date()} "
+                    f"(earliest_pending_kline={earliest_pending.date()})")
+        else:
+            new_evaluated_through[asset] = _d
     with open(LEDGER_META, "w") as f:
         json.dump({
             "evaluated_through": {k: v.isoformat()
