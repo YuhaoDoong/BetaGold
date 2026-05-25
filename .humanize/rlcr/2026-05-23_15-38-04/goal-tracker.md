@@ -44,8 +44,8 @@ Repair the GLD/SLV trading system's correctness floor and the DL Range predictor
 | task-b2 | AC-6 | done (Round 1, pending verification) | coding | claude | v3.7.237: core/data_freshness.py FRESH/STALE/FROZEN + ledger daemon log + build_positions_ledger [freshness] skip print + 7 pytest cases PASS |
 | task-c1 | AC-3 | done (Round 2, pending verification) | coding | claude | v3.7.238: get_option_exit_config resolver + simulate_option_exit asset 穿透 + DeprecationWarning + 6 pytest PASS |
 | task-c2 | AC-4 | done (Round 2, pending verification) | coding | claude | v3.7.239: force_close_at_expiry 扩 long_vol/iron_condor + asymmetric IC max_risk + 17 pytest PASS (含 asymmetric wing fixture) |
-| task-d1 | AC-15 | pending | coding | claude | max_move_{h}d explicit indexed-window helper + pytest fixture |
-| task-d2 | AC-7 | pending | coding | claude | Layer 2 sample disposition reporting + per-leg DTE filter |
+| task-d1 | AC-15 | done (Round 4, pending verification) | coding | claude | v3.7.241: forward_window_extreme helper + 7 pytest (legacy off-by-one 强对比) |
+| task-d2 | AC-7 | done (Round 4, pending verification) | coding | claude | v3.7.242: run_layer2_backtest_with_disposition + per-leg DTE + 2 runners 重构 + 10 pytest (reconciliation invariant + 5 disposition 分支) |
 | task-e1 | AC-5 | done (Round 3, pending verification) | coding | claude | v3.7.240: select_gld_sync_strategy pure fn + write_shadow_record + live_cutover_allowed + 19 pytest PASS |
 | task-e2 | AC-5 | done (Round 3, pending verification) | analyze | claude | v3.7.240 replay archive: 5/5 March BC entries would switch to SP; native SP same-month +66.7% vs BC -334.3% = +401pp counterfactual |
 | task-e3 | AC-14 | pending | coding | claude | Dashboard run_backtest wrapper + parity assertion + DeprecationWarning |
