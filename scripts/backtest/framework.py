@@ -31,6 +31,43 @@ from core.regime import RegimeClassifier
 from core.strategy_config import get_config
 
 
+def forward_window_extreme(series: pd.Series, window_h: int,
+                              anchor_offset: int = 1,
+                              op: str = "max") -> pd.Series:
+    """For each index ``i``, return op(series[i+anchor_offset : i+anchor_offset+window_h]).
+
+    v3.7.241: replaces the reverse-rolling ``series.rolling(h).max().shift(-(h+1))``
+    pattern that was off-by-one (read ``[i+2..i+h+1]`` instead of ``[i+1..i+h]``).
+    Indices beyond the array end produce ``NaN`` (insufficient future window).
+
+    Args:
+        series: input time series (typically OHLC.High or .Low).
+        window_h: window length in periods (inclusive count).
+        anchor_offset: positions ahead of i where the window starts (default 1 ⇒
+            "next-day-open onwards" semantics matching the rest of the framework).
+        op: ``"max"`` or ``"min"``.
+
+    Returns:
+        Series of the same length/index as ``series``.
+    """
+    if op not in ("max", "min"):
+        raise ValueError(f"op must be 'max' or 'min', got {op!r}")
+    arr = series.values.astype(float)
+    n = len(arr)
+    out = np.full(n, np.nan, dtype=float)
+    reducer = np.nanmax if op == "max" else np.nanmin
+    for i in range(n):
+        lo = i + anchor_offset
+        hi = lo + window_h  # exclusive end
+        if hi > n or lo < 0:
+            continue
+        window = arr[lo:hi]
+        if np.all(np.isnan(window)):
+            continue
+        out[i] = reducer(window)
+    return pd.Series(out, index=series.index)
+
+
 def _load_features(asset: str) -> pd.DataFrame:
     p = ("/Users/yhdong/Gold/data/processed/features_all.parquet"
          if asset == "GLD" else
@@ -116,9 +153,15 @@ def build_raw_universe(asset: str) -> tuple:
         # 1) abs_r{h}d: |signed return|, STRADDLE 看大, SHORT_VOL 看小
         raw[f"abs_r{h}d"] = raw[f"r{h}d"].abs()
         # 2) max_move_{h}d: 入场后 h 日内 intraday H/L 最大偏离 (实际触及)
-        # h 日窗口 max High / min Low, 从 next_open 起算
-        high_max = ohlc["High"].reindex(common).rolling(h).max().shift(-(h+1))
-        low_min = ohlc["Low"].reindex(common).rolling(h).min().shift(-(h+1))
+        # v3.7.241: 修 off-by-one — 旧 `rolling(h).max().shift(-(h+1))`
+        # 在 signal=i 读 max(High[i+2..i+h+1]), 漏掉 entry day 高点且多读
+        # 一个未来日. 正确窗口是 max(High[i+1..i+h]) (entry day + h-1 后续日,
+        # 与 r{h}d 的 entry_open 起算 + h 日持仓一致).
+        # 用 forward_window_extreme helper 显式表达索引语义.
+        high_s = ohlc["High"].reindex(common)
+        low_s = ohlc["Low"].reindex(common)
+        high_max = forward_window_extreme(high_s, h, anchor_offset=1, op="max")
+        low_min = forward_window_extreme(low_s, h, anchor_offset=1, op="min")
         max_up = (high_max - next_open) / next_open * 100
         max_down = (next_open - low_min) / next_open * 100
         raw[f"max_up_{h}d"] = max_up
