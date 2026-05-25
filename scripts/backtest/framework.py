@@ -31,6 +31,120 @@ from core.regime import RegimeClassifier
 from core.strategy_config import get_config
 
 
+def kline_db_max_date():
+    """Return ``kline_db`` max date (cached parquet read).
+
+    v3.7.242: used by Layer 2 per-leg DTE pre-filter so we do not silently
+    drop un-closed positions due to data-cutoff (survivorship bias).
+    """
+    try:
+        from core.paper_positions import _load_kline_db
+        db = _load_kline_db()
+        if db is None or not len(db):
+            return None
+        return pd.to_datetime(db["date"]).max().normalize()
+    except Exception:
+        return None
+
+
+def leg_max_expiry(legs):
+    """Parse option-code expiry per leg and return the latest expiry.
+
+    v3.7.242: cross-strike spreads share an expiry, but we still take
+    ``max(expiry)`` for future-proofing against calendar spreads.
+    Returns ``None`` if no leg is parseable.
+    """
+    try:
+        from core.strategies.options_exit import parse_option_code
+        expiries = []
+        for leg in legs:
+            code = leg[1] if isinstance(leg, (tuple, list)) else leg
+            p = parse_option_code(code)
+            if p is None: continue
+            expiries.append(p[1])  # expiry_dt
+        if not expiries: return None
+        return max(expiries)
+    except Exception:
+        return None
+
+
+def run_layer2_backtest_with_disposition(dates, ohlc, asset, strategy,
+                                            price_fn, exit_fn,
+                                            dte_target=30,
+                                            hold_buffer_days=5,
+                                            today=None):
+    """Iterate signal dates, run entry+exit, track disposition counts.
+
+    v3.7.242 (AC-7): replaces the closed-only collection pattern that
+    silently dropped un-closed positions (survivorship bias). Per-leg
+    expiry is checked against kline_db's max date to distinguish
+    "stale-data drop" from "no liquid contract" from "still open".
+
+    Args:
+        dates: list of signal dates (pd.Timestamp).
+        ohlc: ETF OHLC DataFrame indexed by date.
+        asset: 'GLD' | 'SLV' for per-asset cfg threading.
+        strategy: strategy keyword passed to price_fn / exit_fn.
+        price_fn: callable matching ``core.paper_positions.price_strategy_at``.
+        exit_fn: callable matching ``core.paper_positions.simulate_option_exit``.
+        dte_target: target DTE for option selection.
+        hold_buffer_days: extra days of kline coverage required beyond expiry
+            (default 5) so the exit simulation has room for late-fill exits.
+        today: anchor for the simulated "today" (default = now).
+
+    Returns:
+        ``(closed_df, disposition)`` where ``closed_df`` has columns
+        ``date, pnl_pct, exit_reason`` and ``disposition`` is a dict with
+        keys ``n_signal, n_entered, n_closed, n_open, n_skipped_stale,
+        n_skipped_no_contract``. The invariant
+        ``n_signal == n_closed + n_open + n_skipped_stale + n_skipped_no_contract``
+        always holds.
+    """
+    if today is None:
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        today = pd.Timestamp(datetime.now(ZoneInfo("America/New_York")).date())
+    kline_max = kline_db_max_date()
+    closed_rows = []
+    disp = {"n_signal": len(dates), "n_entered": 0, "n_closed": 0,
+              "n_open": 0, "n_skipped_stale": 0, "n_skipped_no_contract": 0}
+    for d in dates:
+        if d not in ohlc.index:
+            disp["n_skipped_no_contract"] += 1
+            continue
+        eO = float(ohlc.loc[d, "Open"]); eC = float(ohlc.loc[d, "Close"])
+        eH = float(ohlc.loc[d, "High"]); eL = float(ohlc.loc[d, "Low"])
+        ent = price_fn(asset, strategy, d,
+                         d + pd.Timedelta(hours=9, minutes=30),
+                         eO, eO, eC, eH, eL, dte_target=dte_target)
+        legs = ent.get("legs", [])
+        if not legs:
+            disp["n_skipped_no_contract"] += 1
+            continue
+        # Per-leg DTE: if any leg's expiry + hold_buffer extends past
+        # kline_db.max_date, the exit sim cannot run to natural conclusion
+        # → count as stale to avoid silent survivorship.
+        max_exp = leg_max_expiry(legs)
+        if max_exp is not None and kline_max is not None and \
+            (max_exp + pd.Timedelta(days=hold_buffer_days)) > kline_max:
+            disp["n_skipped_stale"] += 1
+            continue
+        disp["n_entered"] += 1
+        sim = exit_fn(ent, d, strategy, today,
+                        live_spot=eC, live_high=eH, live_low=eL,
+                        asset=asset)
+        if sim.get("is_closed"):
+            disp["n_closed"] += 1
+            closed_rows.append({
+                "date": d,
+                "pnl_pct": float(sim.get("pnl_pct", 0) or 0),
+                "exit_reason": sim.get("exit_reason", ""),
+            })
+        else:
+            disp["n_open"] += 1
+    return pd.DataFrame(closed_rows), disp
+
+
 def forward_window_extreme(series: pd.Series, window_h: int,
                               anchor_offset: int = 1,
                               op: str = "max") -> pd.Series:

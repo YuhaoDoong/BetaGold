@@ -13,28 +13,24 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from scripts.backtest.framework import (build_raw_universe, trailing_slice,
-                                              LAYER2_WINDOWS)
+                                              LAYER2_WINDOWS,
+                                              run_layer2_backtest_with_disposition)
 from core.paper_positions import price_strategy_at, simulate_option_exit
 from core.events import detect_straddle_signal, detect_short_vol_signal
 
 
 def backtest_strategy(dates, ohlc, asset, strategy):
-    today = pd.Timestamp(datetime.now(ZoneInfo("America/New_York")).date())
-    rows = []
-    for d in dates:
-        if d not in ohlc.index: continue
-        eO = float(ohlc.loc[d, "Open"]); eC = float(ohlc.loc[d, "Close"])
-        eH = float(ohlc.loc[d, "High"]); eL = float(ohlc.loc[d, "Low"])
-        dte = 14 if strategy == "STRADDLE" else 30
-        ent = price_strategy_at(asset, strategy, d,
-                                      d + pd.Timedelta(hours=9, minutes=30),
-                                      eO, eO, eC, eH, eL, dte_target=dte)
-        if not ent.get("legs"): continue
-        sim = simulate_option_exit(ent, d, strategy, today,
-                                          live_spot=eC, live_high=eH, live_low=eL)
-        if sim.get("is_closed"):
-            rows.append({"date": d, "pnl_pct": float(sim.get("pnl_pct", 0) or 0)})
-    return pd.DataFrame(rows)
+    """v3.7.242: returns (closed_df, disposition_dict).
+
+    Uses run_layer2_backtest_with_disposition so unclosed/stale positions are
+    counted explicitly rather than silently dropped.
+    """
+    dte = 14 if strategy == "STRADDLE" else 30
+    closed_df, disp = run_layer2_backtest_with_disposition(
+        dates, ohlc, asset, strategy,
+        price_fn=price_strategy_at, exit_fn=simulate_option_exit,
+        dte_target=dte)
+    return closed_df, disp
 
 
 def score(pnls):
@@ -83,18 +79,29 @@ def main():
                 win_dates = [d for d in dates if d >= start]
                 if len(win_dates) < 3:
                     print(f"  {win_label}: n_signal={len(win_dates)} 不足跳过"); continue
-                df = backtest_strategy(win_dates, ohlc, asset, strategy_name)
+                df, disp = backtest_strategy(win_dates, ohlc, asset, strategy_name)
                 s = score(df["pnl_pct"]) if len(df) else {"n": 0}
+                # v3.7.242: 显式 disposition, 不再 silent drop 未闭合 / stale
                 print(f"  {win_label} ({len(win_dates)} signals, "
-                      f"{start.date()} → today): "
-                      f"closed n={s.get('n')} WR={s.get('WR')}% "
-                      f"mean={s.get('mean')}% sum={s.get('sum')}% "
+                      f"{start.date()} → today) "
+                      f"[entered={disp['n_entered']} closed={disp['n_closed']} "
+                      f"open={disp['n_open']} skip_stale={disp['n_skipped_stale']} "
+                      f"skip_no_contract={disp['n_skipped_no_contract']}]: "
+                      f"WR={s.get('WR')}% mean={s.get('mean')}% sum={s.get('sum')}% "
                       f"max_loss={s.get('max_loss')}")
-                all_rows.append({
+                _row = {
                     "asset": asset, "strategy": strategy_name,
-                    "window": win_label, "n_signals": len(win_dates),
-                    **{k: s.get(k) for k in ["n","WR","mean","sum","max_loss","scoreB"]}
+                    "window": win_label, "n_signal": len(win_dates),
+                    **{k: s.get(k) for k in ["n","WR","mean","sum","max_loss","scoreB"]},
+                }
+                _row.update({
+                    "n_entered": disp["n_entered"],
+                    "n_closed": disp["n_closed"],
+                    "n_open": disp["n_open"],
+                    "n_skipped_stale": disp["n_skipped_stale"],
+                    "n_skipped_no_contract": disp["n_skipped_no_contract"],
                 })
+                all_rows.append(_row)
 
     df = pd.DataFrame(all_rows)
     print(f"\n\n=== 波动率期权多窗总览 ===")

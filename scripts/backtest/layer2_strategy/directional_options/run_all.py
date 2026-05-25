@@ -12,7 +12,8 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from scripts.backtest.framework import (build_raw_universe, trailing_slice,
-                                              LAYER2_WINDOWS)
+                                              LAYER2_WINDOWS,
+                                              run_layer2_backtest_with_disposition)
 from core.paper_positions import price_strategy_at, simulate_option_exit
 
 
@@ -36,7 +37,11 @@ def unpatch_all():
 
 
 def backtest_option(dates, ohlc, asset, strategy, overrides=None):
-    today = pd.Timestamp(datetime.now(ZoneInfo("America/New_York")).date())
+    """v3.7.242: returns (closed_df, disposition_dict).
+
+    Uses run_layer2_backtest_with_disposition so unclosed/stale positions are
+    counted explicitly rather than silently dropped.
+    """
     if overrides:
         if strategy == "BUY CALL":
             from core.strategies.buy_call import BCConfig
@@ -44,24 +49,19 @@ def backtest_option(dates, ohlc, asset, strategy, overrides=None):
         elif strategy == "SELL PUT":
             from core.strategies.sell_put import SPConfig
             patch_class(SPConfig, overrides)
-    rows = []
     try:
-        for d in dates:
-            if d not in ohlc.index: continue
-            eO = float(ohlc.loc[d,"Open"]); eC = float(ohlc.loc[d,"Close"])
-            eH = float(ohlc.loc[d,"High"]); eL = float(ohlc.loc[d,"Low"])
-            ent = price_strategy_at(asset, strategy, d,
-                                          d + pd.Timedelta(hours=9, minutes=30),
-                                          eO, eO, eC, eH, eL, dte_target=30)
-            if not ent.get("legs"): continue
-            sim = simulate_option_exit(ent, d, strategy, today,
-                                              live_spot=eC, live_high=eH, live_low=eL)
-            if sim.get("is_closed"):
-                rows.append({"date": d, "pnl": float(sim.get("pnl_pct", 0) or 0),
-                              "reason": sim.get("exit_reason", "")})
+        closed_df, disp = run_layer2_backtest_with_disposition(
+            dates, ohlc, asset, strategy,
+            price_fn=price_strategy_at, exit_fn=simulate_option_exit,
+            dte_target=30)
+        # Backward compat: keep 'pnl' as the column name some downstream
+        # code expects (score(df['pnl']) below).
+        if "pnl_pct" in closed_df.columns:
+            closed_df = closed_df.rename(columns={"pnl_pct": "pnl",
+                                                       "exit_reason": "reason"})
     finally:
         if overrides: unpatch_all()
-    return pd.DataFrame(rows)
+    return closed_df, disp
 
 
 def score(s):
@@ -81,24 +81,28 @@ def get_dates(raw, tier):
 
 
 def grid_bc_pt(asset, ohlc, dates):
-    """BC pt grid in given dates."""
-    rows = []
+    """BC pt grid in given dates. Disposition of the LAST grid entry is
+    kept (all grid entries share the same date list, so disposition is
+    identical across pt values)."""
+    rows = []; last_disp = None
     for pt in [1.5, 2.0, 2.5, 3.0, 4.0]:
-        df = backtest_option(dates, ohlc, asset, "BUY CALL",
+        df, disp = backtest_option(dates, ohlc, asset, "BUY CALL",
                                   {"profit_target_mult": pt})
+        last_disp = disp
         if not len(df): continue
         s = score(df["pnl"]); s["pt"] = pt; rows.append(s)
-    return pd.DataFrame(rows)
+    return pd.DataFrame(rows), last_disp
 
 
 def grid_sp_pt(asset, ohlc, dates):
-    rows = []
+    rows = []; last_disp = None
     for pt in [30, 40, 50, 70, 90]:
-        df = backtest_option(dates, ohlc, asset, "SELL PUT",
+        df, disp = backtest_option(dates, ohlc, asset, "SELL PUT",
                                   {"profit_target_credit_pct": pt})
+        last_disp = disp
         if not len(df): continue
         s = score(df["pnl"]); s["pt_pct"] = pt; rows.append(s)
-    return pd.DataFrame(rows)
+    return pd.DataFrame(rows), last_disp
 
 
 def main():
@@ -117,9 +121,9 @@ def main():
                 if len(dates) < 3:
                     print(f"  {win_label}: n={len(dates)} 不足跳过"); continue
                 # BC pt grid
-                df_bc = grid_bc_pt(asset, ohlc, dates)
+                df_bc, bc_disp = grid_bc_pt(asset, ohlc, dates)
                 # SP pt grid
-                df_sp = grid_sp_pt(asset, ohlc, dates)
+                df_sp, sp_disp = grid_sp_pt(asset, ohlc, dates)
                 # 选 BC best
                 bc_best = df_bc.loc[df_bc["scoreB"].idxmax()] if len(df_bc) else None
                 sp_best = df_sp.loc[df_sp["scoreB"].idxmax()] if len(df_sp) else None
@@ -127,10 +131,18 @@ def main():
                             f"mean={bc_best['mean']}% sum={bc_best['sum']}%") if bc_best is not None else "n/a"
                 sp_str = (f"pt={sp_best['pt_pct']}% n={sp_best['n']} WR={sp_best['WR']}% "
                             f"mean={sp_best['mean']}% sum={sp_best['sum']}%") if sp_best is not None else "n/a"
-                print(f"  {win_label} signals={len(dates)}: BC[{bc_str}]  SP[{sp_str}]")
-                summary_rows.append({
+                # v3.7.242: disposition print so survivorship bias is visible
+                if bc_disp:
+                    print(f"  {win_label} signals={len(dates)} "
+                            f"[entered={bc_disp['n_entered']} closed={bc_disp['n_closed']} "
+                            f"open={bc_disp['n_open']} skip_stale={bc_disp['n_skipped_stale']} "
+                            f"skip_no_contract={bc_disp['n_skipped_no_contract']}]: "
+                            f"BC[{bc_str}]  SP[{sp_str}]")
+                else:
+                    print(f"  {win_label} signals={len(dates)}: BC[{bc_str}]  SP[{sp_str}]")
+                _row = {
                     "asset": asset, "tier": tier, "window": win_label,
-                    "n_signals": len(dates),
+                    "n_signal": len(dates),
                     "bc_best_pt": bc_best["pt"] if bc_best is not None else None,
                     "bc_n": bc_best["n"] if bc_best is not None else 0,
                     "bc_WR": bc_best["WR"] if bc_best is not None else None,
@@ -141,7 +153,17 @@ def main():
                     "sp_WR": sp_best["WR"] if sp_best is not None else None,
                     "sp_sum": sp_best["sum"] if sp_best is not None else None,
                     "sp_scoreB": sp_best["scoreB"] if sp_best is not None else 0,
-                })
+                }
+                # v3.7.242 AC-7: full disposition columns
+                if bc_disp:
+                    _row.update({
+                        "n_entered": bc_disp["n_entered"],
+                        "n_closed": bc_disp["n_closed"],
+                        "n_open": bc_disp["n_open"],
+                        "n_skipped_stale": bc_disp["n_skipped_stale"],
+                        "n_skipped_no_contract": bc_disp["n_skipped_no_contract"],
+                    })
+                summary_rows.append(_row)
 
     df = pd.DataFrame(summary_rows)
     print(f"\n\n=== 方向性期权多窗总览 ===")
