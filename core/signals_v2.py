@@ -422,6 +422,17 @@ def run_backtest(close_d, high_d, low_d,
                  # 兼容旧 kwargs
                  exit_timeframe=None,
                  macd_min_gain=None):
+    # v3.7.249: deprecation per the plan contract — one-release window.
+    # Migration: use ``core.dashboard_parity.run_unified_backtest`` which
+    # routes signal generation through ``generate_daily_signals`` (the canonical
+    # pipeline) while preserving StopLoss / BandExit / Pullback / Timeout
+    # event semantics. The body below is preserved unchanged for one release.
+    import warnings
+    warnings.warn(
+        "core.signals_v2.run_backtest is deprecated; use "
+        "core.dashboard_parity.run_unified_backtest which routes through "
+        "generate_daily_signals (canonical signals). Removal target: v3.8.",
+        DeprecationWarning, stacklevel=2)
     if asset is not None:
         try:
             from core.strategy_config import get_config
