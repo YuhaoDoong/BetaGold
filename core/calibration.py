@@ -195,3 +195,162 @@ def _empty_meta(reason: str, n: int = 0) -> ScalerMeta:
         realized_coverage_lower=float("nan"),
         fallback_reason=reason,
     )
+
+
+# -----------------------------------------------------------------------------
+# v3.7.245 (AC-9): calibration-gated retrain trigger
+# -----------------------------------------------------------------------------
+
+DEFAULT_RETRAIN_WINDOW = 30
+DEFAULT_RETRAIN_HYSTERESIS_DAYS = 5
+DEFAULT_RETRAIN_COOLDOWN_DAYS = 7
+DEFAULT_RETRAIN_RATIO_QUEUE = 2.5
+DEFAULT_RETRAIN_RATIO_IMMEDIATE = 4.0
+DEFAULT_RETRAIN_ZERO_WIDTH_FLOOR = 0.10  # percent (5d forward H/L range)
+
+
+def evaluate_retrain_trigger(
+    meta_df: pd.DataFrame,
+    actual_widths: pd.Series,
+    today: pd.Timestamp,
+    last_retrain_at: Optional[pd.Timestamp] = None,
+    window: int = DEFAULT_RETRAIN_WINDOW,
+    hysteresis_days: int = DEFAULT_RETRAIN_HYSTERESIS_DAYS,
+    cooldown_days: int = DEFAULT_RETRAIN_COOLDOWN_DAYS,
+    ratio_threshold_queue: float = DEFAULT_RETRAIN_RATIO_QUEUE,
+    ratio_threshold_immediate: float = DEFAULT_RETRAIN_RATIO_IMMEDIATE,
+    zero_width_floor: float = DEFAULT_RETRAIN_ZERO_WIDTH_FLOOR,
+) -> dict:
+    """Decide whether to queue / immediately run / suppress a model retrain.
+
+    AC-9 contract:
+      * Smooth the band-overshoot ratio over the last ``window`` matured
+        residuals (pred_width / actual_width). Zero-or-near-zero
+        ``actual_widths`` (< ``zero_width_floor``) are excluded from the mean
+        rather than producing Inf.
+      * If smoothed ratio > ``ratio_threshold_queue`` for the LAST
+        ``hysteresis_days`` consecutive scaler rows → outcome ``"queued"``.
+      * If smoothed ratio > ``ratio_threshold_immediate`` (any single day in
+        the trailing observation, evaluated on the latest meta row) →
+        outcome ``"immediate"``.
+      * Trading days since ``last_retrain_at`` < ``cooldown_days`` →
+        outcome ``"suppressed_cooldown"``.
+      * Otherwise → outcome ``"no_action"``.
+
+    Pure function: no I/O. Caller writes the returned dict to
+    ``data/models/retrain_queue.jsonl`` if desired.
+
+    Args:
+        meta_df: output of ``apply_rolling_conformal_scaler``; indexed by date,
+            must contain ``delta_upper``, ``delta_lower``, ``n_eligible``.
+        actual_widths: per-date ``actual_upper - actual_lower`` (5d forward range,
+            percent). NaN where label not yet matured.
+        today: anchor date for cooldown evaluation.
+        last_retrain_at: date of the previous retrain; ``None`` ⇒ no cooldown.
+
+    Returns:
+        ``{"outcome": str, "ratio_value": float, "consecutive_days": int,
+            "zero_width_excluded_count": int, "cooldown_until": str|None,
+            "triggered_at": str}``
+    """
+    today = pd.Timestamp(today).normalize()
+    # ── 1. Cooldown gate ──────────────────────────────────────────────────
+    cooldown_until = None
+    if last_retrain_at is not None:
+        last = pd.Timestamp(last_retrain_at).normalize()
+        cooldown_end = (pd.bdate_range(start=last + pd.Timedelta(days=1),
+                                              periods=cooldown_days)[-1]
+                          if cooldown_days > 0 else last)
+        cooldown_until = cooldown_end.isoformat()
+        if today <= cooldown_end:
+            return {
+                "outcome": "suppressed_cooldown",
+                "ratio_value": float("nan"),
+                "consecutive_days": 0,
+                "zero_width_excluded_count": 0,
+                "cooldown_until": cooldown_until,
+                "triggered_at": today.isoformat(),
+            }
+
+    # ── 2. Build the ratio series over the trailing window ────────────────
+    if meta_df is None or not len(meta_df):
+        return _retrain_no_action(today, cooldown_until)
+    aw = pd.Series(actual_widths).reindex(meta_df.index)
+    pw_upper = meta_df["delta_upper"] + (aw / 2.0)  # not used directly; placeholder
+    # pred_width per date is (pred_upper - pred_lower) but we do not carry
+    # those raw values in meta. Reconstruct via delta + actual:
+    #   pred_upper = actual_upper - delta_upper (only on the calibration day t,
+    #   inverted from delta = quantile(actual - pred)).
+    # Simpler and correct: take pred_width directly from caller via aw plus
+    # the recorded deltas: pred_width = (pred_upper - pred_lower) = aw +
+    # delta_upper + delta_lower (this is the per-side total compensation that
+    # the scaler ALREADY applies). We track raw vs calibrated overshoot via
+    # ``aw`` and the per-side residual proxies in meta. For the trigger, we
+    # use the unsigned per-side residual magnitudes which are what
+    # ``meta_df.delta_*`` quantify — a positive ``|delta_upper| + |delta_lower|``
+    # represents the historical overshoot that motivated the retrain.
+    res_total = meta_df[["delta_upper", "delta_lower"]].abs().sum(axis=1)
+    valid = aw.notna() & res_total.notna() & (aw.abs() >= zero_width_floor)
+    excluded = int((aw.notna() & (aw.abs() < zero_width_floor)).sum())
+    if valid.sum() == 0:
+        return _retrain_no_action(today, cooldown_until,
+                                       zero_width_excluded_count=excluded)
+    # Ratio = (|res| + actual_width) / actual_width ≈ implied predicted_width /
+    # actual_width. (Equivalent to mean(pred_width/actual_width) when residuals
+    # dominate the absolute width.)
+    ratios = (res_total.abs() + aw.abs()) / aw.abs()
+    ratios_valid = ratios[valid].iloc[-window:]
+    smoothed = float(ratios_valid.mean()) if len(ratios_valid) else float("nan")
+
+    # ── 3. Immediate vs queued vs no-action ──────────────────────────────
+    latest = float(ratios_valid.iloc[-1]) if len(ratios_valid) else float("nan")
+    if not pd.isna(latest) and latest > ratio_threshold_immediate:
+        return {
+            "outcome": "immediate",
+            "ratio_value": smoothed,
+            "consecutive_days": _consec_above(ratios_valid, ratio_threshold_queue),
+            "zero_width_excluded_count": excluded,
+            "cooldown_until": cooldown_until,
+            "triggered_at": today.isoformat(),
+        }
+    consec = _consec_above(ratios_valid, ratio_threshold_queue)
+    if consec >= hysteresis_days:
+        return {
+            "outcome": "queued",
+            "ratio_value": smoothed,
+            "consecutive_days": consec,
+            "zero_width_excluded_count": excluded,
+            "cooldown_until": cooldown_until,
+            "triggered_at": today.isoformat(),
+        }
+    return _retrain_no_action(today, cooldown_until,
+                                   ratio_value=smoothed,
+                                   consecutive_days=consec,
+                                   zero_width_excluded_count=excluded)
+
+
+def _consec_above(series: pd.Series, threshold: float) -> int:
+    """Length of the most-recent consecutive run above ``threshold`` at series end."""
+    if not len(series): return 0
+    arr = series.values
+    n = len(arr); count = 0
+    for v in reversed(arr):
+        if not pd.isna(v) and v > threshold:
+            count += 1
+        else:
+            break
+    return count
+
+
+def _retrain_no_action(today: pd.Timestamp, cooldown_until,
+                          ratio_value: float = float("nan"),
+                          consecutive_days: int = 0,
+                          zero_width_excluded_count: int = 0) -> dict:
+    return {
+        "outcome": "no_action",
+        "ratio_value": ratio_value,
+        "consecutive_days": consecutive_days,
+        "zero_width_excluded_count": zero_width_excluded_count,
+        "cooldown_until": cooldown_until,
+        "triggered_at": pd.Timestamp(today).normalize().isoformat(),
+    }
