@@ -1380,6 +1380,34 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
         _dashboard_parity_verdict = {"status": "ERROR",
                                         "error": str(_parity_e)}
 
+    # v3.7.255: parity expander rendered in the same scope as the verdict.
+    # (v3.7.254 mis-placed this in main() where _dashboard_parity_verdict was
+    # not in scope, producing NameError on dashboard load.)
+    with st.expander("🔍 Unified-backtest 路径 parity (v3.7.249+)",
+                       expanded=False):
+        _v = _dashboard_parity_verdict
+        if _v is None:
+            st.caption("parity 检查未运行 (可能依赖缺失)")
+        elif isinstance(_v, dict) and _v.get("status") == "ERROR":
+            st.caption(f"⚠️ parity 检查出错: {_v.get('error', '')[:120]}")
+        else:
+            _stat = getattr(_v, "status", _v)
+            _emo = {"PASS": "✅", "PASS_WITH_DRIFT": "🟡",
+                      "FAIL_EXIT_EVENT_COUNT": "❌"}.get(_stat, "?")
+            st.caption(f"{_emo} parity status: **{_stat}**")
+            _lec = getattr(_v, "legacy_event_counts", {})
+            _uec = getattr(_v, "unified_event_counts", {})
+            _drift = getattr(_v, "max_count_drift", 0)
+            _drifted = getattr(_v, "drifted_signal_dates", []) or []
+            st.caption(f"max event-count drift: {_drift}; "
+                        f"drifted signal dates: {len(_drifted)}")
+            if _lec and _uec:
+                _df_dash = pd.DataFrame({"legacy": _lec, "unified": _uec})
+                st.dataframe(_df_dash, use_container_width=True)
+            _attr_p = getattr(_v, "attribution_path", None)
+            if _attr_p:
+                st.caption(f"📝 drift attribution written: `{_attr_p}`")
+
     def _log_price(d, side):
         """从 log 取该日代表价; 无记录返回 None."""
         lk = _worst_buy_lookup if side == "BUY" else _worst_exit_lookup
@@ -6268,32 +6296,6 @@ def main():
     # ── 交易记录 ──
     if trades:
         st.divider()
-        # v3.7.254: parity audit (unified path shadow) expander
-        with st.expander("🔍 Unified-backtest 路径 parity (v3.7.249+)", expanded=False):
-            _v = _dashboard_parity_verdict
-            if _v is None:
-                st.caption("parity 检查未运行 (可能依赖缺失)")
-            elif isinstance(_v, dict) and _v.get("status") == "ERROR":
-                st.caption(f"⚠️ parity 检查出错: {_v.get('error', '')[:120]}")
-            else:
-                _stat = getattr(_v, "status", _v)
-                _emo = {"PASS": "✅", "PASS_WITH_DRIFT": "🟡",
-                          "FAIL_EXIT_EVENT_COUNT": "❌"}.get(_stat, "?")
-                st.caption(f"{_emo} parity status: **{_stat}**")
-                _lec = getattr(_v, "legacy_event_counts", {})
-                _uec = getattr(_v, "unified_event_counts", {})
-                _drift = getattr(_v, "max_count_drift", 0)
-                _drifted = getattr(_v, "drifted_signal_dates", []) or []
-                st.caption(f"max event-count drift: {_drift}; "
-                            f"drifted signal dates: {len(_drifted)}")
-                if _lec and _uec:
-                    import pandas as _pd_dash
-                    _df_dash = _pd_dash.DataFrame(
-                        {"legacy": _lec, "unified": _uec})
-                    st.dataframe(_df_dash, use_container_width=True)
-                _attr_p = getattr(_v, "attribution_path", None)
-                if _attr_p:
-                    st.caption(f"📝 drift attribution written: `{_attr_p}`")
         st.subheader(f"交易记录 ({len(trades)} 笔)")
         trecs = []
         for t in trades:
