@@ -51,10 +51,10 @@ Repair the GLD/SLV trading system's correctness floor and the DL Range predictor
 | task-e3 | AC-14 | pending | coding | claude | Dashboard run_backtest wrapper + parity assertion + DeprecationWarning |
 | task-f2 | AC-4 | pending | coding | claude | tests/test_expiry_intrinsic.py — 16 scenarios incl asymmetric IC fixture |
 | task-f3 | AC-3 | pending | coding | claude | tests/test_per_asset_cfg.py |
-| task-f4 | AC-8, AC-9 | pending | coding | claude | tests/test_calibration.py — maturity lag invariant + retrain hysteresis |
+| task-f4 | AC-8, AC-9 | partial (Round 6) | coding | claude | scaler portion done (12 pytest in test_calibration_scaler.py); retrain hysteresis portion pending task-g4 |
 | task-g1 | AC-1 | done (Round 5, pending verification) | coding | claude | v3.7.243: scripts/eval/model_calibration_audit.py + 8 pytest (label-def lock + zero-actual NaN + coverage formula 锁定 eval_range) |
 | task-g2 | AC-1 | done (Round 5, pending verification) | analyze | claude | AUDIT_REPORT.md: GLD width 1.948/1.663 cov 54.87%, SLV 1.425/1.871 cov 53.66%, per-month asymmetric drift signature, draft 5-6× 错算原因详记 |
-| task-g3 | AC-8 | pending | coding | claude | core/calibration.py:apply_rolling_conformal_scaler + horizon-aware maturity lag |
+| task-g3 | AC-8 | done (Round 6, pending verification) | coding | claude | v3.7.244: core/calibration.py:apply_rolling_conformal_scaler + horizon-aware maturity-lag + per-side split-conformal + 12 pytest; smoke on GLD 113d cov_both +4.4pp |
 | task-g4 | AC-9 | pending | coding | claude | calibration-gated retrain trigger + retrain_queue.jsonl + zero-width guard |
 | task-g5 | AC-8 | pending | coding | claude | per-regime conformal alpha (Bull/Bear/Sideways) + n≥20 fallback |
 | task-g6 | AC-8 | pending | analyze | codex | Layer 1 grid gate with --use-calibrated flag; gate_report.md decides live_cutover |
