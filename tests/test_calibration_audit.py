@@ -1,4 +1,4 @@
-"""Regression tests for v3.7.243: DL Range OOS calibration audit (AC-1).
+"""Regression tests for v3.7.243: DL Range OOS calibration audit.
 
 Lock the label definition (5-day forward H/L vs t-day close, per parquet's
 ``actual_*_pct`` columns) and exercise the per-month / per-regime grouping +

@@ -171,7 +171,7 @@ def live_cutover_allowed(today,
     Args:
         today: 当前评估日 (pd.Timestamp).
         log_path: JSONL log location.
-        min_days: 最小累积天数 (默认 14, AC-5).
+        min_days: 最小累积天数 (默认 14).
 
     Returns:
         ``(allowed: bool, first_record_at: Optional[str], days_accumulated: int)``

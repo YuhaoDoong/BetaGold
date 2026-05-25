@@ -1,4 +1,4 @@
-"""v3.7.244 (AC-8): horizon-aware split-conformal scaler for DL Range bands.
+"""v3.7.244: horizon-aware split-conformal scaler for DL Range bands.
 
 Why this exists
 ---------------
@@ -21,7 +21,7 @@ Temporal discipline
 -------------------
 For 5-day forward labels, ``actual_*_pct[s]`` is only fully realized at
 ``s + 5 trading days``. At calibration time ``t``, we must only use
-residuals whose ``label_end_date(s) < t`` (strict). This is the AC-8
+residuals whose ``label_end_date(s) < t`` (strict). This is the plan contract
 maturity-lag rule and is enforced via an explicit ``eligible`` mask on
 business-day arithmetic, NOT a generic ``shift(1)``.
 
@@ -29,7 +29,7 @@ Shadow vs cutover
 -----------------
 This module is a pure function. The decision of *whether* to feed the
 calibrated columns back into ``core.signals.build_band()`` lives in a
-config preflight check elsewhere (see AC-8: ``calibration.live_cutover``
+config preflight check elsewhere (see ``calibration.live_cutover``
 flag + ``gate_report.md``). This module never touches the filesystem or
 the live pipeline directly.
 """
@@ -43,7 +43,7 @@ import pandas as pd
 
 DEFAULT_HORIZON = 5            # 5-day forward labels per train_dl_range.build_targets
 DEFAULT_WINDOW = 60            # rolling residual pool length
-DEFAULT_TARGET_COVERAGE = 0.80  # training target per AC-8 + DEC-5
+DEFAULT_TARGET_COVERAGE = 0.80  # training target per the plan
 MIN_POOL_SIZE = 20             # below this → no calibration applied
 MIN_REGIME_POOL_SIZE = 20      # v3.7.246: per-regime same-regime sample floor
 
@@ -224,7 +224,7 @@ def _empty_meta(reason: str, n: int = 0) -> ScalerMeta:
 
 
 # -----------------------------------------------------------------------------
-# v3.7.245 (AC-9): calibration-gated retrain trigger
+# v3.7.245: calibration-gated retrain trigger
 # -----------------------------------------------------------------------------
 
 DEFAULT_RETRAIN_WINDOW = 30
@@ -249,7 +249,7 @@ def evaluate_retrain_trigger(
 ) -> dict:
     """Decide whether to queue / immediately run / suppress a model retrain.
 
-    AC-9 contract:
+    the plan contract contract:
       * Smooth the band-overshoot ratio over the last ``window`` matured
         residuals (pred_width / actual_width). Zero-or-near-zero
         ``actual_widths`` (< ``zero_width_floor``) are excluded from the mean

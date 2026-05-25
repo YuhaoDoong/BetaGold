@@ -154,7 +154,7 @@ def main():
                     "sp_sum": sp_best["sum"] if sp_best is not None else None,
                     "sp_scoreB": sp_best["scoreB"] if sp_best is not None else 0,
                 }
-                # v3.7.242 AC-7: full disposition columns
+                # v3.7.242 full disposition columns
                 if bc_disp:
                     _row.update({
                         "n_entered": bc_disp["n_entered"],

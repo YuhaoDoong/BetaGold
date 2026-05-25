@@ -1,7 +1,7 @@
 """Regression tests for v3.7.237: data freshness state machine.
 
 Verifies that ``core.data_freshness`` returns FRESH / STALE / FROZEN according
-to the threshold semantics declared in AC-6, and that the convenience gate
+to the threshold semantics declared in the plan contract, and that the convenience gate
 helper blocks new option entries only when state is FROZEN/MISSING.
 """
 from __future__ import annotations

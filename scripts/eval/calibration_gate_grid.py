@@ -1,10 +1,10 @@
-"""v3.7.247 (AC-8 closure): Layer 1 calibration gate analyze.
+"""v3.7.247 (plan closure): Layer 1 calibration gate analyze.
 
 Compares raw vs calibrated band coverage across trailing windows
 (10y / 5y / 3y / 1y / 113d) and writes ``gate_report.md`` with the
 compound-gate decision.
 
-Gate criteria (AC-8 + DEC-5):
+Gate criteria:
     1. ``coverage_both`` moves *toward* the training target (0.80) in
        at least ``min_pass_windows`` of the audited windows. "Toward"
        means ``|calibrated - target| < |raw - target|``.
@@ -56,7 +56,7 @@ WINDOWS = [
 
 DEFAULT_TARGET_COVERAGE = 0.80
 DEFAULT_MAX_DEGRADATION_PP = 0.05  # ≤ 5 percentage-point coverage drop
-DEFAULT_MIN_PASS_WINDOWS = 3        # AC-8: ≥3 of 4+ windows
+DEFAULT_MIN_PASS_WINDOWS = 3        # ≥3 of 4+ windows
 
 
 def _coverage(actual_u, pred_u, actual_l, pred_l):
@@ -114,7 +114,7 @@ def compound_gate_decision(window_results: list,
                               max_degradation: float = DEFAULT_MAX_DEGRADATION_PP,
                               min_pass: int = DEFAULT_MIN_PASS_WINDOWS,
                               metric_key: str = "coverage_both") -> dict:
-    """Apply the AC-8 compound gate to a list of per-window dicts.
+    """Apply the plan contract compound gate to a list of per-window dicts.
 
     A window 'passes' iff its **distance from target** does not get worse by
     more than ``max_degradation``:
@@ -197,7 +197,7 @@ def run_asset(asset: str, parquet_path: str = None) -> dict:
 
 def render_report(per_asset: list, out_path: Path):
     lines = [
-        "# Calibration Gate Report — task-g6 (AC-8 closure)",
+        "# Calibration Gate Report — task-g6 (plan closure)",
         "",
         f"Generated: {pd.Timestamp.now(tz='UTC').isoformat()}",
         "",
@@ -207,7 +207,7 @@ def render_report(per_asset: list, out_path: Path):
     overall = all(r["gate_passed"] for r in per_asset)
     lines.append(f"gate_passed: {'true' if overall else 'false'}")
     lines.append("")
-    lines.append("Gate criteria (AC-8 + DEC-5):")
+    lines.append("Gate criteria:")
     lines.append(f"- coverage moves toward training target "
                   f"{DEFAULT_TARGET_COVERAGE} in ≥ {DEFAULT_MIN_PASS_WINDOWS} windows")
     lines.append(f"- no window degrades coverage by more than "

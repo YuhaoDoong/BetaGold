@@ -1,7 +1,7 @@
 """Regression tests for v3.7.240: IV-aware cross-asset selector + shadow gate.
 
 Verifies that ``select_gld_sync_strategy`` is a pure function with the truth
-table declared in AC-5, that the shadow log writer is caller-side only, and
+table declared in the plan contract, that the shadow log writer is caller-side only, and
 that ``live_cutover_allowed`` enforces the 14-day accumulation gate.
 """
 from __future__ import annotations

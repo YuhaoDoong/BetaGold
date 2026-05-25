@@ -6,7 +6,7 @@ Covers BC / SP / STRADDLE / SHORT_VOL across the four expiry states:
 - today == expiry without spot close (helper returns None to defer)
 - today > expiry with kline missing (force-close at intrinsic)
 
-Includes one SHORT_VOL asymmetric-wings fixture to verify the AC-4 + DEC-6
+Includes one SHORT_VOL asymmetric-wings fixture to verify the plan contract + DEC-6
 ``max(call_wing, put_wing) - credit`` max_risk formula.
 """
 from __future__ import annotations
@@ -60,7 +60,7 @@ def symmetric_ic_legs():
 
 @pytest.fixture
 def asymmetric_ic_legs():
-    """IC with $5 call wing, $10 put wing — AC-4 + DEC-6 boundary case."""
+    """IC with $5 call wing, $10 put wing — the plan contract + DEC-6 boundary case."""
     return [
         ("short_call", f"US.GLD{EXPIRY_STR}C425000", 425.0, -1),
         ("long_call",  f"US.GLD{EXPIRY_STR}C430000", 430.0, 1),
@@ -238,7 +238,7 @@ def test_short_vol_symmetric_pin_between_shorts(symmetric_ic_legs):
 
 
 def test_short_vol_asymmetric_max_risk_uses_wider_wing(asymmetric_ic_legs):
-    """AC-4 + DEC-6: with $5 call wing and $10 put wing, max_risk = $10 - $1.50 = $8.50,
+    """the plan contract + DEC-6: with $5 call wing and $10 put wing, max_risk = $10 - $1.50 = $8.50,
     NOT $5 - $1.50 = $3.50. Spot pin in profit zone → P&L positive but smaller %
     relative to the wider max_risk."""
     res = force_close_at_expiry(asymmetric_ic_legs, entry_value=1.50,

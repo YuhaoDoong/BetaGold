@@ -1,4 +1,4 @@
-"""v3.7.243 (AC-1): DL Range OOS calibration audit.
+"""v3.7.243: DL Range OOS calibration audit.
 
 Reads ``data/models/dl_range_v2_oos.parquet`` (GLD) or
 ``dl_range_slv_oos.parquet`` (SLV) and produces a per-month (and optionally
@@ -190,7 +190,7 @@ def _render_markdown(asset: str, start: str, end: str,
     for _, r in summary_df.iterrows():
         lines.append("| " + " | ".join(str(r[c]) for c in cols) + " |")
     lines.append("")
-    lines.append("## Calibration goal (per AC-8 + DEC-5)")
+    lines.append("## Calibration goal (per the plan)")
     lines.append("")
     lines.append("Coverage repair toward training target (80%), **not** band "
                   "narrowing. Narrowing a band that already under-covers will "

@@ -1,4 +1,4 @@
-"""Regression tests for v3.7.247: calibration gate decision logic (AC-8 closure)."""
+"""Regression tests for v3.7.247: calibration gate decision logic (plan closure)."""
 from __future__ import annotations
 from pathlib import Path
 

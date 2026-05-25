@@ -3,7 +3,7 @@
 v3.7.237: Surfaces explicit FRESH / STALE / FROZEN states so consumers can
 gracefully degrade rather than silently use stale data.
 
-State semantics for kline_db (per AC-6):
+State semantics for kline_db (per the plan):
   FRESH   : max_date is within ``fresh_max_days`` trading days of ``today``
   STALE   : within (fresh_max_days, frozen_min_days] trading days
   FROZEN  : strictly more than ``frozen_min_days`` trading days behind

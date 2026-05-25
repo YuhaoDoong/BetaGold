@@ -1,4 +1,4 @@
-"""Regression tests for v3.7.244 (AC-8): horizon-aware split-conformal scaler.
+"""Regression tests for v3.7.244: horizon-aware split-conformal scaler.
 
 Covers:
 - Maturity-lag invariant (no use of unmatured forward labels).

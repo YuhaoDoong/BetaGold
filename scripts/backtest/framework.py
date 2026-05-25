@@ -75,7 +75,7 @@ def run_layer2_backtest_with_disposition(dates, ohlc, asset, strategy,
                                             today=None):
     """Iterate signal dates, run entry+exit, track disposition counts.
 
-    v3.7.242 (AC-7): replaces the closed-only collection pattern that
+    v3.7.242: replaces the closed-only collection pattern that
     silently dropped un-closed positions (survivorship bias). Per-leg
     expiry is checked against kline_db's max date to distinguish
     "stale-data drop" from "no liquid contract" from "still open".

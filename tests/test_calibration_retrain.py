@@ -1,4 +1,4 @@
-"""Regression tests for v3.7.245: calibration-gated retrain trigger (AC-9)."""
+"""Regression tests for v3.7.245: calibration-gated retrain trigger."""
 from __future__ import annotations
 import numpy as np
 import pandas as pd

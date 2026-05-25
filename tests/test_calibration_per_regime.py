@@ -1,4 +1,4 @@
-"""Regression tests for v3.7.246: per-regime conformal alpha (AC-8 closure)."""
+"""Regression tests for v3.7.246: per-regime conformal alpha (plan closure)."""
 from __future__ import annotations
 import numpy as np
 import pandas as pd
