@@ -31,7 +31,7 @@ independently reduces the joint event probability.
 
 | Item | Trigger | Acceptance gate |
 |---|---|---|
-| `build_band()` reads calibrated columns under config flag | After re-tuning | `gate_report.md:gate_passed: true` |
+| `build_band()` reads calibrated columns under config flag (review P2#3) | After re-tuning produces gate_passed=true | Config preflight check at app/daemon startup reads `gate_report.md:gate_passed: true` AND `calibration.live_cutover=True`; `build_band()` switches to `*_pct_calibrated` columns; rollback via single flag flip |
 | `extend_oos_predictions` writes calibrated columns alongside raw | After cutover decision | Schema migration documented in `data/positions_ledger_meta.json` |
 | Re-tune `target_coverage` per side (e.g. 0.90 each so joint ≈ 0.80) | v3.8 round 1 | New gate report carries the chosen target + passes the compound gate |
 | Re-tune per-regime classifier integration | After regime ML revisit | Per-regime coverage all-side > 70% per regime |
@@ -58,6 +58,13 @@ chose NOT to take as primary but are clean follow-on consolidations.
 |---|---|---|
 | `ExitContext` typed dataclass replacing per-strategy positional cfg | Alt-2 typed-context exploration | After production stabilizes on v3.7.* surface; tightens 43 call sites |
 | Look-ahead eradication CI gate | Alt-4 systematic leak detection | Build-time hook on `features_all.parquet` schema diffs |
+
+## Data Freshness Integration Tests (Review P3#2)
+
+| Item | Source | Trigger |
+|---|---|---|
+| Integration-level test that drives `build_positions_ledger.py` end-to-end across a `PENDING_KLINE` cycle: (1) first run produces pending and clamps waterline; (2) second run with refreshed kline produces the entry without duplicating | Review P3#2 | Production-data-shaped pytest fixture (cached parquet snippets representing kline_db at two timestamps); paired with v3.7.251 dedup invariant tests |
+| Tiered FRESH/STALE/FROZEN dashboard UX (vs current binary gate) | DEC-2 lower-bound deferred | When sidebar UX is being touched anyway |
 
 ## Code Quality (Codex Review Notes)
 

@@ -297,6 +297,11 @@ def build_for_asset(asset: str, days_back: int, today_dt: pd.Timestamp,
             is_closed = sim.get("is_closed", False)
             # v3.7.206: 期权也写 signal_tier (从 ETF sig_df)
             _opt_tier = sig_df.loc[_du].get("signal_tier", "") if _du in sig_df.index else ""
+            # v3.7.251 (review round 2 P2#1): preserve AWAITING_EXPIRY_CLOSE
+            # state from force_close_at_expiry; without this the row would
+            # silently default current_value=0, pnl_pct=0 and be indistinguishable
+            # from an ordinary open MTM with no data.
+            _state = sim.get("state", None)
             row = {
                 "asset": asset, "signal_date": _du.isoformat(),
                 "strategy": strat,
@@ -316,6 +321,7 @@ def build_for_asset(asset: str, days_back: int, today_dt: pd.Timestamp,
                 "current_value": float(sim.get("current_value", 0) or 0),
                 "pnl_pct": float(sim.get("pnl_pct", 0) or 0),
                 "hold_days": int(sim.get("hold_days", 0) or 0),
+                "state": _state,  # v3.7.251: AWAITING_EXPIRY_CLOSE | None
                 # v3.7.219: 冻结元数据
                 "created_at": _now_iso,
                 "config_version": config_version,
@@ -643,6 +649,20 @@ def main():
     df = pd.DataFrame(all_rows)
     if df.empty:
         print("[ledger] 无信号, 不写入"); return
+
+    # v3.7.251 (review round 2 P1#3): true idempotent dedup by
+    # (asset, signal_date, strategy). 'first' keeps the refreshed (frozen
+    # historical) row when the same key reappears in new_rows after a
+    # PENDING_KLINE retry advanced the waterline back. Without this, the
+    # waterline clamp would produce duplicate rows on each retry.
+    _dedup_keys = ["asset", "signal_date", "strategy"]
+    _before = len(df)
+    df = df.drop_duplicates(subset=_dedup_keys, keep="first")
+    _after = len(df)
+    if _before != _after:
+        print(f"[ledger] dedup: {_before} → {_after} rows "
+                f"(dropped {_before - _after} duplicates on "
+                f"{'/'.join(_dedup_keys)})")
 
     os.makedirs(os.path.dirname(LEDGER_JSON), exist_ok=True)
     df_sorted = df.sort_values(["asset", "signal_date", "strategy"])
