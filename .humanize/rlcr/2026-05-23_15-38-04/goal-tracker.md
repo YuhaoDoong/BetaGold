@@ -48,7 +48,7 @@ Repair the GLD/SLV trading system's correctness floor and the DL Range predictor
 | task-d2 | AC-7 | done (Round 4, pending verification) | coding | claude | v3.7.242: run_layer2_backtest_with_disposition + per-leg DTE + 2 runners 重构 + 10 pytest (reconciliation invariant + 5 disposition 分支) |
 | task-e1 | AC-5 | done (Round 3, pending verification) | coding | claude | v3.7.240: select_gld_sync_strategy pure fn + write_shadow_record + live_cutover_allowed + 19 pytest PASS |
 | task-e2 | AC-5 | done (Round 3, pending verification) | analyze | claude | v3.7.240 replay archive: 5/5 March BC entries would switch to SP; native SP same-month +66.7% vs BC -334.3% = +401pp counterfactual |
-| task-e3 | AC-14 | pending | coding | claude | Dashboard run_backtest wrapper + parity assertion + DeprecationWarning |
+| task-e3 | AC-14 | done (Round 10, pending verification) | coding | claude | v3.7.249: core/dashboard_parity.py + DeprecationWarning + 8 pytest |
 | task-f2 | AC-4 | pending | coding | claude | tests/test_expiry_intrinsic.py — 16 scenarios incl asymmetric IC fixture |
 | task-f3 | AC-3 | pending | coding | claude | tests/test_per_asset_cfg.py |
 | task-f4 | AC-8, AC-9 | done (Round 7, pending verification) | coding | claude | scaler 12 (R6) + retrain 11 (R7) + per-regime 6 (R7) = 29 calibration tests, 全套 105 PASS |
