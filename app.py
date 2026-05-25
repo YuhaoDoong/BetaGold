@@ -1344,13 +1344,41 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
     _avg_exit_time: dict = {}; _avg_exit_price: dict = {}
 
     # 真实策略回测 — 入场/退出价用 log 代表价 + 3% 止损 + 连续熔断
-    trades = run_backtest(
-        close_d, high_d, low_d, upper_band, lower_band,
-        regime, rv_pctile, gld_1h=gld_1h,
-        start_date=pd.Timestamp(today_sgt) - timedelta(days=180),
-        entry_log_lookup=_worst_buy_lookup,
-        exit_log_lookup=_worst_exit_lookup,
-        asset=asset_key)
+    # v3.7.254: legacy run_backtest 已 DeprecationWarning, 但 Dashboard 这条
+    # 路径需要保留 intraday StopLoss/Pullback/ACTIVE 语义 (per the parity
+    # contract). 在 one-release deprecation 窗内 suppress warning, 同时跑
+    # unified path 做 shadow parity 写 attribution CSV.
+    import warnings as _warn_dash
+    with _warn_dash.catch_warnings():
+        _warn_dash.filterwarnings(
+            "ignore",
+            message=".*run_backtest is deprecated.*",
+            category=DeprecationWarning)
+        trades = run_backtest(
+            close_d, high_d, low_d, upper_band, lower_band,
+            regime, rv_pctile, gld_1h=gld_1h,
+            start_date=pd.Timestamp(today_sgt) - timedelta(days=180),
+            entry_log_lookup=_worst_buy_lookup,
+            exit_log_lookup=_worst_exit_lookup,
+            asset=asset_key)
+    # Shadow parity (silent unless user opens the expander below)
+    _dashboard_parity_verdict = None
+    try:
+        from core.dashboard_parity import (
+            run_unified_backtest as _run_unified_dash,
+            parity_check as _parity_check_dash,
+        )
+        _unified = _run_unified_dash(
+            close_d, high_d, low_d, upper_band, lower_band,
+            regime, rv_pctile, asset=asset_key)
+        _legacy_trade_dicts = [{"exit_type": t.get("exit_type")} for t in trades]
+        _dashboard_parity_verdict = _parity_check_dash(
+            _legacy_trade_dicts,
+            _unified["trades"],
+            drift_attribution_path="/Users/yhdong/Gold/data/cache/signal_drift_attribution.csv")
+    except Exception as _parity_e:
+        _dashboard_parity_verdict = {"status": "ERROR",
+                                        "error": str(_parity_e)}
 
     def _log_price(d, side):
         """从 log 取该日代表价; 无记录返回 None."""
@@ -2497,7 +2525,8 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                                           _eO_c, _eO_c, _eC_c, _eH_c, _eL_c,
                                           dte_target=(14 if _str_c == "STRADDLE" else 30))
                     if not _ent_c["legs"]: continue
-                    _sim_c = _se_chart(_ent_c, _dc, _str_c, _today_ch)
+                    _sim_c = _se_chart(_ent_c, _dc, _str_c, _today_ch,
+                                         asset=asset_key)  # v3.7.254 per-asset cfg
                     if not _sim_c.get("is_closed"): continue
                     _xd_c = _sim_c["exit_date"]
                     if _xd_c not in _gld_csv_ch.index: continue
@@ -3650,7 +3679,8 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                     try:
                         from core.paper_positions import simulate_option_exit as _sim_t
                         _sim_today = _sim_t(_ent_pricing, _today, _strat,
-                                              pd.Timestamp(today_sgt).normalize())
+                                              pd.Timestamp(today_sgt).normalize(),
+                                              asset=asset_key)  # v3.7.254 per-asset cfg
                         _gain = _sim_today.get("pnl_pct", 0.0)
                         _exit_legs_t = _sim_today.get("leg_prices", [])
                         if _sim_today.get("is_closed"):
@@ -3806,7 +3836,8 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                 # 算 OPEN MTM (跟历史 section 一致, kline_db EOD close)
                 from core.paper_positions import simulate_option_exit as _se_v
                 _sim_v = _se_v(_ent_v, _today, _vs,
-                                pd.Timestamp(today_sgt).normalize())
+                                pd.Timestamp(today_sgt).normalize(),
+                                asset=asset_key)  # v3.7.254 per-asset cfg
                 _exit_legs_v = _sim_v.get("leg_prices", [])
                 _cur_v = _sim_v.get("current_value", _credit_v)
                 _gain_v = _sim_v.get("pnl_pct", 0.0)
@@ -4034,7 +4065,8 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
             _live_low = min(_cur_spot_u, float(locals().get("_L_today") or _cur_spot_u))
             _sim = _sim_exit(_ent_pricing, _du, _strat, _today_dt_u,
                               live_spot=_cur_spot_u,
-                              live_high=_live_high, live_low=_live_low)
+                              live_high=_live_high, live_low=_live_low,
+                              asset=asset_key)  # v3.7.254 per-asset cfg
             _is_closed = _sim.get("is_closed", False)
             _gain_u = _sim.get("pnl_pct", 0.0)
             _exit_legs = _sim.get("leg_prices", [])
@@ -4226,6 +4258,18 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                     _cur_etf_str = "—"
                 _opt_now_str = (f"${_cur_opt:.2f}" if not r["is_closed"]
                                  else f"平${_cur_opt:.2f}")
+                # v3.7.254: tag AWAITING_EXPIRY_CLOSE rows so users see the
+                # row is intentionally deferred (waiting for ETF expiry close)
+                # rather than a generic no-data open.
+                _state_val = r.get("state")
+                _opt_now_str_with_state = (
+                    f"⏳ {_opt_now_str}" if _state_val == "AWAITING_EXPIRY_CLOSE"
+                    else _opt_now_str
+                )
+                _exit_label_with_state = (
+                    f"AWAITING_EXPIRY_CLOSE" if _state_val == "AWAITING_EXPIRY_CLOSE"
+                    else _exit_label
+                )
                 _rec = {
                     "信号日": _du.strftime("%m-%d"),
                     "Tier": _tier_disp,
@@ -4234,9 +4278,9 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
                     "入场标的": f"${_entry_etf_val:.2f}",
                     "现价标的": _cur_etf_str,
                     "期权入场": f"{_opt_kind}${_credit_or_prem:.2f}",
-                    "期权现价": _opt_now_str,
+                    "期权现价": _opt_now_str_with_state,
                     "P&L%": _gain_str,
-                    "状态": _exit_label,
+                    "状态": _exit_label_with_state,
                 }
             if r["is_closed"]:
                 _ledger_closed.append(_rec)
@@ -4423,6 +4467,58 @@ def _render_intraday_mode(close_d, high_d, low_d, upper_band, lower_band,
 - **风控**: 连续 {CONSECUTIVE_STOP} 笔止损熔断 (bp>0.50 恢复)
 - **盘中数据**: {gld_1h_info}
 """)
+
+    # v3.7.254: calibration audit + gate report (shadow-only diagnostics)
+    with st.expander("🎯 模型校准 (calibration audit + gate report, shadow-only)"):
+        import json as _json_cal
+        from pathlib import Path as _Path_cal
+        _audit_dir = _Path_cal("/Users/yhdong/Gold/data/backtest_history/"
+                                  "v3.7.243_calibration_audit")
+        _gate_dir = _Path_cal("/Users/yhdong/Gold/data/backtest_history/"
+                                 "v3.7.247_calibration_gate")
+
+        st.markdown("**OOS 校准状态**: scaler 已建 (v3.7.244-246) + retrain "
+                      "trigger (v3.7.245) + per-regime alpha (v3.7.246). "
+                      "当前 ship as **shadow-only** — `build_band()` 仍读 raw "
+                      "OOS predictions (calibrated columns 写在 parquet 但 "
+                      "未消费).")
+
+        # Gate decision
+        _gate_json = _gate_dir / "gate_decision.json"
+        if _gate_json.exists():
+            try:
+                _gd = _json_cal.loads(_gate_json.read_text())
+                _ok = _gd.get("gate_passed", False)
+                _gate_emo = "✅" if _ok else "🟡"
+                st.markdown(f"**Gate verdict**: {_gate_emo} `gate_passed={_ok}` "
+                              f"({_gate_dir.name})")
+                _per_asset = _gd.get("per_asset", [])
+                if _per_asset:
+                    st.dataframe(pd.DataFrame(_per_asset),
+                                    use_container_width=True, hide_index=True)
+            except Exception as _ge:
+                st.caption(f"⚠️ gate_decision.json 解析失败: {_ge}")
+        else:
+            st.caption(f"gate_decision.json 不存在 (期望: `{_gate_json}`)")
+            st.caption("跑 `python scripts/eval/calibration_gate_grid.py` 生成")
+
+        # Audit baseline (per-asset CSVs)
+        st.markdown("**Per-asset audit (113-day baseline, 2025-12-01 → 2026-05-13)**")
+        for _a in ("GLD", "SLV"):
+            _csv_p = _audit_dir / f"{_a}_2025-12-01_2026-05-13.csv"
+            if not _csv_p.exists():
+                st.caption(f"{_a}: audit CSV 缺失 ({_csv_p.name})")
+                continue
+            try:
+                _adf = pd.read_csv(_csv_p)
+                st.markdown(f"##### {_a}")
+                st.dataframe(_adf, use_container_width=True, hide_index=True)
+            except Exception as _ae:
+                st.caption(f"{_a}: 读取失败: {_ae}")
+
+        st.caption("跑 `python scripts/eval/model_calibration_audit.py --asset "
+                     "GLD --start 2025-12-01 --end 2026-05-13` 重新生成 audit. "
+                     "Cutover 决策在 `gate_report.md` 的 `gate_passed: true|false` 行.")
 
     # ── v3.7.204: 信号 S/A/B Tier 历史胜率 (nested 语义) ──
     st.divider()
@@ -4680,6 +4776,22 @@ def main():
             st.sidebar.caption(f"{_icon} ledger 更新于 {_age_min:.0f} 分钟前")
     except Exception:
         pass
+
+    # v3.7.254: kline_db FRESH/STALE/FROZEN 状态 (per the plan)
+    try:
+        from core.data_freshness import kline_db_state as _kfs
+        _rec = _kfs(pd.Timestamp.today().normalize())
+        _emap = {"FRESH": "🟢", "STALE": "🟡", "FROZEN": "🔴",
+                  "MISSING": "⚫"}
+        _kicon = _emap.get(_rec.state, "❓")
+        _gap = _rec.gap_trading_days if _rec.gap_trading_days is not None else "?"
+        _maxd = _rec.max_date.date() if _rec.max_date is not None else "—"
+        st.sidebar.caption(f"{_kicon} kline_db {_rec.state} "
+                            f"(max={_maxd}, gap={_gap}d)")
+        if _rec.state in ("FROZEN", "MISSING"):
+            st.sidebar.caption("⚠️ 新期权信号当前被 freshness gate 阻断")
+    except Exception as _kfs_e:
+        st.sidebar.caption(f"⚠️ freshness probe 失败: {_kfs_e}")
 
     # v3.7.63: 模块化 — GLD/SLV 共用 pipeline, 仅参数不同
     def _load_asset_pipeline(asset_key: str):
@@ -6156,6 +6268,32 @@ def main():
     # ── 交易记录 ──
     if trades:
         st.divider()
+        # v3.7.254: parity audit (unified path shadow) expander
+        with st.expander("🔍 Unified-backtest 路径 parity (v3.7.249+)", expanded=False):
+            _v = _dashboard_parity_verdict
+            if _v is None:
+                st.caption("parity 检查未运行 (可能依赖缺失)")
+            elif isinstance(_v, dict) and _v.get("status") == "ERROR":
+                st.caption(f"⚠️ parity 检查出错: {_v.get('error', '')[:120]}")
+            else:
+                _stat = getattr(_v, "status", _v)
+                _emo = {"PASS": "✅", "PASS_WITH_DRIFT": "🟡",
+                          "FAIL_EXIT_EVENT_COUNT": "❌"}.get(_stat, "?")
+                st.caption(f"{_emo} parity status: **{_stat}**")
+                _lec = getattr(_v, "legacy_event_counts", {})
+                _uec = getattr(_v, "unified_event_counts", {})
+                _drift = getattr(_v, "max_count_drift", 0)
+                _drifted = getattr(_v, "drifted_signal_dates", []) or []
+                st.caption(f"max event-count drift: {_drift}; "
+                            f"drifted signal dates: {len(_drifted)}")
+                if _lec and _uec:
+                    import pandas as _pd_dash
+                    _df_dash = _pd_dash.DataFrame(
+                        {"legacy": _lec, "unified": _uec})
+                    st.dataframe(_df_dash, use_container_width=True)
+                _attr_p = getattr(_v, "attribution_path", None)
+                if _attr_p:
+                    st.caption(f"📝 drift attribution written: `{_attr_p}`")
         st.subheader(f"交易记录 ({len(trades)} 笔)")
         trecs = []
         for t in trades:
