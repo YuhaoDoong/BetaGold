@@ -6,6 +6,15 @@ data/
 *.png
 scripts/test_*.py
 
+# v3.7.253 security: credentials must NEVER enter git
+.env
+.env.*
+*.pem
+*.key
+secrets.yaml
+.binance_key
+.moomoo_pass
+
 # v3.7.52: 真实期权回测 + 本地累积 K 线 — 显式包含
 !data/
 !data/real_options_backtest/

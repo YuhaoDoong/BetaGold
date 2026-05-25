@@ -2,14 +2,29 @@
 
 通过 ccxt 获取币安金银合约/现货实时行情.
 用于 Dashboard 实时价格展示.
+
+Credentials
+-----------
+v3.7.253: read credentials from environment variables, NOT hardcoded.
+Set ``BINANCE_API_KEY`` and ``BINANCE_SECRET`` in your shell or in a
+project-local ``.env`` file (which is git-ignored).
+
+Earlier commits in this repo's history previously hardcoded the
+credentials (scrubbed in v3.7.253 via ``git filter-repo --replace-text``).
+Any key that was ever committed must be rotated.
 """
 
 import logging
+import os
 
 logger = logging.getLogger(__name__)
 
-BINANCE_API_KEY = "***REDACTED-BINANCE-KEY***"
-BINANCE_SECRET = "***REDACTED-BINANCE-SECRET***"
+BINANCE_API_KEY = os.environ.get("BINANCE_API_KEY", "")
+BINANCE_SECRET = os.environ.get("BINANCE_SECRET", "")
+if not (BINANCE_API_KEY and BINANCE_SECRET):
+    logger.warning(
+        "Binance credentials not set; live price fetch will fail. "
+        "Export BINANCE_API_KEY and BINANCE_SECRET in your shell.")
 
 # 金银交易对
 SYMBOLS = {
