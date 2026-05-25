@@ -31,3 +31,13 @@ Solution: Use a single coherent rule on signed distance — `cal_distance_from_t
 Constraints: Applies anywhere a "gate" or "regression check" compares two measurements against a target value (calibration coverage, drift metrics, any tracked-toward-target KPI).
 Validation Evidence: tests/test_calibration_gate.py::test_gate_handles_raw_above_target caught the original mis-design; test now passes with the single-rule.
 Source Rounds: 8
+
+## Lesson: audit-scope-by-baseline-diff
+Lesson ID: BL-20260525-audit-scope-by-baseline-diff
+Scope: scripts/eval/audit_plan_markers.sh and future "introduced by this patch series" audits
+Problem Description: A whole-tree grep audit for forbidden markers ("AC-N", "Step N:", etc.) found 50 violations on first run, most of which were pre-existing legacy code (e.g. workflow step labels in setup_data.py) that the contract did NOT cover. The plan wording is "no markers introduced by these patches" — implicitly baseline-scoped.
+Root Cause: Audit scope set to the whole repo rather than to files modified by the patch series under review.
+Solution: Scope the audit to `git diff --name-only <baseline>..HEAD` before applying the grep. Self-exempt the audit script itself (it must reference the patterns it forbids in order to enforce them).
+Constraints: Requires a baseline tag to exist locally; the audit refuses to run with a clear error if missing.
+Validation Evidence: scripts/eval/audit_plan_markers.sh exit 0 after scope fix; 50 violations → 0.
+Source Rounds: 9
