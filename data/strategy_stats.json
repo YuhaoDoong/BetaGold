@@ -1,0 +1,175 @@
+{
+  "_meta": {
+    "generated_at": "2026-06-10T11:27:36.859778",
+    "data_window_real": "1y kline_db + Binance perp",
+    "data_window_5y": "10y backtest_history (含 LEAPS BS proxy)",
+    "kelly_caps": {
+      "half_kelly": 25.0,
+      "qtr_kelly": 15.0
+    }
+  },
+  "GLD": {
+    "BUY CALL": {
+      "real_1y": {
+        "n": 29,
+        "wr_pct": 100.0,
+        "avg_pct": 106.12,
+        "EV_pct": 106.12,
+        "half_kelly_pct": 25.0,
+        "qtr_kelly_pct": 15.0
+      },
+      "all_history": {
+        "n": 44,
+        "wr_pct": 84.1,
+        "avg_pct": 72.21,
+        "EV_pct": 72.21,
+        "half_kelly_pct": 25.0,
+        "qtr_kelly_pct": 15.0
+      },
+      "recommended_half_kelly": 25.0,
+      "recommended_qtr_kelly": 15.0
+    },
+    "SELL PUT": {
+      "real_1y": {
+        "n": 10,
+        "wr_pct": 80.0,
+        "avg_pct": 11.6,
+        "EV_pct": 11.6,
+        "half_kelly_pct": 14.7,
+        "qtr_kelly_pct": 7.3
+      },
+      "all_history": {
+        "n": 44,
+        "wr_pct": 81.8,
+        "avg_pct": 8.86,
+        "EV_pct": 8.86,
+        "half_kelly_pct": 25.0,
+        "qtr_kelly_pct": 15.0
+      },
+      "recommended_half_kelly": 14.7,
+      "recommended_qtr_kelly": 7.3
+    },
+    "STRADDLE": {
+      "real_1y": {
+        "n": 25,
+        "wr_pct": 68.0,
+        "avg_pct": 24.22,
+        "EV_pct": 24.22,
+        "half_kelly_pct": 25.0,
+        "qtr_kelly_pct": 15.0
+      },
+      "all_history": {
+        "n": 77,
+        "wr_pct": 70.1,
+        "avg_pct": 26.56,
+        "EV_pct": 26.56,
+        "half_kelly_pct": 25.0,
+        "qtr_kelly_pct": 15.0
+      },
+      "recommended_half_kelly": 25.0,
+      "recommended_qtr_kelly": 15.0
+    },
+    "FUTURES_LONG": {
+      "real_1y": {
+        "n": 15,
+        "wr_pct": 60.0,
+        "avg_pct": -2.72,
+        "EV_pct": -2.72,
+        "half_kelly_pct": 0.0,
+        "qtr_kelly_pct": 0.0
+      },
+      "all_history": {
+        "n": 234,
+        "wr_pct": 85.5,
+        "avg_pct": 2.67,
+        "EV_pct": 2.67,
+        "half_kelly_pct": 25.0,
+        "qtr_kelly_pct": 15.0
+      },
+      "recommended_half_kelly": 0.0,
+      "recommended_qtr_kelly": 0.0
+    }
+  },
+  "SLV": {
+    "BUY CALL": {
+      "real_1y": {
+        "n": 15,
+        "wr_pct": 100.0,
+        "avg_pct": 68.24,
+        "EV_pct": 68.24,
+        "half_kelly_pct": 25.0,
+        "qtr_kelly_pct": 15.0
+      },
+      "all_history": {
+        "n": 49,
+        "wr_pct": 69.4,
+        "avg_pct": 30.68,
+        "EV_pct": 30.68,
+        "half_kelly_pct": 25.0,
+        "qtr_kelly_pct": 15.0
+      },
+      "recommended_half_kelly": 25.0,
+      "recommended_qtr_kelly": 15.0
+    },
+    "SELL PUT": {
+      "real_1y": {
+        "n": 26,
+        "wr_pct": 88.5,
+        "avg_pct": 26.7,
+        "EV_pct": 26.7,
+        "half_kelly_pct": 25.0,
+        "qtr_kelly_pct": 15.0
+      },
+      "all_history": {
+        "n": 38,
+        "wr_pct": 76.3,
+        "avg_pct": 23.54,
+        "EV_pct": 23.54,
+        "half_kelly_pct": 25.0,
+        "qtr_kelly_pct": 15.0
+      },
+      "recommended_half_kelly": 25.0,
+      "recommended_qtr_kelly": 15.0
+    },
+    "STRADDLE": {
+      "real_1y": {
+        "n": 0,
+        "wr_pct": null,
+        "avg_pct": null,
+        "half_kelly_pct": null,
+        "qtr_kelly_pct": null,
+        "EV_pct": null
+      },
+      "all_history": {
+        "n": 33,
+        "wr_pct": 60.6,
+        "avg_pct": 32.69,
+        "EV_pct": 32.69,
+        "half_kelly_pct": 25.0,
+        "qtr_kelly_pct": 15.0
+      },
+      "recommended_half_kelly": 25.0,
+      "recommended_qtr_kelly": 15.0
+    },
+    "FUTURES_LONG": {
+      "real_1y": {
+        "n": 33,
+        "wr_pct": 66.7,
+        "avg_pct": 1.19,
+        "EV_pct": 1.19,
+        "half_kelly_pct": 6.2,
+        "qtr_kelly_pct": 3.1
+      },
+      "all_history": {
+        "n": 225,
+        "wr_pct": 70.7,
+        "avg_pct": 3.28,
+        "EV_pct": 3.28,
+        "half_kelly_pct": 25.0,
+        "qtr_kelly_pct": 15.0
+      },
+      "recommended_half_kelly": 6.2,
+      "recommended_qtr_kelly": 3.1
+    }
+  }
+}

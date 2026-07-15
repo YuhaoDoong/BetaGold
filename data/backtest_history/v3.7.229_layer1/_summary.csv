@@ -1,0 +1,13 @@
+asset,filter,best_dist,consistent,best_10y,best_5y,best_3y,best_1y
+GLD,buy_bp,"{0.2: 3, 0.35: 1}",False,0.2,0.2,0.2,0.35
+GLD,rv_pctile_max,"{0.75: 2, 1.0: 1, 0.7: 1}",False,1.0,0.75,0.75,0.7
+GLD,ret_20d_min,{-0.2: 4},True,-0.2,-0.2,-0.2,-0.2
+GLD,ret_20d_max,"{-0.03: 2, 0.03: 2}",False,-0.03,0.03,0.03,-0.03
+GLD,iv_filter_high_min,{25.0: 4},True,25.0,25.0,25.0,25.0
+GLD,ma_trend_threshold,"{0.975: 3, 0.99: 1}",False,0.99,0.975,0.975,0.975
+SLV,buy_bp,"{0.2: 3, 0.4: 1}",False,0.2,0.2,0.2,0.4
+SLV,rv_pctile_max,"{1.0: 3, 0.5: 1}",False,1.0,1.0,1.0,0.5
+SLV,ret_20d_min,{-0.2: 4},True,-0.2,-0.2,-0.2,-0.2
+SLV,ret_20d_max,{0.03: 4},True,0.03,0.03,0.03,0.03
+SLV,iv_filter_high_min,{25.0: 4},True,25.0,25.0,25.0,25.0
+SLV,ma_trend_threshold,{0.99: 4},True,0.99,0.99,0.99,0.99

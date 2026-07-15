@@ -1,0 +1,13 @@
+{
+  "gate_passed": false,
+  "per_asset": [
+    {
+      "asset": "GLD",
+      "gate_passed": false
+    },
+    {
+      "asset": "SLV",
+      "gate_passed": false
+    }
+  ]
+}

@@ -1,0 +1,2 @@
+入场日,信号类型,对应模拟信号,工具,标的,入场价,Strike,DTE,Long Call cost,Long Put cost,其他成本,总成本,出场日,Long Call exit,Long Put exit,出场价,实现 P&L,备注
+2026-04-29,STRADDLE,4/29 STRADDLE,期权 (Long Straddle),SLV,2.74,5.32,16,2.58,0.0,0.0,2.58,,,,,,

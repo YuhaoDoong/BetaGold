@@ -1,0 +1,11 @@
+asset,filter,best_dist,avg_test,avg_base,uplift
+GLD,ret_20d_min,{-0.2: 8},2.35,2.35,0.0
+GLD,ret_20d_max,"{-0.03: 4, 0.1: 2, 0.03: 2}",2.95,2.35,0.6
+GLD,rv_pctile_max,"{0.7: 5, 0.75: 2, 0.9: 1}",2.26,2.35,-0.09
+GLD,iv_filter_high_min,"{28: 5, 22: 3}",2.56,2.35,0.22
+GLD,ma_trend_threshold,"{0.0: 4, 1.0: 4}",2.2,2.35,-0.14
+SLV,ret_20d_min,"{-0.2: 1, -0.03: 1}",7.33,7.68,-0.34
+SLV,ret_20d_max,"{-0.05: 1, 0.1: 1}",7.37,7.68,-0.3
+SLV,rv_pctile_max,"{0.5: 1, 1.0: 1}",2.76,7.68,-4.91
+SLV,iv_filter_high_min,"{22: 1, 28: 1}",5.58,7.68,-2.09
+SLV,ma_trend_threshold,{0.97: 2},7.03,7.68,-0.64

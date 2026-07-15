@@ -1,0 +1,178 @@
+{
+  "schema_version": 1,
+  "title": "Surgical Per-Bug Patch Series For Mainline Hardening",
+  "original_idea": "主题: 量化交易系统（GLD/SLV 期权 + 期货）架构鲁棒性与正确性优化\n\n仓库根: /Users/yhdong/GoldDash (主代码, git repo) + /Users/yhdong/Gold (数据 + 训练, 非 git)\n\n现状摘要:\n- v3.7.232 期权交易系统, 主链: 信号生成 (signals_v2) → 策略选择 (BC/SP/STRADDLE/SHORT_VOL/FUTURES) → 仓位 ledger → 实时退出\n- 多窗口回测两层: Layer1 信号验证 (10y/5y/3y/1y), Layer2 策略 P&L (1y/6m/3m)\n- 刚加 expiry-intrinsic 强平兜底 (force_close_at_expiry), 仅 BC/SP 接入\n- kline_db 滞后 17 天 (max=2026-05-06, today=2026-05-23), Moomoo 每日 100 额度\n- Cross-asset: SLV-S → GLD BC 固定策略, 未 IV-aware\n\n刚拿到的 Codex 架构审查结论 (5 严重 / 6 中等 / 4 优化):\n严重:\n1. paper_positions.py:689 simulate_option_exit 没传 asset 给 simulate_sp/bc/straddle/short_vol_position → per-asset cfg 全部失效, GLD/SLV 都用默认值\n2. paper_positions.py:366 entry pricing 无 max_fallback_days, 用 stale kline 定价并冻结\n3. v3.7.232 expiry 兜底只接 BC/SP, STRADDLE/SHORT_VOL 仍可能永远 OPEN\n4. 生产 regime min_hold_days=20 (look-ahead), 回测=1, 不一致\n5. Dashboard '真实策略回测' 走旧 run_backtest, 没应用 IV 三档/sp_score/MA filter/tier\n\n中等:\n- Cross-asset 应 IV-aware (GLD bp_low<=0.10 AND GVZ>=25 → SP)\n- Layer2 回测只统计 closed → 幸存者偏差\n- framework.py:120 max_move 反向 rolling 有 off-by-one\n- OI 修正只在 Dashboard, 没进主链\n- paper_positions.py:177 SP fallback sign 算反 (-1 应为 +1)\n- positions_ledger.py:87 entry_spot 实际是期权 daily close 不是 ETF spot\n\n优化:\n- ledger daemon 加 kline 新鲜度硬闸\n- 风控迁入主链 (exposure gate, max_open, 连亏熔断)\n- v3.7.232 加回归测试\n- yfinance fallback 用 bid/ask mid 优先\n\n目标: 形成一份完整 idea draft, 系统性消除上述问题, 同时为后续 humanize 工作流 (explore-idea → gen-plan → refine-plan → start-rlcr-loop) 提供 grounded 起点。\n\n约束:\n- 一切要数据/事实说话, 不偷工减料, 不用模拟数据\n- 数据必须当日更新, 不能用陈旧数据预测\n- 优先消除正确性问题, 性能/优化次之\n- 改动要可分阶段独立验证, 避免大爆炸式重构\n",
+  "synthesis_notes": "The Primary series is intentionally minimal so each fix can be tagged, validated, and reverted independently — but it is not architecturally maximal. If the project later wants to consolidate, the alternatives fold in cleanly: Alt-1 (Signal Pipeline) absorbs v3.7.243 (Dashboard run_backtest deprecation) and rationalizes the 29 analysis scripts; Alt-2 (Typed Exit Context) absorbs v3.7.238 (asset threading) and v3.7.239 (Straddle/ShortVol expiry wiring) into one structural change; Alt-3 (Freshness State Machine) extends v3.7.236/237 (kline freshness guard) from a single-purpose gate into a full lifecycle observable; Alt-4 (Look-Ahead Audit) elevates v3.7.240 (max_move off-by-one) and v3.7.233 (regime min_hold_days) into a permanent enforcement layer; Alt-5 (Policy Layer) lifts v3.7.242 (cross-asset IV-awareness) into a YAML-driven engine that can host future risk rules without code churn. The recommended trajectory: Primary delivers correctness now in 12 tags, then v3.8 picks Alt-2 + Alt-4 together (typed context + leak detector form a coherent 'structural correctness' layer), and v3.9 picks Alt-1 + Alt-5 (one canonical pipeline driven by one declarative policy).",
+  "metadata": {
+    "n_requested": 6,
+    "n_returned": 6,
+    "timestamp": "20260523-144517",
+    "draft_path": "/Users/yhdong/Gold/.humanize/ideas/gld-slv-20260523-143917.md"
+  },
+  "directions": [
+    {
+      "direction_id": "dir-00-surgical-per-bug-patch-series",
+      "dir_slug": "surgical-per-bug-patch-series",
+      "source_index": 0,
+      "display_order": 0,
+      "is_primary": true,
+      "name": "Surgical Per-Bug Patch Series",
+      "rationale": "Treat each Codex finding as a standalone, independently verifiable patch (one file, one test) sequenced by severity — maximizes safety, traceability, and rollback granularity at the cost of more PR overhead than architectural rewrites.",
+      "raw_phase3_response": "APPROACH_SUMMARY: Modular, version-tagged patch cadence addressing each Codex finding as independent single-file or tightly-scoped commits sequenced by severity. Each patch targets ONE root cause (1-3 files, minimal surface), includes a focused test, receives its own v3.7.* tag (continuing v3.7.233, 234, ...), and is independently reversible via git revert. Patch series ordering (severity + dependency): #4 regime default flip first (pure parameter); #2 max_fallback_days guard (defensive); then #1 + #3 + #5 grouped (all touch paper_positions.py exit logic). Affected components per patch: #1 paper_positions.py:689-700 + 4 strategy modules; #2 paper_positions.py:344-381; #3 options_exit.py + paper_positions.py:688-729; #4 regime.py default + app.py:112 + build_positions_ledger.py:92; #5 paper_positions.py:179 single sign flip.\nOBJECTIVE_EVIDENCE:\n- core/paper_positions.py:689-700 — 4 simulate_*_position calls without asset parameter\n- core/strategies/buy_call.py:34, sell_put.py:42, straddle.py:22, short_vol.py:24 — signatures with cfg=None default\n- core/paper_positions.py:344-381 pick_liquid_monthly_option — fallback_offset_days computed but never clamped\n- core/strategies/options_exit.py:249-297 force_close_at_expiry only wired to BC (line 58) + SP (line 73)\n- core/regime.py:24 default min_hold_days=20; backtest framework.py:70 forces =1\n- core/paper_positions.py:179 sign = -1 for non-BUY-CALL/SPOT, applied to SELL PUT incorrectly\n- Prior art: v3.7.184 per-asset SP split, v3.7.156 KLINE_DB mtime cache, v3.7.150 CSV corruption fix, v3.7.232 expiry intrinsic — all single-file patches with v3.7.* tags\n- Test pattern: scripts/bc_entry_filter_test.py, scripts/test_oi_adjust.py, scripts/full_history_backtest.py (script-based integration validation; tests/ empty)\nKNOWN_RISKS:\n- Asset parameter threading depth — risk of incomplete migration silently re-introducing bug\n- max_fallback_days clamp too aggressive — 7d may reject valid fallback during prolonged outages\n- force_close_at_expiry signature mismatch — STRADDLE/SHORT_VOL differ in max_risk calc\n- Regime min_hold_days=1 breaks intraday signal cadence — mitigated by EOD-only flip\n- SP sign flip cascades — audit ledger/dashboard sign comparisons\nCONFIDENCE: high",
+      "approach_summary": "Modular, version-tagged patch cadence addressing each Codex finding as independent, single-file or tightly-scoped commits sequenced by severity then dependency. Each patch targets one root cause, includes a focused validation script, receives its own v3.7.* tag (continuing the v3.7.150/156/184/232 cadence), and is independently reversible. 12 tags grouped into 6 phases: A) pure parameter/sign flips (regime min_hold_days, SP fallback sign, entry_spot rename); B) defensive ingestion guards (max_fallback_days, ledger daemon freshness gate); C) exit-simulation contract + per-asset cfg threading (asset parameter passthrough, Straddle/ShortVol expiry wiring); D) derived-metric corrections (max_move off-by-one, Layer 2 survivorship); E) cross-asset IV-awareness + Dashboard backtest parity; F) regression test harness (pytest, 12 expiry scenarios + per-asset cfg assertion).",
+      "objective_evidence": [
+        "core/paper_positions.py:689–700 — simulate_bc/sp/straddle/short_vol_position called without asset/cfg parameter; signatures at strategies/{buy_call,sell_put,straddle,short_vol}.py declare cfg=None and silently substitute defaults — confirms Codex #1.",
+        "core/paper_positions.py:344–381 pick_liquid_monthly_option computes fallback_offset_days but applies no max_fallback_days guard — confirms Codex #2.",
+        "core/strategies/options_exit.py:force_close_at_expiry only called from buy_call.py:58 and sell_put.py:73; straddle.py:33 and short_vol.py:73 still go directly to first_kdb lookup — confirms Codex #3.",
+        "core/regime.py:24 default min_hold_days=20; _apply_min_hold (118–138) rewrites historical regime when chunk fails to persist 20 days; 11 production call sites use the default while scripts/backtest/framework.py:70 forces =1 — confirms Codex #4.",
+        "core/paper_positions.py:179 sign = 1 if strategy in ('BUY CALL','SPOT') else -1 applies to SELL PUT, which has positive delta — confirms Codex #5.",
+        "core/positions_ledger.py:87 stores entry_pricing['daily_close_price'] (option's own daily close) into a field named entry_spot — confirms middle finding.",
+        "Prior art for incremental v3.7.* single-file patches: v3.7.184 per-asset SP split (1 file + 1 validation script), v3.7.156 KLINE_DB mtime cache, v3.7.150 CSV corruption fix, v3.7.232 expiry intrinsic helper (3 files + 1 helper). v3.7.200–211 explicitly grouped 12 micro-fixes and each remained individually testable.",
+        "Test infrastructure: scripts/bc_entry_filter_test.py, scripts/test_oi_adjust.py, scripts/full_history_backtest.py all follow 'load historical CSV → apply patch → compare WR/sum/scoreB' pattern. tests/ directory currently empty — v3.7.244 introduces the first pytest suite without disturbing existing scripts.",
+        "CLAUDE.md:75-78 Workflow codifies '改 cfg → 跑 exit_grid_v2.py 验证 → backtest_pipeline.py all 自动归档版本 → kelly_analysis.py 仓位更新 → compute_strategy_stats.py 刷新 → build_positions_ledger.py 重建' — surgical patches integrate cleanly into this validate-then-archive loop."
+      ],
+      "known_risks": [
+        "Per-asset cfg threading depth (v3.7.238): asset must reach force_close_at_expiry and every helper; incomplete threading silently re-introduces bug. Mitigation: assert asset in {'GLD','SLV'} at every dispatch site, run grep audit before tagging.",
+        "max_fallback_days clamp too aggressive (v3.7.236): 7d may reject legitimate entries during prolonged Moomoo outages. Mitigation: emit WARNING (not ERROR), allow MAX_KLINE_FALLBACK_DAYS env override.",
+        "SP sign flip cascading semantics (v3.7.234): downstream code reading realized_pnl_pct sign as a 'winning side' proxy may invert. Mitigation: audit app.py, notifier.py, compute_strategy_stats.py for direct pnl>0 comparisons on SP rows.",
+        "Regime min_hold_days=1 causes intraday jitter (v3.7.233): daily regime flips might trigger spurious filter changes. Mitigation: regime is EOD-computed; add 2-week shadow log comparing pre/post WR before declaring done.",
+        "Cross-asset IV-aware rule degrades sample size (v3.7.242): narrow regime has ~10-12 closed trades. Mitigation: BS-proxy backtest on 5y synthetic chain + 2-week shadow log.",
+        "Dashboard run_backtest deprecation breaks user workflows (v3.7.243): Streamlit pages may rely on output schema. Mitigation: keep as thin wrapper for one release with deprecation warning; remove in v3.8.",
+        "Validation script load on developer time: 12 tags × per-patch grid replay = real elapsed time. Mitigation: 'make validate-patch TAG=v3.7.238' so each patch's evidence is reproducible."
+      ],
+      "confidence": "high"
+    },
+    {
+      "direction_id": "dir-01-single-source-of-truth-signal-pipeline",
+      "dir_slug": "single-source-of-truth-signal-pipeline",
+      "source_index": 1,
+      "display_order": 1,
+      "is_primary": false,
+      "name": "Single-Source-of-Truth Signal Pipeline",
+      "rationale": "Multiple call sites bypass `generate_daily_signals()` (live ledger, layered backtest, dashboard `run_backtest`, OI-adjust display) — collapse them into one canonical pipeline so production/backtest/dashboard share identical filtering, regime, and tier logic, eliminating drift at the source rather than patching downstream symptoms.",
+      "raw_phase3_response": "APPROACH_SUMMARY: Create SignalPipeline factory class in new module core/signal_pipeline.py with single build_signals() method accepting asset, OHLC, bands, regime, rv_pctile, optional gvz_series + force_apply_iv_filter + include_cross_asset flags. Returns canonical sig_df with metadata (iv_filter_applied, gvz_freshness_days, regime_classifier, generated_at). Collapses 4 refactoring targets: app.py:1286 (correct reference), app.py:4733 (add gvz_series), app.py:5301 (consolidate fetch), paper_positions.py:689-700 (pass asset). Phase 1 unification, Phase 2 paper_positions asset fix, Phase 3 cross-asset IV-aware, Phase 4 (opt) scripts migration.\nOBJECTIVE_EVIDENCE:\n- core/signals_v2.py:87 canonical generate_daily_signals already accepts asset, gvz_series — factory wraps not replaces\n- app.py:4733 calls without gvz_series → disables IV filter (signals_v2.py:298-321)\n- scripts/build_positions_ledger.py:94 + scripts/backtest/framework.py:82 already pass both asset + gvz_series — correct pattern not centralized\n- 29 analysis scripts grep-found with inconsistent params\n- 5 dataclass configs precedent (AssetConfig, BCConfig, SPConfig, StraddleConfig, ShortVolConfig)\n- Dashboard 3 call sites all touch app.py — single migration target\nKNOWN_RISKS:\n- Streamlit hot-path performance — needs cache for sig_df\n- 29 analysis scripts gradual migration\n- GVZ data staleness handling\n- Cross-asset rule temporal ordering (SLV before GLD)\n- Test coverage gap (no formal pytest suite)\nCONFIDENCE: medium",
+      "approach_summary": "Collapse 34 scattered call sites that currently bypass or re-implement parts of generate_daily_signals() into one canonical SignalPipeline.build_signals(asset, ..., gvz_series, force_apply_iv_filter, include_cross_asset) factory under core/signal_pipeline.py. Three Dashboard modes (app.py:1286, :4733, :5301), the ledger builder, the backtest framework, and 29 analysis scripts all consume this factory, making IV filter/sp_score/MA filter/regime/tier semantic drift structurally impossible. Includes optional metadata dict (iv_filter_applied, gvz_freshness_days, regime_classifier) so callers can introspect what the pipeline actually applied.",
+      "objective_evidence": [
+        "core/signals_v2.py:87 canonical generate_daily_signals() already accepts asset and gvz_series — the factory needs to wrap, not replace.",
+        "app.py:4733 calls generate_daily_signals(...) WITHOUT gvz_series, silently disabling IV filter (signals_v2.py:298–321) for '回测分析' page.",
+        "scripts/build_positions_ledger.py:94 and scripts/backtest/framework.py:82 already pass both asset and gvz_series — the correct pattern, not centralized.",
+        "29 analysis scripts grep-found with inconsistent parameter sets.",
+        "5 dataclass configs (AssetConfig, BCConfig, SPConfig, StraddleConfig, ShortVolConfig) show precedent for typed parameterization."
+      ],
+      "known_risks": [
+        "Streamlit Dashboard hot-path performance — needs sig_df caching.",
+        "29 analysis scripts gradual migration; risk of partial adoption.",
+        "GVZ data staleness handling — factory must degrade gracefully when gvz_series=None.",
+        "Cross-asset rule temporal ordering (SLV signals must be computed before GLD sync).",
+        "No formal pytest suite to validate factory output equivalence with current call sites."
+      ],
+      "confidence": "medium"
+    },
+    {
+      "direction_id": "dir-02-typed-exit-context-contract",
+      "dir_slug": "typed-exit-context-contract",
+      "source_index": 2,
+      "display_order": 2,
+      "is_primary": false,
+      "name": "Typed Exit Context Contract",
+      "rationale": "The simulate_*_position functions silently take cfg=None and resolve sloppy defaults — replace each strategy's positional cfg with a single typed ExitContext dataclass (asset, signal_date, today_dt, kline_db, max_stale_days, cfg, regime), making 'missing asset' a structural impossibility and centralizing the expiry-intrinsic + stale-kline guards via type-discipline rather than per-callsite remediation.",
+      "raw_phase3_response": "APPROACH_SUMMARY: Single typed ExitContext dataclass encapsulating asset, signal_date, today_dt, kline_db, cfg (union of BC/SP/Straddle/ShortVol configs), regime, max_stale_days, live_spot/high/low. Becomes sole entrypoint for all simulate_*_position functions. Eliminates cfg=None fallback — contract guarantees validated config. Refactor 4 strategy modules + dispatcher in paper_positions.py + force_close_at_expiry. 43 invocations across scripts/ + paper_positions.py + backtest utilities. Migration path: cfg=None|ctx=None coexistence for one release with deprecation warning.\nOBJECTIVE_EVIDENCE:\n- core/strategy_config.py:33 AssetConfig dataclass + 4 strategy module config dataclasses (BCConfig:17, SPConfig:16, StraddleConfig:13, ShortVolConfig:16)\n- core/paper_positions.py:40 PaperPosition dataclass — existing structured-data pattern\n- All 4 simulate_*_position signatures consistent: (entry_pricing, signal_date, today_dt, db, cfg=None)\n- 43 invocations across paper_positions.py:691,694,697,700 + scripts/exit_grid_v2.py:240 + scripts/options_per_tier_validate.py:65 + backtest utilities\n- core/strategy_config.py:230 get_config(asset) centralized — asset resolution infrastructure ready\n- No mypy/pyright config — runtime assertions only\n- Migration: ctx is not None → use it; else legacy path with deprecation\nKNOWN_RISKS:\n- 43 call sites — large surface\n- Union type complexity for cfg field\n- Breaking signature change\n- kline_db pre-loading overhead\n- max_stale_days threshold hardcoding (should be per-asset)\nCONFIDENCE: medium-high (0.70)",
+      "approach_summary": "Replace each strategy's positional cfg argument with a single typed ExitContext dataclass (asset, signal_date, today_dt, kline_db, cfg, regime, max_stale_days, live_spot/high/low). Construction at the dispatcher (paper_positions.simulate_option_exit) requires all fields, making missing-asset/missing-cfg structurally impossible. force_close_at_expiry is rewritten to consume ExitContext, removing dependency on parsing asset from option code string. Migration via cfg+ctx coexistence for one release with deprecation warning.",
+      "objective_evidence": [
+        "5 existing @dataclass configs (AssetConfig, BCConfig, SPConfig, StraddleConfig, ShortVolConfig) plus PaperPosition show strong precedent.",
+        "43 invocations of simulate_*_position across paper_positions.py, scripts/exit_grid_v2.py:240, scripts/options_per_tier_validate.py:65, etc., would all migrate.",
+        "core/strategy_config.py:230 get_config(asset) — central asset resolution infrastructure already exists.",
+        "All 4 simulate_*_position signatures consistent: (entry_pricing, signal_date, today_dt, db, cfg=None) — uniform refactor target.",
+        "No mypy/pyright config in repo → contract enforcement is runtime-assertion-based; some leak risk remains until type checker is wired."
+      ],
+      "known_risks": [
+        "43 call sites — large refactor surface; risk of incomplete migration.",
+        "Union type for cfg field requires isinstance checks; static analysis won't enforce at construction.",
+        "Breaking signature change for any external consumers of simulate_*_position.",
+        "kline_db pre-loading overhead if callers don't coordinate; risk of double-load.",
+        "max_stale_days threshold should be per-asset (in AssetConfig), not fixed in ExitContext."
+      ],
+      "confidence": "medium"
+    },
+    {
+      "direction_id": "dir-03-data-freshness-state-machine-and-ux-banner",
+      "dir_slug": "data-freshness-state-machine-and-ux-banner",
+      "source_index": 3,
+      "display_order": 3,
+      "is_primary": false,
+      "name": "Data-Freshness State Machine + UX Banner",
+      "rationale": "Silent staleness in kline_db / ETF OHLC / GVZ is the upstream cause of bug 2 and the v3.7.232 trigger — model the freshness lifecycle as an explicit FRESH/STALE/FROZEN state machine wired into ledger daemon + dashboard banner so failure modes are observable rather than hidden behind silent fallbacks.",
+      "raw_phase3_response": "APPROACH_SUMMARY: Model data sources (kline_db, ETF OHLC, GVZ, OOS) as explicit FRESH/STALE/FROZEN state machine. New core/data_freshness.py module tracks per-asset, per-source freshness metadata. Integration: 1) _load_kline_db emit STALE if mtime > N days; 2) ledger_daemon (300s) checks state before invoking builder, records in positions_ledger_meta; 3) app.py startup populates sidebar banner (🟢/🟡/🔴) + dashboard snapshot augmented with data_sources block; 4) Entry pricing gate: pick_liquid_monthly_option max_fallback_days > 3 ⇒ return None + log; 5) Cross-asset GVZ STALE ⇒ skip or downgrade tier.\nOBJECTIVE_EVIDENCE:\n- data/positions_ledger_meta.json has evaluated_through + last_run_at — extension point\n- core/paper_positions.py:320-341 _KLINE_DB_PATH + _load_kline_db with mtime caching (v3.7.156)\n- core/paper_positions.py:349-379 pick_liquid_monthly_option has fallback_offset_days (v3.7.200) but no max threshold\n- app.py:79-94 _data_mtime collects mtime tuples — pattern for freshness\n- app.py:4670-4681 sidebar already shows 🟢/🟡/🔴 by age_min threshold — precedent\n- core/dashboard_snapshot.py:1-121 has timestamp ISO SGT — extension point\n- core/ledger_daemon.py:32-73 daemon rebuilds every 300s — integration point\n- core/training_status.py:47-68 get_model_age_days + is_stale(7) — age threshold precedent\n- /Users/yhdong/Gold/data/raw/options_history/kline_db/ max date 2026-05-06 — 17-day lag confirmed\n- core/cross_asset_signal.py 28 lines, SLV-S→GLD BC — extension target\n- No existing Enum/state machine class — novel addition\nKNOWN_RISKS:\n- Backward compat positions_ledger_meta.json schema\n- Daemon write vs app read concurrency\n- Per-asset configurable thresholds needed\n- GVZ freshness multi-source\n- Cold start no prior meta\nCONFIDENCE: medium",
+      "approach_summary": "Model each data source (kline_db, ETF OHLC, GVZ, OOS predictions) as an explicit FRESH ≤ 2d / STALE 2-7d / FROZEN > 7d state machine wired into ledger_daemon and Dashboard sidebar. FROZEN ⇒ no new option entries (only MTM via force_close_at_expiry fallback); STALE ⇒ degraded confidence in sidebar; FRESH ⇒ normal. Snapshot file augmented with data_sources block listing per-source {state, last_update_date, age_days}. Entry pricing gate: pick_liquid_monthly_option max_fallback_days > 3 ⇒ return None with PENDING_KLINE flag.",
+      "objective_evidence": [
+        "core/paper_positions.py:320-341 _KLINE_DB_PATH + _load_kline_db() mtime cache (v3.7.156) — precedent for mtime-based freshness detection.",
+        "app.py:4670-4681 sidebar already renders ledger mtime with 🟢/🟡/🔴 by age_min thresholds — direct UI precedent.",
+        "core/training_status.py:47-68 get_model_age_days() + is_stale(max_age_days=7) — age threshold pattern.",
+        "data/positions_ledger_meta.json already has evaluated_through per asset + last_run_at — extension point.",
+        "No Enum/FreshnessState class exists in code — new abstraction is required."
+      ],
+      "known_risks": [
+        "Backward compat: positions_ledger_meta.json schema requires graceful fallback in readers.",
+        "Daemon write vs app read concurrency — needs read-only snapshot in app, write lock in daemon.",
+        "Threshold tuning is asset/strategy-dependent — needs per-asset configurable thresholds in strategy_config.py.",
+        "GVZ freshness has multi-source fallback (yfinance live vs CSV) — must distinguish live-fetch-failed from CSV-stale.",
+        "Cold start has no prior meta → all sources appear FRESH initially; needs backdated mtime check."
+      ],
+      "confidence": "medium"
+    },
+    {
+      "direction_id": "dir-04-look-ahead-eradication-audit",
+      "dir_slug": "look-ahead-eradication-audit",
+      "source_index": 4,
+      "display_order": 4,
+      "is_primary": false,
+      "name": "Look-Ahead Eradication Audit",
+      "rationale": "The known regime min_hold_days=20 bug + max_move off-by-one + Layer2 survivorship bias suggest a class of leaks rather than isolated incidents — build a systematic look-ahead detector that, for every column in features_all + framework forward returns + OOS predictions, asserts the value at day t depends only on info-set ≤ t (or explicitly tagged fwd_).",
+      "raw_phase3_response": "APPROACH_SUMMARY: Two-phase look-ahead detector: 1) Static analysis inventories all shift/rolling/expanding ops in src/features/, scripts/backtest/framework.py, core/signals_v2.py, core/regime.py. 2) Runtime validation: for each fold in walk-forward, assert feature[t] in info_set(≤t), OOS predictions trained strictly before test fold, labels prefixed fwd_ zero-padded NaN at end, regime min_hold_days=1 enforced, non-fwd_ columns with shifted(-h) flagged. Detector as pandas operation: detect_max_shift(col_definition).\nOBJECTIVE_EVIDENCE:\n- scripts/backtest/framework.py:108-134 next_open=shift(-1) [intentional], ext_close=shift(-(h+1)) [intentional], rv_fwd=rolling(h).std().shift(-h) [intentional], high_max=rolling(h).max().shift(-(h+1)) [off-by-one Codex flagged]\n- /Users/yhdong/Gold/src/features/label_builder.py:43,68,102 — fwd_ret_*d, fwd_rv_*d, future_ret all clear fwd_ prefix\n- scripts/setup_data.py:608-609 max_high_5d = shift(-1).rolling(5).max().shift(-4) = net shift(-5) — purpose unclear\n- core/features_1h.py:314-315 fwd_high/fwd_low — integration audit needed\n- core/regime.py:24 default min_hold_days=20 vs framework.py:70 forces =1; 11 production scripts inherit default\n- features_all.parquet 92 columns — 0 prefixed fwd_ (correct separation)\n- walk_forward_full.py:1-20 explicit no-look-ahead assumptions in comment but unenforced\n- OOS train_dl_range.py:110-227 fold logic correct, dedup keep='last'\nKNOWN_RISKS:\n- Regime dual personality (prod 20 vs backtest 1)\n- OOS dedup transitive leak (low risk)\n- features_all lineage opaque\n- max_high_5d intentionality\n- features_1h not integrated\nCONFIDENCE: high",
+      "approach_summary": "Beyond the known regime min_hold_days=20 bug and framework.py:120 max_move off-by-one, sweep every shift/rolling/expanding operation in core/signals_v2.py, core/signals.py, core/regime.py, scripts/backtest/framework.py, /Users/yhdong/Gold/src/features/, and core/features_1h.py. Build a runtime validator that for every column in features_all.parquet asserts the value at day t depends only on info-set ≤ t (or is explicitly prefixed fwd_). Walk-forward train/test boundary already validated; this adds enforcement as a permanent CI gate.",
+      "objective_evidence": [
+        "walk_forward_full.py:1-20 already documents no-look-ahead assumptions in a comment but does not enforce them.",
+        "scripts/backtest/framework.py:108-134 contains next_open=shift(-1), ext_close=shift(-(h+1)), rv_fwd=rolling(h).std().shift(-h) — intentional fwd labels, all correctly named.",
+        "scripts/backtest/framework.py:120 high.rolling(h).max().shift(-(h+1)) has the off-by-one Codex flagged.",
+        "scripts/setup_data.py:608-609 high.shift(-1).rolling(5).max().shift(-4) = net shift(-5), purpose unclear — suspect mislabel.",
+        "core/features_1h.py:314-315 fwd_high/fwd_low lacks integration audit into features_all.parquet.",
+        "0 columns in features_all.parquet are prefixed fwd_ — features and labels correctly separated today, but enforcement is by convention only."
+      ],
+      "known_risks": [
+        "Regime classifier dual personality: production min_hold_days=20 vs backtest =1 — backtest scorecards may not reflect production signal quality.",
+        "OOS predictions dedup may keep 'last' from a later fold; transitive leakage possible if fold overlap is large.",
+        "features_all.parquet lineage opaque — built once globally, not per-fold; intermediate rolling windows may not respect train/test boundary.",
+        "scripts/setup_data.py max_high_5d definition unclear — possible intentional target or possible misnaming.",
+        "core/features_1h.py not verified integrated into features_all.parquet pipeline."
+      ],
+      "confidence": "high"
+    },
+    {
+      "direction_id": "dir-05-declarative-risk-and-cross-asset-policy-layer",
+      "dir_slug": "declarative-risk-and-cross-asset-policy-layer",
+      "source_index": 5,
+      "display_order": 5,
+      "is_primary": false,
+      "name": "Declarative Risk & Cross-Asset Policy Layer",
+      "rationale": "Cross-asset rule, IV-aware strategy switching, consecutive-loss circuit breaker, and exposure caps currently live as scattered constants and inline conditionals — externalize all gate-keeping into a single declarative risk_policy.yaml evaluated by one policy engine, making 'what's allowed when' auditable, testable, and changeable without touching strategy code.",
+      "raw_phase3_response": "APPROACH_SUMMARY: Externalize all gate-keeping into risk_policy.yaml evaluated by core/policy_engine.py. YAML contains cross-asset rules (SLV-S triggers w/ IV-aware), IV-regime strategy switches (GVZ<22 BC, 22-28 dual, >28 SP+bp_low≤0.10), entry filters (RV pctiles, MA, ret_20d, tier stratification), risk gates (consecutive-loss, max_open, exposure caps), leverage/tier rules (S=10× A=10× B=5×), expiry handling. PolicyEngine evaluates per signal, returns {entry_allowed, strategy_override, leverage, cross_asset_enabled}. Logs every decision. ~150 LOC YAML replaces ~400 LOC scattered Python.\nOBJECTIVE_EVIDENCE:\n- core/strategy_config.py:46-60, 87-97, 99-112, 126-135 — 8 major policy dimensions\n- core/cross_asset_signal.py:29-83 — module-level constants CROSS_ENABLED, CROSS_TIERS, CROSS_STRATEGY\n- core/signals_v2.py:24, 41-96 — CONSECUTIVE_STOP, BUY_BP, IV regime inline\n- core/regime.py:23-28 — min_hold_days 20 vs 1 inconsistency\n- core/strategies/options_exit.py:205-250 — expiry force-close only BC/SP\n- core/paper_positions.py:630-700 — simulate_option_exit doesn't pass asset\n- core/strategy_configs.py:51-89 — FuturesConfig tier-aware leverage precedent\n- scripts/backtest/framework.py:227 — IV bp_low filter duplicated\n- AssetConfig dataclass precedent (strategy_config.py:34-147)\n- /Users/yhdong/Gold/config/settings.yaml — YAML infrastructure accepted\n- 14 distinct gates, ~400 LOC scattered\nKNOWN_RISKS:\n- YAML schema lock-in versioning\n- Rule interaction complexity\n- Backtest-prod parity must enforce same YAML\n- Performance if rules nest deeply\n- Team adoption friction\nCONFIDENCE: high",
+      "approach_summary": "Externalize all gate-keeping (cross-asset rules, IV-regime strategy switches, consecutive-loss circuit breaker, max_open_per_asset, exposure caps, leverage tiers, expiry handling) into a single risk_policy.yaml evaluated by a new core/policy_engine.py. PolicyEngine returns structured verdicts {entry_allowed, strategy_override, leverage, cross_asset_enabled} per signal, replacing 14+ inline conditionals scattered across signals_v2.py, cross_asset_signal.py, strategy_config.py, paper_positions.py, regime.py, options_exit.py. ~150 lines of declarative YAML replace ~400 lines of scattered Python branches.",
+      "objective_evidence": [
+        "core/strategy_config.py:34-147 AssetConfig dataclass + ASSET_CONFIGS dict — per-asset parameterization precedent.",
+        "core/strategy_configs.py:51-89 FuturesConfig with tier-aware leverage (tier_s_leverage=10, tier_a=10, tier_b=5) — tier-rule precedent.",
+        "/Users/yhdong/Gold/config/settings.yaml + config.yaml — declarative YAML infrastructure already accepted.",
+        "core/signals_v2.py:24,41-96 CONSECUTIVE_STOP, BUY_BP, inline IV regime checks — concrete inline gate-keepers to externalize.",
+        "core/cross_asset_signal.py:29-83 hard-coded CROSS_ENABLED, CROSS_TIERS, CROSS_STRATEGY constants — canonical example to lift into YAML.",
+        "14 distinct inline decision points across 8 files (~400 LOC) — measurable consolidation target."
+      ],
+      "known_risks": [
+        "YAML schema lock-in: once canonical, changes require versioning strategy.",
+        "Rule interaction complexity: 14 rules with correlated conditions may create subtle bugs.",
+        "Backtest-vs-production parity must enforce same YAML in both contexts.",
+        "Performance regression if rules nest deeply or depend on prior rule's output.",
+        "Team adoption friction moving from 'grep for feature' to 'read YAML'."
+      ],
+      "confidence": "high"
+    }
+  ]
+}

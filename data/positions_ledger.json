@@ -1,0 +1,1105 @@
+[
+  {
+    "asset": "GLD",
+    "signal_date": "2026-03-03T00:00:00",
+    "strategy": "BUY CALL",
+    "signal_tier": "S-sync",
+    "entry_etf": 472.8299865722656,
+    "entry_open": 472.8299865722656,
+    "entry_close": 468.1400146484375,
+    "source": "SLV-S sync → C$475 (05/15)",
+    "entry_credit_or_premium": 23.950000762939453,
+    "legs": [
+      [
+        "long_call",
+        "US.GLD260515C475000",
+        475.0,
+        1
+      ]
+    ],
+    "entry_leg_prices": [
+      [
+        "long_call",
+        23.950000762939453
+      ]
+    ],
+    "exit_legs": [
+      [
+        "long_call",
+        5.0
+      ]
+    ],
+    "is_closed": true,
+    "exit_date": "2026-03-19T00:00:00",
+    "exit_value": 5.0,
+    "exit_reason": "-50% stop loss",
+    "current_value": 0.0,
+    "pnl_pct": -79.12317394270373,
+    "hold_days": 12,
+    "created_at": "2026-05-18T14:27:39.420481+08:00",
+    "config_version": "7320637",
+    "entry_perp": NaN,
+    "binance_symbol": NaN,
+    "leverage": NaN,
+    "cross_asset_origin": "SLV-S",
+    "state": NaN
+  },
+  {
+    "asset": "GLD",
+    "signal_date": "2026-03-17T00:00:00",
+    "strategy": "STRADDLE",
+    "signal_tier": "",
+    "entry_etf": 460.510009765625,
+    "entry_open": 460.510009765625,
+    "entry_close": 459.2699890136719,
+    "source": "C$460+P$460 (05/15)",
+    "entry_credit_or_premium": 39.54999923706055,
+    "legs": [
+      [
+        "long_call",
+        "US.GLD260515C460000",
+        460.0,
+        1
+      ],
+      [
+        "long_put",
+        "US.GLD260515P460000",
+        460.0,
+        1
+      ]
+    ],
+    "entry_leg_prices": [
+      [
+        "long_call",
+        21.149999618530273
+      ],
+      [
+        "long_put",
+        18.399999618530273
+      ]
+    ],
+    "exit_legs": [
+      [
+        "long_call",
+        8.0
+      ],
+      [
+        "long_put",
+        35.70000076293945
+      ]
+    ],
+    "is_closed": true,
+    "exit_date": "2026-04-07T00:00:00",
+    "exit_value": 43.70000076293945,
+    "exit_reason": "14d 定时",
+    "current_value": 0.0,
+    "pnl_pct": 10.493050836749763,
+    "hold_days": 14,
+    "created_at": "2026-05-18T14:27:33.646684+08:00",
+    "config_version": "7320637",
+    "entry_perp": NaN,
+    "binance_symbol": NaN,
+    "leverage": NaN,
+    "cross_asset_origin": NaN,
+    "state": NaN
+  },
+  {
+    "asset": "GLD",
+    "signal_date": "2026-03-18T00:00:00",
+    "strategy": "FUTURES_LONG",
+    "signal_tier": "B",
+    "entry_etf": 446.6600036621094,
+    "entry_open": NaN,
+    "entry_close": NaN,
+    "source": "XAUUSDT 多头 @ $5003.53 (5× tier=B)",
+    "entry_credit_or_premium": 5003.53,
+    "legs": [],
+    "entry_leg_prices": [],
+    "exit_legs": [],
+    "is_closed": true,
+    "exit_date": "2026-05-02T00:00:00",
+    "exit_value": 4616.5,
+    "exit_reason": "45d 时间出场",
+    "current_value": 4616.5,
+    "pnl_pct": -38.67569495935869,
+    "hold_days": 45,
+    "created_at": "2026-05-18T14:27:33.646684+08:00",
+    "config_version": "7320637",
+    "entry_perp": 5003.53,
+    "binance_symbol": "XAUUSDT",
+    "leverage": 5.0,
+    "cross_asset_origin": NaN,
+    "state": NaN
+  },
+  {
+    "asset": "GLD",
+    "signal_date": "2026-03-18T00:00:00",
+    "strategy": "SELL PUT",
+    "signal_tier": "B",
+    "entry_etf": 446.6600036621094,
+    "entry_open": 446.6600036621094,
+    "entry_close": 444.739990234375,
+    "source": "-P$445/+P$425 (05/15)",
+    "entry_credit_or_premium": 8.500000953674316,
+    "legs": [
+      [
+        "short_put",
+        "US.GLD260515P445000",
+        445.0,
+        -1
+      ],
+      [
+        "long_put",
+        "US.GLD260515P425000",
+        425.0,
+        1
+      ]
+    ],
+    "entry_leg_prices": [
+      [
+        "short_put",
+        17.450000762939453
+      ],
+      [
+        "long_put",
+        8.949999809265137
+      ]
+    ],
+    "exit_legs": [
+      [
+        "short_put",
+        27.709991455078125
+      ],
+      [
+        "long_put",
+        7.709991455078125
+      ]
+    ],
+    "is_closed": true,
+    "exit_date": "2026-05-15T00:00:00",
+    "exit_value": 20.0,
+    "exit_reason": "expiry intrinsic (db missing) spot=417.29",
+    "current_value": 0.0,
+    "pnl_pct": -100.0,
+    "hold_days": 58,
+    "created_at": "2026-05-18T14:27:33.646684+08:00",
+    "config_version": "7320637",
+    "entry_perp": NaN,
+    "binance_symbol": NaN,
+    "leverage": NaN,
+    "cross_asset_origin": NaN,
+    "state": NaN
+  },
+  {
+    "asset": "GLD",
+    "signal_date": "2026-03-19T00:00:00",
+    "strategy": "BUY CALL",
+    "signal_tier": "S-sync",
+    "entry_etf": 420.3599853515625,
+    "entry_open": 420.3599853515625,
+    "entry_close": 426.4100036621094,
+    "source": "SLV-S sync → C$420 (05/15)",
+    "entry_credit_or_premium": 20.0,
+    "legs": [
+      [
+        "long_call",
+        "US.GLD260515C420000",
+        420.0,
+        1
+      ]
+    ],
+    "entry_leg_prices": [
+      [
+        "long_call",
+        20.0
+      ]
+    ],
+    "exit_legs": [
+      [
+        "long_call",
+        5.349999904632568
+      ]
+    ],
+    "is_closed": true,
+    "exit_date": "2026-05-04T00:00:00",
+    "exit_value": 5.349999904632568,
+    "exit_reason": "-50% stop loss",
+    "current_value": 0.0,
+    "pnl_pct": -73.25000047683716,
+    "hold_days": 31,
+    "created_at": "2026-05-18T14:27:39.460565+08:00",
+    "config_version": "7320637",
+    "entry_perp": NaN,
+    "binance_symbol": NaN,
+    "leverage": NaN,
+    "cross_asset_origin": "SLV-S",
+    "state": NaN
+  },
+  {
+    "asset": "GLD",
+    "signal_date": "2026-03-19T00:00:00",
+    "strategy": "FUTURES_LONG",
+    "signal_tier": "B",
+    "entry_etf": 420.3599853515625,
+    "entry_open": NaN,
+    "entry_close": NaN,
+    "source": "XAUUSDT 多头 @ $4840.06 (5× tier=B)",
+    "entry_credit_or_premium": 4840.06,
+    "legs": [],
+    "entry_leg_prices": [],
+    "exit_legs": [],
+    "is_closed": true,
+    "exit_date": "2026-05-03T00:00:00",
+    "exit_value": 4611.39,
+    "exit_reason": "45d 时间出场",
+    "current_value": 4611.39,
+    "pnl_pct": -23.622641041639973,
+    "hold_days": 45,
+    "created_at": "2026-05-18T14:27:33.646684+08:00",
+    "config_version": "7320637",
+    "entry_perp": 4840.06,
+    "binance_symbol": "XAUUSDT",
+    "leverage": 5.0,
+    "cross_asset_origin": NaN,
+    "state": NaN
+  },
+  {
+    "asset": "GLD",
+    "signal_date": "2026-03-19T00:00:00",
+    "strategy": "SELL PUT",
+    "signal_tier": "B",
+    "entry_etf": 420.3599853515625,
+    "entry_open": 420.3599853515625,
+    "entry_close": 426.4100036621094,
+    "source": "-P$420/+P$400 (05/15)",
+    "entry_credit_or_premium": 7.499999046325684,
+    "legs": [
+      [
+        "short_put",
+        "US.GLD260515P420000",
+        420.0,
+        -1
+      ],
+      [
+        "long_put",
+        "US.GLD260515P400000",
+        400.0,
+        1
+      ]
+    ],
+    "entry_leg_prices": [
+      [
+        "short_put",
+        17.6299991607666
+      ],
+      [
+        "long_put",
+        10.130000114440918
+      ]
+    ],
+    "exit_legs": [
+      [
+        "short_put",
+        5.019999980926514
+      ],
+      [
+        "long_put",
+        2.0799999237060547
+      ]
+    ],
+    "is_closed": true,
+    "exit_date": "2026-04-14T00:00:00",
+    "exit_value": 2.940000057220459,
+    "exit_reason": "+50% credit",
+    "current_value": 0.0,
+    "pnl_pct": 36.4799891296395,
+    "hold_days": 17,
+    "created_at": "2026-05-18T14:27:33.646684+08:00",
+    "config_version": "7320637",
+    "entry_perp": NaN,
+    "binance_symbol": NaN,
+    "leverage": NaN,
+    "cross_asset_origin": NaN,
+    "state": NaN
+  },
+  {
+    "asset": "GLD",
+    "signal_date": "2026-03-20T00:00:00",
+    "strategy": "BUY CALL",
+    "signal_tier": "S-sync",
+    "entry_etf": 428.0899963378906,
+    "entry_open": 428.0899963378906,
+    "entry_close": 413.3800048828125,
+    "source": "SLV-S sync → C$430 (05/15)",
+    "entry_credit_or_premium": 17.8700008392334,
+    "legs": [
+      [
+        "long_call",
+        "US.GLD260515C430000",
+        430.0,
+        1
+      ]
+    ],
+    "entry_leg_prices": [
+      [
+        "long_call",
+        17.8700008392334
+      ]
+    ],
+    "exit_legs": [
+      [
+        "long_call",
+        5.269999980926514
+      ]
+    ],
+    "is_closed": true,
+    "exit_date": "2026-04-28T00:00:00",
+    "exit_value": 5.269999980926514,
+    "exit_reason": "-50% stop loss",
+    "current_value": 0.0,
+    "pnl_pct": -70.50923484370361,
+    "hold_days": 26,
+    "created_at": "2026-05-18T14:27:39.492475+08:00",
+    "config_version": "7320637",
+    "entry_perp": NaN,
+    "binance_symbol": NaN,
+    "leverage": NaN,
+    "cross_asset_origin": "SLV-S",
+    "state": NaN
+  },
+  {
+    "asset": "GLD",
+    "signal_date": "2026-03-20T00:00:00",
+    "strategy": "FUTURES_LONG",
+    "signal_tier": "B",
+    "entry_etf": 428.0899963378906,
+    "entry_open": NaN,
+    "entry_close": NaN,
+    "source": "XAUUSDT 多头 @ $4645.99 (5× tier=B)",
+    "entry_credit_or_premium": 4645.99,
+    "legs": [],
+    "entry_leg_prices": [],
+    "exit_legs": [],
+    "is_closed": true,
+    "exit_date": "2026-05-04T00:00:00",
+    "exit_value": 4521.66,
+    "exit_reason": "45d 时间出场",
+    "current_value": 4521.66,
+    "pnl_pct": -13.380355962884117,
+    "hold_days": 45,
+    "created_at": "2026-05-18T14:27:33.646684+08:00",
+    "config_version": "7320637",
+    "entry_perp": 4645.99,
+    "binance_symbol": "XAUUSDT",
+    "leverage": 5.0,
+    "cross_asset_origin": NaN,
+    "state": NaN
+  },
+  {
+    "asset": "GLD",
+    "signal_date": "2026-03-20T00:00:00",
+    "strategy": "SELL PUT",
+    "signal_tier": "B",
+    "entry_etf": 428.0899963378906,
+    "entry_open": 428.0899963378906,
+    "entry_close": 413.3800048828125,
+    "source": "-P$430/+P$405 (05/15)",
+    "entry_credit_or_premium": 9.169999122619629,
+    "legs": [
+      [
+        "short_put",
+        "US.GLD260515P430000",
+        430.0,
+        -1
+      ],
+      [
+        "long_put",
+        "US.GLD260515P405000",
+        405.0,
+        1
+      ]
+    ],
+    "entry_leg_prices": [
+      [
+        "short_put",
+        17.299999237060547
+      ],
+      [
+        "long_put",
+        8.130000114440918
+      ]
+    ],
+    "exit_legs": [
+      [
+        "short_put",
+        5.869999885559082
+      ],
+      [
+        "long_put",
+        1.7999999523162842
+      ]
+    ],
+    "is_closed": true,
+    "exit_date": "2026-04-17T00:00:00",
+    "exit_value": 4.069999933242798,
+    "exit_reason": "+50% credit",
+    "current_value": 0.0,
+    "pnl_pct": 32.217302000685706,
+    "hold_days": 19,
+    "created_at": "2026-05-18T14:27:33.646684+08:00",
+    "config_version": "7320637",
+    "entry_perp": NaN,
+    "binance_symbol": NaN,
+    "leverage": NaN,
+    "cross_asset_origin": NaN,
+    "state": NaN
+  },
+  {
+    "asset": "GLD",
+    "signal_date": "2026-03-23T00:00:00",
+    "strategy": "BUY CALL",
+    "signal_tier": "S-sync",
+    "entry_etf": 405.1199951171875,
+    "entry_open": 405.1199951171875,
+    "entry_close": 404.0400085449219,
+    "source": "SLV-S sync → C$405 (05/15)",
+    "entry_credit_or_premium": 22.100000381469727,
+    "legs": [
+      [
+        "long_call",
+        "US.GLD260515C405000",
+        405.0,
+        1
+      ]
+    ],
+    "entry_leg_prices": [
+      [
+        "long_call",
+        22.100000381469727
+      ]
+    ],
+    "exit_legs": [
+      [
+        "long_call",
+        12.290008544921875
+      ]
+    ],
+    "is_closed": true,
+    "exit_date": "2026-05-15T00:00:00",
+    "exit_value": 12.290008544921875,
+    "exit_reason": "expiry intrinsic (db missing) spot=417.29",
+    "current_value": 0.0,
+    "pnl_pct": -44.38910256659214,
+    "hold_days": 53,
+    "created_at": "2026-05-18T14:27:39.526782+08:00",
+    "config_version": "7320637",
+    "entry_perp": NaN,
+    "binance_symbol": NaN,
+    "leverage": NaN,
+    "cross_asset_origin": "SLV-S",
+    "state": NaN
+  },
+  {
+    "asset": "GLD",
+    "signal_date": "2026-03-23T00:00:00",
+    "strategy": "FUTURES_LONG",
+    "signal_tier": "B",
+    "entry_etf": 405.1199951171875,
+    "entry_open": NaN,
+    "entry_close": NaN,
+    "source": "XAUUSDT 多头 @ $4469.12 (5× tier=B)",
+    "entry_credit_or_premium": 4469.12,
+    "legs": [],
+    "entry_leg_prices": [],
+    "exit_legs": [],
+    "is_closed": true,
+    "exit_date": "2026-05-07T00:00:00",
+    "exit_value": 4706.24,
+    "exit_reason": "45d 时间出场",
+    "current_value": 4706.24,
+    "pnl_pct": 26.528712587713056,
+    "hold_days": 45,
+    "created_at": "2026-05-18T14:27:33.646684+08:00",
+    "config_version": "7320637",
+    "entry_perp": 4469.12,
+    "binance_symbol": "XAUUSDT",
+    "leverage": 5.0,
+    "cross_asset_origin": NaN,
+    "state": NaN
+  },
+  {
+    "asset": "GLD",
+    "signal_date": "2026-03-23T00:00:00",
+    "strategy": "SELL PUT",
+    "signal_tier": "B",
+    "entry_etf": 405.1199951171875,
+    "entry_open": 405.1199951171875,
+    "entry_close": 404.0400085449219,
+    "source": "-P$405/+P$385 (05/15)",
+    "entry_credit_or_premium": 10.399999618530273,
+    "legs": [
+      [
+        "short_put",
+        "US.GLD260515P405000",
+        405.0,
+        -1
+      ],
+      [
+        "long_put",
+        "US.GLD260515P385000",
+        385.0,
+        1
+      ]
+    ],
+    "entry_leg_prices": [
+      [
+        "short_put",
+        20.149999618530273
+      ],
+      [
+        "long_put",
+        9.75
+      ]
+    ],
+    "exit_legs": [
+      [
+        "short_put",
+        10.170000076293945
+      ],
+      [
+        "long_put",
+        5.760000228881836
+      ]
+    ],
+    "is_closed": true,
+    "exit_date": "2026-03-31T00:00:00",
+    "exit_value": 4.409999847412109,
+    "exit_reason": "+50% credit",
+    "current_value": 0.0,
+    "pnl_pct": 62.39582846976008,
+    "hold_days": 6,
+    "created_at": "2026-05-18T14:27:33.646684+08:00",
+    "config_version": "7320637",
+    "entry_perp": NaN,
+    "binance_symbol": NaN,
+    "leverage": NaN,
+    "cross_asset_origin": NaN,
+    "state": NaN
+  },
+  {
+    "asset": "GLD",
+    "signal_date": "2026-03-24T00:00:00",
+    "strategy": "FUTURES_LONG",
+    "signal_tier": "B",
+    "entry_etf": 400.239990234375,
+    "entry_open": NaN,
+    "entry_close": NaN,
+    "source": "XAUUSDT 多头 @ $4443.42 (5× tier=B)",
+    "entry_credit_or_premium": 4443.42,
+    "legs": [],
+    "entry_leg_prices": [],
+    "exit_legs": [],
+    "is_closed": true,
+    "exit_date": "2026-05-08T00:00:00",
+    "exit_value": 4715.02,
+    "exit_reason": "45d 时间出场",
+    "current_value": 4715.02,
+    "pnl_pct": 30.562044551269096,
+    "hold_days": 45,
+    "created_at": "2026-05-18T14:27:33.646684+08:00",
+    "config_version": "7320637",
+    "entry_perp": 4443.42,
+    "binance_symbol": "XAUUSDT",
+    "leverage": 5.0,
+    "cross_asset_origin": NaN,
+    "state": NaN
+  },
+  {
+    "asset": "GLD",
+    "signal_date": "2026-03-24T00:00:00",
+    "strategy": "SELL PUT",
+    "signal_tier": "B",
+    "entry_etf": 400.239990234375,
+    "entry_open": 400.239990234375,
+    "entry_close": 404.1300048828125,
+    "source": "-P$400/+P$380 (05/15)",
+    "entry_credit_or_premium": 8.05000114440918,
+    "legs": [
+      [
+        "short_put",
+        "US.GLD260515P400000",
+        400.0,
+        -1
+      ],
+      [
+        "long_put",
+        "US.GLD260515P380000",
+        380.0,
+        1
+      ]
+    ],
+    "entry_leg_prices": [
+      [
+        "short_put",
+        20.530000686645508
+      ],
+      [
+        "long_put",
+        12.479999542236328
+      ]
+    ],
+    "exit_legs": [
+      [
+        "short_put",
+        8.75
+      ],
+      [
+        "long_put",
+        4.949999809265137
+      ]
+    ],
+    "is_closed": true,
+    "exit_date": "2026-03-31T00:00:00",
+    "exit_value": 3.8000001907348633,
+    "exit_reason": "+50% credit",
+    "current_value": 0.0,
+    "pnl_pct": 35.56486494294474,
+    "hold_days": 5,
+    "created_at": "2026-05-18T14:27:33.646684+08:00",
+    "config_version": "7320637",
+    "entry_perp": NaN,
+    "binance_symbol": NaN,
+    "leverage": NaN,
+    "cross_asset_origin": NaN,
+    "state": NaN
+  },
+  {
+    "asset": "GLD",
+    "signal_date": "2026-03-26T00:00:00",
+    "strategy": "BUY CALL",
+    "signal_tier": "S-sync",
+    "entry_etf": 408.5299987792969,
+    "entry_open": 408.5299987792969,
+    "entry_close": 400.6400146484375,
+    "source": "SLV-S sync → C$410 (05/15)",
+    "entry_credit_or_premium": 22.100000381469727,
+    "legs": [
+      [
+        "long_call",
+        "US.GLD260515C410000",
+        410.0,
+        1
+      ]
+    ],
+    "entry_leg_prices": [
+      [
+        "long_call",
+        22.100000381469727
+      ]
+    ],
+    "exit_legs": [
+      [
+        "long_call",
+        7.290008544921875
+      ]
+    ],
+    "is_closed": true,
+    "exit_date": "2026-05-15T00:00:00",
+    "exit_value": 7.290008544921875,
+    "exit_reason": "expiry intrinsic (db missing) spot=417.29",
+    "current_value": 0.0,
+    "pnl_pct": -67.01353656521039,
+    "hold_days": 50,
+    "created_at": "2026-05-18T14:27:39.561149+08:00",
+    "config_version": "7320637",
+    "entry_perp": NaN,
+    "binance_symbol": NaN,
+    "leverage": NaN,
+    "cross_asset_origin": "SLV-S",
+    "state": NaN
+  },
+  {
+    "asset": "GLD",
+    "signal_date": "2026-04-29T00:00:00",
+    "strategy": "FUTURES_LONG",
+    "signal_tier": "B",
+    "entry_etf": 416.739990234375,
+    "entry_open": NaN,
+    "entry_close": NaN,
+    "source": "XAUUSDT 多头 @ $4597.87 (5× tier=B)",
+    "entry_credit_or_premium": 4597.87,
+    "legs": [],
+    "entry_leg_prices": [],
+    "exit_legs": [],
+    "is_closed": false,
+    "exit_date": null,
+    "exit_value": 0.0,
+    "exit_reason": "",
+    "current_value": 4181.34279348,
+    "pnl_pct": -45.29567022556091,
+    "hold_days": 41,
+    "created_at": "2026-05-18T14:27:33.646684+08:00",
+    "config_version": "7320637",
+    "entry_perp": 4597.87,
+    "binance_symbol": "XAUUSDT",
+    "leverage": 5.0,
+    "cross_asset_origin": NaN,
+    "state": NaN
+  },
+  {
+    "asset": "GLD",
+    "signal_date": "2026-05-15T00:00:00",
+    "strategy": "BUY CALL",
+    "signal_tier": "S-sync",
+    "entry_etf": 417.6400146484375,
+    "entry_open": 417.6400146484375,
+    "entry_close": 417.2900085449219,
+    "source": "SLV-S sync → C$420 (07/17)",
+    "entry_credit_or_premium": 25.329999923706055,
+    "legs": [
+      [
+        "long_call",
+        "US.GLD260717C420000",
+        420.0,
+        1
+      ]
+    ],
+    "entry_leg_prices": [
+      [
+        "long_call",
+        25.329999923706055
+      ]
+    ],
+    "exit_legs": [
+      [
+        "long_call",
+        2.950000047683716
+      ]
+    ],
+    "is_closed": false,
+    "exit_date": null,
+    "exit_value": 0.0,
+    "exit_reason": "",
+    "current_value": 2.950000047683716,
+    "pnl_pct": -88.35373053071807,
+    "hold_days": 25,
+    "created_at": "2026-05-18T14:27:39.805912+08:00",
+    "config_version": "7320637",
+    "entry_perp": NaN,
+    "binance_symbol": NaN,
+    "leverage": NaN,
+    "cross_asset_origin": "SLV-S",
+    "state": NaN
+  },
+  {
+    "asset": "SLV",
+    "signal_date": "2026-03-03T00:00:00",
+    "strategy": "FUTURES_LONG",
+    "signal_tier": "S",
+    "entry_etf": 74.20999908447266,
+    "entry_open": NaN,
+    "entry_close": NaN,
+    "source": "XAGUSDT 多头 @ $90.07 (3× tier=S)",
+    "entry_credit_or_premium": 90.07,
+    "legs": [],
+    "entry_leg_prices": [],
+    "exit_legs": [],
+    "is_closed": true,
+    "exit_date": "2026-03-23T00:00:00",
+    "exit_value": 69.87,
+    "exit_reason": "20d 时间出场",
+    "current_value": 69.87,
+    "pnl_pct": -67.281003663817,
+    "hold_days": 20,
+    "created_at": "2026-05-18T14:27:36.093309+08:00",
+    "config_version": "7320637",
+    "entry_perp": 90.07,
+    "binance_symbol": "XAGUSDT",
+    "leverage": 3.0,
+    "cross_asset_origin": NaN,
+    "state": NaN
+  },
+  {
+    "asset": "SLV",
+    "signal_date": "2026-03-18T00:00:00",
+    "strategy": "FUTURES_LONG",
+    "signal_tier": "S",
+    "entry_etf": 69.51000213623047,
+    "entry_open": NaN,
+    "entry_close": NaN,
+    "source": "XAGUSDT 多头 @ $79.25 (3× tier=S)",
+    "entry_credit_or_premium": 79.25,
+    "legs": [],
+    "entry_leg_prices": [],
+    "exit_legs": [],
+    "is_closed": true,
+    "exit_date": "2026-04-07T00:00:00",
+    "exit_value": 76.59,
+    "exit_reason": "20d 时间出场",
+    "current_value": 76.59,
+    "pnl_pct": -10.069400630914826,
+    "hold_days": 20,
+    "created_at": "2026-05-18T14:27:36.093309+08:00",
+    "config_version": "7320637",
+    "entry_perp": 79.25,
+    "binance_symbol": "XAGUSDT",
+    "leverage": 3.0,
+    "cross_asset_origin": NaN,
+    "state": NaN
+  },
+  {
+    "asset": "SLV",
+    "signal_date": "2026-03-19T00:00:00",
+    "strategy": "FUTURES_LONG",
+    "signal_tier": "S",
+    "entry_etf": 61.900001525878906,
+    "entry_open": NaN,
+    "entry_close": NaN,
+    "source": "XAGUSDT 多头 @ $75.94 (3× tier=S)",
+    "entry_credit_or_premium": 75.94,
+    "legs": [],
+    "entry_leg_prices": [],
+    "exit_legs": [],
+    "is_closed": true,
+    "exit_date": "2026-04-08T00:00:00",
+    "exit_value": 73.78,
+    "exit_reason": "20d 时间出场",
+    "current_value": 73.78,
+    "pnl_pct": -8.533052409797182,
+    "hold_days": 20,
+    "created_at": "2026-05-18T14:27:36.093309+08:00",
+    "config_version": "7320637",
+    "entry_perp": 75.94,
+    "binance_symbol": "XAGUSDT",
+    "leverage": 3.0,
+    "cross_asset_origin": NaN,
+    "state": NaN
+  },
+  {
+    "asset": "SLV",
+    "signal_date": "2026-03-20T00:00:00",
+    "strategy": "FUTURES_LONG",
+    "signal_tier": "S",
+    "entry_etf": 64.68000030517578,
+    "entry_open": NaN,
+    "entry_close": NaN,
+    "source": "XAGUSDT 多头 @ $72.59 (3× tier=S)",
+    "entry_credit_or_premium": 72.59,
+    "legs": [],
+    "entry_leg_prices": [],
+    "exit_legs": [],
+    "is_closed": true,
+    "exit_date": "2026-04-01T00:00:00",
+    "exit_value": 75.33,
+    "exit_reason": "12d+2% 早平锁利",
+    "current_value": 75.33,
+    "pnl_pct": 11.323873811819807,
+    "hold_days": 12,
+    "created_at": "2026-05-18T14:27:36.093309+08:00",
+    "config_version": "7320637",
+    "entry_perp": 72.59,
+    "binance_symbol": "XAGUSDT",
+    "leverage": 3.0,
+    "cross_asset_origin": NaN,
+    "state": NaN
+  },
+  {
+    "asset": "SLV",
+    "signal_date": "2026-03-23T00:00:00",
+    "strategy": "FUTURES_LONG",
+    "signal_tier": "S",
+    "entry_etf": 61.29999923706055,
+    "entry_open": NaN,
+    "entry_close": NaN,
+    "source": "XAGUSDT 多头 @ $68.19 (3× tier=S)",
+    "entry_credit_or_premium": 68.19,
+    "legs": [],
+    "entry_leg_prices": [],
+    "exit_legs": [],
+    "is_closed": true,
+    "exit_date": "2026-03-31T00:00:00",
+    "exit_value": 74.93,
+    "exit_reason": "3d+8% 早平锁利",
+    "current_value": 74.93,
+    "pnl_pct": 29.652441706995194,
+    "hold_days": 8,
+    "created_at": "2026-05-18T14:27:36.093309+08:00",
+    "config_version": "7320637",
+    "entry_perp": 68.19,
+    "binance_symbol": "XAGUSDT",
+    "leverage": 3.0,
+    "cross_asset_origin": NaN,
+    "state": NaN
+  },
+  {
+    "asset": "SLV",
+    "signal_date": "2026-04-29T00:00:00",
+    "strategy": "FUTURES_LONG",
+    "signal_tier": "B",
+    "entry_etf": 64.95999908447266,
+    "entry_open": NaN,
+    "entry_close": NaN,
+    "source": "XAGUSDT 多头 @ $73.33 (3× tier=B)",
+    "entry_credit_or_premium": 73.33,
+    "legs": [],
+    "entry_leg_prices": [],
+    "exit_legs": [],
+    "is_closed": true,
+    "exit_date": "2026-05-06T00:00:00",
+    "exit_value": 77.61,
+    "exit_reason": "7d+5% 早平锁利",
+    "current_value": 77.61,
+    "pnl_pct": 17.509886813036935,
+    "hold_days": 7,
+    "created_at": "2026-05-18T14:27:36.093309+08:00",
+    "config_version": "7320637",
+    "entry_perp": 73.33,
+    "binance_symbol": "XAGUSDT",
+    "leverage": 3.0,
+    "cross_asset_origin": NaN,
+    "state": NaN
+  },
+  {
+    "asset": "SLV",
+    "signal_date": "2026-05-04T00:00:00",
+    "strategy": "FUTURES_LONG",
+    "signal_tier": "B",
+    "entry_etf": 66.38999938964844,
+    "entry_open": NaN,
+    "entry_close": NaN,
+    "source": "XAGUSDT 多头 @ $75.62 (3× tier=B)",
+    "entry_credit_or_premium": 75.62,
+    "legs": [],
+    "entry_leg_prices": [],
+    "exit_legs": [],
+    "is_closed": true,
+    "exit_date": "2026-05-11T00:00:00",
+    "exit_value": 87.21,
+    "exit_reason": "3d+8% 早平锁利",
+    "current_value": 87.21,
+    "pnl_pct": 45.97989949748742,
+    "hold_days": 7,
+    "created_at": "2026-05-18T14:27:36.093309+08:00",
+    "config_version": "7320637",
+    "entry_perp": 75.62,
+    "binance_symbol": "XAGUSDT",
+    "leverage": 3.0,
+    "cross_asset_origin": NaN,
+    "state": NaN
+  },
+  {
+    "asset": "SLV",
+    "signal_date": "2026-05-05T00:00:00",
+    "strategy": "FUTURES_LONG",
+    "signal_tier": "B",
+    "entry_etf": 66.7699966430664,
+    "entry_open": NaN,
+    "entry_close": NaN,
+    "source": "XAGUSDT 多头 @ $72.66 (3× tier=B)",
+    "entry_credit_or_premium": 72.66,
+    "legs": [],
+    "entry_leg_prices": [],
+    "exit_legs": [],
+    "is_closed": true,
+    "exit_date": "2026-05-08T00:00:00",
+    "exit_value": 80.41,
+    "exit_reason": "3d+8% 早平锁利",
+    "current_value": 80.41,
+    "pnl_pct": 31.998348472336914,
+    "hold_days": 3,
+    "created_at": "2026-05-18T14:27:36.093309+08:00",
+    "config_version": "7320637",
+    "entry_perp": 72.66,
+    "binance_symbol": "XAGUSDT",
+    "leverage": 3.0,
+    "cross_asset_origin": NaN,
+    "state": NaN
+  },
+  {
+    "asset": "SLV",
+    "signal_date": "2026-05-15T00:00:00",
+    "strategy": "FUTURES_LONG",
+    "signal_tier": "S",
+    "entry_etf": 69.73999786376953,
+    "entry_open": NaN,
+    "entry_close": NaN,
+    "source": "XAGUSDT 多头 @ $83.54 (3× tier=S)",
+    "entry_credit_or_premium": 83.54,
+    "legs": [],
+    "entry_leg_prices": [],
+    "exit_legs": [],
+    "is_closed": true,
+    "exit_date": "2026-06-04T00:00:00",
+    "exit_value": 73.88,
+    "exit_reason": "20d 时间出场",
+    "current_value": 73.88,
+    "pnl_pct": -34.68996887718462,
+    "hold_days": 20,
+    "created_at": "2026-05-18T14:27:36.093309+08:00",
+    "config_version": "7320637",
+    "entry_perp": 83.54,
+    "binance_symbol": "XAGUSDT",
+    "leverage": 3.0,
+    "cross_asset_origin": NaN,
+    "state": NaN
+  },
+  {
+    "asset": "SLV",
+    "signal_date": "2026-05-15T00:00:00",
+    "strategy": "SELL PUT",
+    "signal_tier": "S",
+    "entry_etf": 69.73999786376953,
+    "entry_open": 69.73999786376953,
+    "entry_close": 69.04000091552734,
+    "source": "-P$70/+P$66 (07/17)",
+    "entry_credit_or_premium": 1.8999998569488525,
+    "legs": [
+      [
+        "short_put",
+        "US.SLV260717P70000",
+        70.0,
+        -1
+      ],
+      [
+        "long_put",
+        "US.SLV260717P66000",
+        66.0,
+        1
+      ]
+    ],
+    "entry_leg_prices": [
+      [
+        "short_put",
+        5.829999923706055
+      ],
+      [
+        "long_put",
+        3.930000066757202
+      ]
+    ],
+    "exit_legs": [
+      [
+        "short_put",
+        11.550000190734863
+      ],
+      [
+        "long_put",
+        8.210000038146973
+      ]
+    ],
+    "is_closed": false,
+    "exit_date": null,
+    "exit_value": 0.0,
+    "exit_reason": "",
+    "current_value": 3.3400001525878906,
+    "pnl_pct": -68.5714379784195,
+    "hold_days": 25,
+    "created_at": "2026-05-18T14:27:36.093309+08:00",
+    "config_version": "7320637",
+    "entry_perp": NaN,
+    "binance_symbol": NaN,
+    "leverage": NaN,
+    "cross_asset_origin": NaN,
+    "state": NaN
+  }
+]

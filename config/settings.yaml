@@ -1,0 +1,135 @@
+# GLD Options Trading System Configuration
+
+# FRED API Key - 需要在 https://fred.stlouisfed.org/docs/api/api_key.html 免费申请
+fred_api_key: "YOUR_FRED_API_KEY"
+
+# 数据时间范围
+data:
+  start_date: "2004-11-18"  # GLD ETF 上市日期
+  end_date: null             # null 表示到今天
+
+# 数据存储路径
+paths:
+  raw_data: "data/raw"
+  processed_data: "data/processed"
+  cache: "data/cache"
+
+# ============================================================
+# 数据源定义
+# ============================================================
+
+# Yahoo Finance 数据
+yahoo_finance:
+  # GLD ETF
+  gld:
+    ticker: "GLD"
+    description: "SPDR Gold Shares ETF"
+
+  # 黄金期货
+  gold_futures:
+    ticker: "GC=F"
+    description: "COMEX Gold Futures"
+
+  # 美元指数
+  dxy:
+    ticker: "DX-Y.NYB"
+    description: "US Dollar Index"
+
+  # VIX 恐慌指数
+  vix:
+    ticker: "^VIX"
+    description: "CBOE Volatility Index"
+
+  # 原油期货
+  crude_oil:
+    ticker: "CL=F"
+    description: "WTI Crude Oil Futures"
+
+  # 铜期货
+  copper:
+    ticker: "HG=F"
+    description: "Copper Futures"
+
+  # 白银期货
+  silver:
+    ticker: "SI=F"
+    description: "Silver Futures"
+
+  # 美国10年期国债收益率
+  us10y:
+    ticker: "^TNX"
+    description: "US 10-Year Treasury Yield"
+
+  # 美国2年期国债收益率
+  us2y:
+    ticker: "^IRX"
+    description: "US 13-Week Treasury Bill Rate"
+
+# FRED 数据 (美联储经济数据库)
+fred:
+  # 10年期TIPS实际收益率
+  real_yield_10y:
+    series_id: "DFII10"
+    description: "10-Year Treasury Inflation-Indexed Security, Constant Maturity"
+    frequency: "daily"
+
+  # 10年期盈亏平衡通胀率
+  breakeven_inflation_10y:
+    series_id: "T10YIE"
+    description: "10-Year Breakeven Inflation Rate"
+    frequency: "daily"
+
+  # 5年期TIPS实际收益率
+  real_yield_5y:
+    series_id: "DFII5"
+    description: "5-Year Treasury Inflation-Indexed Security, Constant Maturity"
+    frequency: "daily"
+
+  # 联邦基金利率
+  fed_funds_rate:
+    series_id: "DFF"
+    description: "Federal Funds Effective Rate"
+    frequency: "daily"
+
+  # 美国联邦债务总额
+  federal_debt:
+    series_id: "GFDEBTN"
+    description: "Federal Debt: Total Public Debt"
+    frequency: "quarterly"
+
+  # 美国财政赤字
+  fiscal_deficit:
+    series_id: "MTSDS133FMS"
+    description: "Federal Surplus or Deficit"
+    frequency: "monthly"
+
+  # CPI 通胀
+  cpi:
+    series_id: "CPIAUCSL"
+    description: "Consumer Price Index for All Urban Consumers"
+    frequency: "monthly"
+
+  # 美国M2货币供应
+  m2:
+    series_id: "M2SL"
+    description: "M2 Money Supply"
+    frequency: "monthly"
+
+  # 贸易加权美元指数
+  trade_weighted_dollar:
+    series_id: "DTWEXBGS"
+    description: "Trade Weighted U.S. Dollar Index: Broad, Goods and Services"
+    frequency: "daily"
+
+# CBOE 数据
+cboe:
+  gvz:
+    description: "CBOE Gold ETF Volatility Index (基于GLD期权)"
+    url: "https://cdn.cboe.com/api/global/us_indices/daily_prices/GVZ_History.csv"
+
+# CFTC COT 报告
+cftc:
+  gold_cot:
+    description: "COMEX Gold Futures COT Report"
+    url: "https://www.cftc.gov/dea/newcot/deafut.txt"
+    frequency: "weekly"

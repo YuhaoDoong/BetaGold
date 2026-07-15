@@ -1,0 +1,13 @@
+label,dtype
+fwd_ret_5d,float64
+fwd_ret_10d,float64
+fwd_ret_20d,float64
+direction_5d,category
+direction_10d,category
+magnitude_10d,category
+fwd_rv_10d,float64
+fwd_rv_20d,float64
+vol_regime,category
+iv_rv_spread,float64
+tail_event_flag,int64
+max_dd_10d,float64

@@ -1,0 +1,15 @@
+# git commit: 94d9b70
+# date: 2026-05-08T11:43:23.364116
+# real window: 365d, sim window: 1825d
+
+=== 策略参数中心 (v3.7.167) ===
+  GLD FUTURES_LONG: lev=5× TP=+200.0% margin SL=-100.0% margin hold≤20d
+  SLV FUTURES_LONG: lev=3× TP=+200.0% margin SL=-100.0% margin hold≤20d
+  GLD SHORT_VOL: TP=+50.0% credit SL=-50.0% (max_risk) hold≤30d DTE=30
+  SLV SHORT_VOL: TP=+50.0% credit SL=-50.0% (max_risk) hold≤30d DTE=30
+  GLD SELL PUT: SPConfig(profit_target_credit_pct=50.0, stop_loss_margin_pct=100.0, base_dte=30, panic_sl_hold_days=999, panic_sl_margin_pct=999.0)
+  SLV SELL PUT: SPConfig(profit_target_credit_pct=30.0, stop_loss_margin_pct=100.0, base_dte=30, panic_sl_hold_days=999, panic_sl_margin_pct=999.0)
+  GLD BUY CALL: BCConfig(profit_target_mult=1.5, stop_loss_mult=0.5, base_dte=30)
+  SLV BUY CALL: BCConfig(profit_target_mult=1.5, stop_loss_mult=0.5, base_dte=30)
+  GLD STRADDLE: StraddleConfig(profit_target_mult=2.0, hold_max_days=21, base_dte=30)
+  SLV STRADDLE: StraddleConfig(profit_target_mult=2.0, hold_max_days=21, base_dte=30)

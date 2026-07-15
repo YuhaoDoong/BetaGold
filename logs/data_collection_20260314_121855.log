@@ -1,0 +1,190 @@
+2026-03-14 12:18:55,954 [INFO] src.data.market.market_data - 正在获取 gld (GLD) 数据: 2004-11-18 ~ 2026-03-14
+2026-03-14 12:18:56,504 [INFO] src.data.market.market_data - gld: 获取 5362 条记录, 时间范围 2004-11-18 ~ 2026-03-13
+2026-03-14 12:18:56,504 [INFO] src.data.market.market_data - 正在获取 gold_futures (GC=F) 数据: 2004-11-18 ~ 2026-03-14
+2026-03-14 12:18:56,728 [INFO] src.data.market.market_data - gold_futures: 获取 5355 条记录, 时间范围 2004-11-18 ~ 2026-03-13
+2026-03-14 12:18:56,728 [INFO] src.data.market.market_data - 正在获取 dxy (DX-Y.NYB) 数据: 2004-11-18 ~ 2026-03-14
+2026-03-14 12:18:56,894 [INFO] src.data.market.market_data - dxy: 获取 5370 条记录, 时间范围 2004-11-18 ~ 2026-03-13
+2026-03-14 12:18:56,894 [INFO] src.data.market.market_data - 正在获取 vix (^VIX) 数据: 2004-11-18 ~ 2026-03-14
+2026-03-14 12:18:57,024 [INFO] src.data.market.market_data - vix: 获取 5362 条记录, 时间范围 2004-11-18 ~ 2026-03-13
+2026-03-14 12:18:57,024 [INFO] src.data.market.market_data - 正在获取 crude_oil (CL=F) 数据: 2004-11-18 ~ 2026-03-14
+2026-03-14 12:18:57,297 [INFO] src.data.market.market_data - crude_oil: 获取 5359 条记录, 时间范围 2004-11-18 ~ 2026-03-13
+2026-03-14 12:18:57,297 [INFO] src.data.market.market_data - 正在获取 copper (HG=F) 数据: 2004-11-18 ~ 2026-03-14
+2026-03-14 12:18:57,459 [INFO] src.data.market.market_data - copper: 获取 5359 条记录, 时间范围 2004-11-18 ~ 2026-03-13
+2026-03-14 12:18:57,459 [INFO] src.data.market.market_data - 正在获取 silver (SI=F) 数据: 2004-11-18 ~ 2026-03-14
+2026-03-14 12:18:57,692 [INFO] src.data.market.market_data - silver: 获取 5356 条记录, 时间范围 2004-11-18 ~ 2026-03-13
+2026-03-14 12:18:57,693 [INFO] src.data.market.market_data - 正在获取 us10y (^TNX) 数据: 2004-11-18 ~ 2026-03-14
+2026-03-14 12:18:57,862 [INFO] src.data.market.market_data - us10y: 获取 5357 条记录, 时间范围 2004-11-18 ~ 2026-03-13
+2026-03-14 12:18:57,862 [INFO] src.data.market.market_data - 正在获取 us2y (^IRX) 数据: 2004-11-18 ~ 2026-03-14
+2026-03-14 12:18:58,010 [INFO] src.data.market.market_data - us2y: 获取 5357 条记录, 时间范围 2004-11-18 ~ 2026-03-13
+2026-03-14 12:18:58,025 [INFO] src.data.market.market_data - 已保存 gld -> /Users/yhdong/Gold/data/raw/market/gld.csv (5362 行)
+2026-03-14 12:18:58,037 [INFO] src.data.market.market_data - 已保存 gold_futures -> /Users/yhdong/Gold/data/raw/market/gold_futures.csv (5355 行)
+2026-03-14 12:18:58,049 [INFO] src.data.market.market_data - 已保存 dxy -> /Users/yhdong/Gold/data/raw/market/dxy.csv (5370 行)
+2026-03-14 12:18:58,060 [INFO] src.data.market.market_data - 已保存 vix -> /Users/yhdong/Gold/data/raw/market/vix.csv (5362 行)
+2026-03-14 12:18:58,073 [INFO] src.data.market.market_data - 已保存 crude_oil -> /Users/yhdong/Gold/data/raw/market/crude_oil.csv (5359 行)
+2026-03-14 12:18:58,085 [INFO] src.data.market.market_data - 已保存 copper -> /Users/yhdong/Gold/data/raw/market/copper.csv (5359 行)
+2026-03-14 12:18:58,097 [INFO] src.data.market.market_data - 已保存 silver -> /Users/yhdong/Gold/data/raw/market/silver.csv (5356 行)
+2026-03-14 12:18:58,109 [INFO] src.data.market.market_data - 已保存 us10y -> /Users/yhdong/Gold/data/raw/market/us10y.csv (5357 行)
+2026-03-14 12:18:58,121 [INFO] src.data.market.market_data - 已保存 us2y -> /Users/yhdong/Gold/data/raw/market/us2y.csv (5357 行)
+2026-03-14 12:18:58,122 [INFO] src.data.macro.macro_data - 正在获取 FRED real_yield_10y (DFII10): 2004-11-18 ~ 2026-03-14
+2026-03-14 12:18:58,836 [INFO] src.data.macro.macro_data - real_yield_10y: 获取 5561 条记录 (有效 5331), 时间范围 2004-11-18 ~ 2026-03-12
+2026-03-14 12:18:58,836 [INFO] src.data.macro.macro_data - 正在获取 FRED breakeven_inflation_10y (T10YIE): 2004-11-18 ~ 2026-03-14
+2026-03-14 12:18:59,445 [INFO] src.data.macro.macro_data - breakeven_inflation_10y: 获取 5562 条记录 (有效 5332), 时间范围 2004-11-18 ~ 2026-03-13
+2026-03-14 12:18:59,445 [INFO] src.data.macro.macro_data - 正在获取 FRED real_yield_5y (DFII5): 2004-11-18 ~ 2026-03-14
+2026-03-14 12:19:00,017 [INFO] src.data.macro.macro_data - real_yield_5y: 获取 5561 条记录 (有效 5331), 时间范围 2004-11-18 ~ 2026-03-12
+2026-03-14 12:19:00,017 [INFO] src.data.macro.macro_data - 正在获取 FRED fed_funds_rate (DFF): 2004-11-18 ~ 2026-03-14
+2026-03-14 12:19:00,763 [INFO] src.data.macro.macro_data - fed_funds_rate: 获取 7785 条记录 (有效 7785), 时间范围 2004-11-18 ~ 2026-03-12
+2026-03-14 12:19:00,763 [INFO] src.data.macro.macro_data - 正在获取 FRED federal_debt (GFDEBTN): 2004-11-18 ~ 2026-03-14
+2026-03-14 12:19:01,469 [INFO] src.data.macro.macro_data - federal_debt: 获取 85 条记录 (有效 85), 时间范围 2004-10-01 ~ 2025-10-01
+2026-03-14 12:19:01,469 [INFO] src.data.macro.macro_data - 正在获取 FRED fiscal_deficit (MTSDS133FMS): 2004-11-18 ~ 2026-03-14
+2026-03-14 12:19:01,857 [INFO] src.data.macro.macro_data - fiscal_deficit: 获取 256 条记录 (有效 256), 时间范围 2004-11-01 ~ 2026-02-01
+2026-03-14 12:19:01,857 [INFO] src.data.macro.macro_data - 正在获取 FRED cpi (CPIAUCSL): 2004-11-18 ~ 2026-03-14
+2026-03-14 12:19:02,991 [INFO] src.data.macro.macro_data - cpi: 获取 256 条记录 (有效 255), 时间范围 2004-11-01 ~ 2026-02-01
+2026-03-14 12:19:02,992 [INFO] src.data.macro.macro_data - 正在获取 FRED m2 (M2SL): 2004-11-18 ~ 2026-03-14
+2026-03-14 12:19:03,772 [INFO] src.data.macro.macro_data - m2: 获取 255 条记录 (有效 255), 时间范围 2004-11-01 ~ 2026-01-01
+2026-03-14 12:19:03,772 [INFO] src.data.macro.macro_data - 正在获取 FRED trade_weighted_dollar (DTWEXBGS): 2004-11-18 ~ 2026-03-14
+2026-03-14 12:19:04,324 [INFO] src.data.macro.macro_data - trade_weighted_dollar: 获取 5265 条记录 (有效 5057), 时间范围 2006-01-02 ~ 2026-03-06
+2026-03-14 12:19:04,332 [INFO] src.data.macro.macro_data - 已保存 real_yield_10y -> /Users/yhdong/Gold/data/raw/macro/real_yield_10y.csv (5561 行)
+2026-03-14 12:19:04,335 [INFO] src.data.macro.macro_data - 已保存 breakeven_inflation_10y -> /Users/yhdong/Gold/data/raw/macro/breakeven_inflation_10y.csv (5562 行)
+2026-03-14 12:19:04,338 [INFO] src.data.macro.macro_data - 已保存 real_yield_5y -> /Users/yhdong/Gold/data/raw/macro/real_yield_5y.csv (5561 行)
+2026-03-14 12:19:04,341 [INFO] src.data.macro.macro_data - 已保存 fed_funds_rate -> /Users/yhdong/Gold/data/raw/macro/fed_funds_rate.csv (7785 行)
+2026-03-14 12:19:04,342 [INFO] src.data.macro.macro_data - 已保存 federal_debt -> /Users/yhdong/Gold/data/raw/macro/federal_debt.csv (85 行)
+2026-03-14 12:19:04,343 [INFO] src.data.macro.macro_data - 已保存 fiscal_deficit -> /Users/yhdong/Gold/data/raw/macro/fiscal_deficit.csv (256 行)
+2026-03-14 12:19:04,343 [INFO] src.data.macro.macro_data - 已保存 cpi -> /Users/yhdong/Gold/data/raw/macro/cpi.csv (256 行)
+2026-03-14 12:19:04,344 [INFO] src.data.macro.macro_data - 已保存 m2 -> /Users/yhdong/Gold/data/raw/macro/m2.csv (255 行)
+2026-03-14 12:19:04,347 [INFO] src.data.macro.macro_data - 已保存 trade_weighted_dollar -> /Users/yhdong/Gold/data/raw/macro/trade_weighted_dollar.csv (5265 行)
+2026-03-14 12:19:04,354 [INFO] src.data.macro.macro_data - 宏观数据面板: 7788 行 x 9 列
+2026-03-14 12:19:04,354 [INFO] src.data.macro.macro_data - 列: ['DFII10', 'T10YIE', 'DFII5', 'DFF', 'GFDEBTN', 'MTSDS133FMS', 'CPIAUCSL', 'M2SL', 'DTWEXBGS']
+2026-03-14 12:19:04,376 [INFO] src.data.volatility.vol_data - 正在从 CBOE 获取 GVZ 数据: https://cdn.cboe.com/api/global/us_indices/daily_prices/GVZ_History.csv
+2026-03-14 12:19:05,225 [WARNING] src.data.volatility.vol_data - GVZ CSV 列名不匹配，实际列: ['DATE', 'GVZ']
+2026-03-14 12:19:05,225 [INFO] src.data.volatility.vol_data - 尝试使用位置匹配: date=DATE, close=GVZ
+2026-03-14 12:19:05,230 [INFO] src.data.volatility.vol_data - GVZ: 获取 4144 条记录, 时间范围 2009-09-18 ~ 2026-03-13
+2026-03-14 12:19:05,231 [INFO] src.data.volatility.vol_data - 正在获取 VIX 期限结构数据...
+2026-03-14 12:19:05,370 [INFO] src.data.volatility.vol_data -   VIX: 5362 条记录
+2026-03-14 12:19:05,559 [INFO] src.data.volatility.vol_data -   VIX9D: 3821 条记录
+2026-03-14 12:19:05,698 [INFO] src.data.volatility.vol_data -   VIX3M: 4946 条记录
+2026-03-14 12:19:05,836 [INFO] src.data.volatility.vol_data -   VIX6M: 4578 条记录
+2026-03-14 12:19:05,838 [INFO] src.data.volatility.vol_data - 正在获取 MOVE 指数...
+2026-03-14 12:19:06,138 [INFO] src.data.volatility.vol_data - FRED MOVE 不可用 (Bad Request.  The series does not exist.)，尝试备用方案...
+2026-03-14 12:19:06,280 [INFO] src.data.volatility.vol_data - MOVE (Yahoo): 5271 条记录
+2026-03-14 12:19:06,283 [INFO] src.data.volatility.vol_data - 已保存 GVZ -> /Users/yhdong/Gold/data/raw/volatility/gvz.csv
+2026-03-14 12:19:06,293 [INFO] src.data.volatility.vol_data - 已保存 VIX期限结构 -> /Users/yhdong/Gold/data/raw/volatility/vix_term_structure.csv
+2026-03-14 12:19:06,297 [INFO] src.data.volatility.vol_data - 已保存 MOVE -> /Users/yhdong/Gold/data/raw/volatility/move.csv
+2026-03-14 12:19:06,297 [INFO] src.data.positioning.cot_data - 正在获取 2006 年 COT 数据: https://www.cftc.gov/files/dea/history/deacot2006.zip
+2026-03-14 12:19:06,717 [INFO] src.data.positioning.cot_data -   2006: 52 条黄金记录
+2026-03-14 12:19:06,718 [INFO] src.data.positioning.cot_data - 正在获取 2007 年 COT 数据: https://www.cftc.gov/files/dea/history/deacot2007.zip
+2026-03-14 12:19:06,895 [INFO] src.data.positioning.cot_data -   2007: 53 条黄金记录
+2026-03-14 12:19:06,896 [INFO] src.data.positioning.cot_data - 正在获取 2008 年 COT 数据: https://www.cftc.gov/files/dea/history/deacot2008.zip
+2026-03-14 12:19:07,167 [INFO] src.data.positioning.cot_data -   2008: 52 条黄金记录
+2026-03-14 12:19:07,168 [INFO] src.data.positioning.cot_data - 正在获取 2009 年 COT 数据: https://www.cftc.gov/files/dea/history/deacot2009.zip
+2026-03-14 12:19:07,347 [INFO] src.data.positioning.cot_data -   2009: 52 条黄金记录
+2026-03-14 12:19:07,348 [INFO] src.data.positioning.cot_data - 正在获取 2010 年 COT 数据: https://www.cftc.gov/files/dea/history/deacot2010.zip
+2026-03-14 12:19:07,542 [INFO] src.data.positioning.cot_data -   2010: 52 条黄金记录
+2026-03-14 12:19:07,543 [INFO] src.data.positioning.cot_data - 正在获取 2011 年 COT 数据: https://www.cftc.gov/files/dea/history/deacot2011.zip
+2026-03-14 12:19:10,151 [INFO] src.data.positioning.cot_data -   2011: 52 条黄金记录
+2026-03-14 12:19:10,152 [INFO] src.data.positioning.cot_data - 正在获取 2012 年 COT 数据: https://www.cftc.gov/files/dea/history/deacot2012.zip
+2026-03-14 12:19:12,978 [INFO] src.data.positioning.cot_data -   2012: 53 条黄金记录
+2026-03-14 12:19:12,979 [INFO] src.data.positioning.cot_data - 正在获取 2013 年 COT 数据: https://www.cftc.gov/files/dea/history/deacot2013.zip
+2026-03-14 12:19:15,625 [INFO] src.data.positioning.cot_data -   2013: 52 条黄金记录
+2026-03-14 12:19:15,627 [INFO] src.data.positioning.cot_data - 正在获取 2014 年 COT 数据: https://www.cftc.gov/files/dea/history/deacot2014.zip
+2026-03-14 12:19:18,254 [INFO] src.data.positioning.cot_data -   2014: 52 条黄金记录
+2026-03-14 12:19:18,255 [INFO] src.data.positioning.cot_data - 正在获取 2015 年 COT 数据: https://www.cftc.gov/files/dea/history/deacot2015.zip
+2026-03-14 12:19:18,492 [INFO] src.data.positioning.cot_data -   2015: 52 条黄金记录
+2026-03-14 12:19:18,493 [INFO] src.data.positioning.cot_data - 正在获取 2016 年 COT 数据: https://www.cftc.gov/files/dea/history/deacot2016.zip
+2026-03-14 12:19:18,870 [INFO] src.data.positioning.cot_data -   2016: 52 条黄金记录
+2026-03-14 12:19:18,872 [INFO] src.data.positioning.cot_data - 正在获取 2017 年 COT 数据: https://www.cftc.gov/files/dea/history/deacot2017.zip
+2026-03-14 12:19:19,117 [INFO] src.data.positioning.cot_data -   2017: 52 条黄金记录
+2026-03-14 12:19:19,118 [INFO] src.data.positioning.cot_data - 正在获取 2018 年 COT 数据: https://www.cftc.gov/files/dea/history/deacot2018.zip
+2026-03-14 12:19:19,400 [INFO] src.data.positioning.cot_data -   2018: 53 条黄金记录
+2026-03-14 12:19:19,402 [INFO] src.data.positioning.cot_data - 正在获取 2019 年 COT 数据: https://www.cftc.gov/files/dea/history/deacot2019.zip
+2026-03-14 12:19:19,657 [INFO] src.data.positioning.cot_data -   2019: 52 条黄金记录
+2026-03-14 12:19:19,658 [INFO] src.data.positioning.cot_data - 正在获取 2020 年 COT 数据: https://www.cftc.gov/files/dea/history/deacot2020.zip
+2026-03-14 12:19:19,930 [INFO] src.data.positioning.cot_data -   2020: 52 条黄金记录
+2026-03-14 12:19:19,931 [INFO] src.data.positioning.cot_data - 正在获取 2021 年 COT 数据: https://www.cftc.gov/files/dea/history/deacot2021.zip
+2026-03-14 12:19:20,217 [INFO] src.data.positioning.cot_data -   2021: 52 条黄金记录
+2026-03-14 12:19:20,219 [INFO] src.data.positioning.cot_data - 正在获取 2022 年 COT 数据: https://www.cftc.gov/files/dea/history/deacot2022.zip
+2026-03-14 12:19:20,503 [INFO] src.data.positioning.cot_data -   2022: 52 条黄金记录
+2026-03-14 12:19:20,505 [INFO] src.data.positioning.cot_data - 正在获取 2023 年 COT 数据: https://www.cftc.gov/files/dea/history/deacot2023.zip
+2026-03-14 12:19:20,874 [INFO] src.data.positioning.cot_data -   2023: 52 条黄金记录
+2026-03-14 12:19:20,876 [INFO] src.data.positioning.cot_data - 正在获取 2024 年 COT 数据: https://www.cftc.gov/files/dea/history/deacot2024.zip
+2026-03-14 12:19:21,191 [INFO] src.data.positioning.cot_data -   2024: 53 条黄金记录
+2026-03-14 12:19:21,192 [INFO] src.data.positioning.cot_data - 正在获取 2025 年 COT 数据: https://www.cftc.gov/files/dea/history/deacot2025.zip
+2026-03-14 12:19:21,542 [INFO] src.data.positioning.cot_data -   2025: 52 条黄金记录
+2026-03-14 12:19:21,544 [INFO] src.data.positioning.cot_data - 正在获取 2026 年 COT 数据: https://www.cftc.gov/files/dea/history/deacot2026.zip
+2026-03-14 12:19:21,659 [INFO] src.data.positioning.cot_data -   2026: 10 条黄金记录
+2026-03-14 12:19:21,662 [INFO] src.data.positioning.cot_data - COT 黄金数据合计: 1054 条周报记录, 2006-01-03 ~ 2026-03-10
+2026-03-14 12:19:21,665 [INFO] src.data.positioning.cot_data - 已保存 COT 数据 -> /Users/yhdong/Gold/data/raw/cot/gold_cot.csv (1054 行)
+2026-03-14 12:19:21,666 [INFO] src.data.positioning.central_bank_gold - 解析月度央行购金数据: /Users/yhdong/Gold/data/raw/others/Changes_latest_as_of_Feb2026_IFS.xlsx
+2026-03-14 12:19:21,886 [INFO] src.data.positioning.central_bank_gold - 月度数据: 288 个月, 164 列, 2002-01 ~ 2025-12
+2026-03-14 12:19:21,886 [INFO] src.data.positioning.central_bank_gold - 解析年度央行购金数据: /Users/yhdong/Gold/data/raw/others/Changes_latest_as_of_Feb2026_IFS.xlsx
+2026-03-14 12:19:21,915 [INFO] src.data.positioning.central_bank_gold - 年度数据: 24 年, 2002 ~ 2025
+2026-03-14 12:19:21,918 [INFO] src.data.positioning.central_bank_gold - 已保存月度数据 -> /Users/yhdong/Gold/data/raw/central_bank/monthly_changes.csv
+2026-03-14 12:19:21,919 [INFO] src.data.positioning.central_bank_gold - 已保存年度数据 -> /Users/yhdong/Gold/data/raw/central_bank/annual_changes.csv
+2026-03-14 12:19:21,920 [INFO] src.data.positioning.central_bank_gold - 已保存特征数据 -> /Users/yhdong/Gold/data/raw/central_bank/cb_features.csv
+2026-03-14 12:19:21,920 [INFO] src.data.events.economic_events - 加载 FOMC 会议日期（硬编码）...
+2026-03-14 12:19:21,921 [INFO] src.data.events.economic_events - FOMC 会议日期: 185 个 (2005-02-02 ~ 2027-12-08)
+2026-03-14 12:19:21,921 [INFO] src.data.events.economic_events - 正在获取 NFP 发布日期 (PAYEMS)...
+2026-03-14 12:19:23,135 [INFO] src.data.events.economic_events -   NFP: 857 个发布日期
+2026-03-14 12:19:23,138 [INFO] src.data.events.economic_events - 正在获取 CPI 发布日期 (CPIAUCSL)...
+2026-03-14 12:19:24,259 [INFO] src.data.events.economic_events -   CPI: 943 个发布日期
+2026-03-14 12:19:24,260 [INFO] src.data.events.economic_events - 正在获取 PPI 发布日期 (PPIACO)...
+2026-03-14 12:19:25,009 [INFO] src.data.events.economic_events -   PPI: 593 个发布日期
+2026-03-14 12:19:25,013 [INFO] src.data.events.economic_events - 正在获取 GDP 发布日期 (GDP)...
+2026-03-14 12:19:25,698 [INFO] src.data.events.economic_events -   GDP: 850 个发布日期
+2026-03-14 12:19:25,702 [INFO] src.data.events.economic_events - 正在获取 ISM_Manufacturing 发布日期 (MANEMP)...
+2026-03-14 12:19:26,338 [INFO] src.data.events.economic_events -   ISM_Manufacturing: 857 个发布日期
+2026-03-14 12:19:26,340 [INFO] src.data.events.economic_events - 经济事件日历合计: 4285 条
+2026-03-14 12:19:26,344 [INFO] src.data.events.economic_events - 已保存经济事件日历 -> /Users/yhdong/Gold/data/raw/events/economic_calendar.csv (4285 条)
+2026-03-14 12:19:26,346 [INFO] src.data.market.market_data - 正在获取 GLD 期权链...
+2026-03-14 12:19:26,720 [INFO] src.data.market.market_data - GLD 可用期权到期日: 27 个
+2026-03-14 12:19:26,720 [INFO] src.data.market.market_data - 最近到期日: ('2026-03-16', '2026-03-18', '2026-03-20', '2026-03-23', '2026-03-27')
+2026-03-14 12:19:26,771 [INFO] src.data.market.market_data -   2026-03-16: 67 calls, 67 puts
+2026-03-14 12:19:26,816 [INFO] src.data.market.market_data -   2026-03-18: 69 calls, 61 puts
+2026-03-14 12:19:26,918 [INFO] src.data.market.market_data -   2026-03-20: 333 calls, 307 puts
+2026-03-14 12:19:27,026 [INFO] src.data.market.market_data -   2026-03-23: 18 calls, 9 puts
+2026-03-14 12:19:27,083 [INFO] src.data.market.market_data -   2026-03-27: 108 calls, 99 puts
+2026-03-14 12:19:27,175 [INFO] src.data.market.market_data -   2026-03-31: 281 calls, 280 puts
+2026-03-14 12:19:27,196 [INFO] src.data.market.market_data - 已保存 12 个期权链文件到 /Users/yhdong/Gold/data/raw/options
+2026-03-14 12:19:27,384 [INFO] src.data.options.moomoo_data - 已连接 Moomoo OpenD (127.0.0.1:11111)
+2026-03-14 12:19:27,410 [INFO] src.data.options.moomoo_data - US.GLD 期权到期日: 31 个
+2026-03-14 12:19:27,410 [INFO] src.data.options.moomoo_data - 获取 6 个到期日的期权链: 2026-03-16 ~ 2026-03-27
+2026-03-14 12:19:27,766 [INFO] src.data.options.moomoo_data - US.GLD 期权链: 1856 个合约 (2026-03-16 ~ 2026-03-27)
+2026-03-14 12:19:27,766 [INFO] src.data.options.moomoo_data - 获取 1856 个合约的实时快照...
+2026-03-14 12:19:28,359 [INFO] src.data.options.moomoo_data - 期权快照: 1856 个合约
+2026-03-14 12:19:28,359 [INFO] src.data.options.moomoo_data - 完整期权数据: 1856 个合约, 23 个字段
+2026-03-14 12:19:28,370 [INFO] src.data.options.moomoo_data - 已保存期权数据 -> /Users/yhdong/Gold/data/raw/moomoo_options/gld_options_full_20260314_121928.csv
+2026-03-14 12:19:28,370 [INFO] src.data.options.moomoo_data - 已关闭 Moomoo 连接
+2026-03-14 12:19:28,370 [INFO] src.data.options.options_archive - === 日终全链快照开始 ===
+2026-03-14 12:19:28,371 [INFO] src.data.options.moomoo_data - 已连接 Moomoo OpenD (127.0.0.1:11111)
+2026-03-14 12:19:28,382 [INFO] src.data.options.moomoo_data - US.GLD 期权到期日: 31 个
+2026-03-14 12:19:28,383 [INFO] src.data.options.options_archive - 获取 30 个到期日: 2026-03-16 ~ 2028-12-15
+2026-03-14 12:19:28,383 [INFO] src.data.options.options_archive -   批次: 2026-03-16 ~ 2026-04-10 (10 个到期日)
+2026-03-14 12:19:28,783 [INFO] src.data.options.moomoo_data - US.GLD 期权链: 3000 个合约 (2026-03-16 ~ 2026-04-10)
+2026-03-14 12:19:32,287 [INFO] src.data.options.options_archive -   批次: 2026-04-17 ~ 2026-05-15 (4 个到期日)
+2026-03-14 12:19:32,445 [INFO] src.data.options.moomoo_data - US.GLD 期权链: 1128 个合约 (2026-04-17 ~ 2026-05-15)
+2026-03-14 12:19:35,950 [INFO] src.data.options.options_archive -   批次: 2026-06-18 ~ 2026-07-17 (3 个到期日)
+2026-03-14 12:19:36,089 [INFO] src.data.options.moomoo_data - US.GLD 期权链: 1034 个合约 (2026-06-18 ~ 2026-07-17)
+2026-03-14 12:19:39,593 [INFO] src.data.options.options_archive -   批次: 2026-08-21 ~ 2026-09-18 (2 个到期日)
+2026-03-14 12:19:39,670 [INFO] src.data.options.moomoo_data - US.GLD 期权链: 616 个合约 (2026-08-21 ~ 2026-09-18)
+2026-03-14 12:19:43,174 [INFO] src.data.options.options_archive -   批次: 2026-09-30 ~ 2026-10-16 (2 个到期日)
+2026-03-14 12:19:43,308 [INFO] src.data.options.moomoo_data - US.GLD 期权链: 524 个合约 (2026-09-30 ~ 2026-10-16)
+2026-03-14 12:19:46,814 [INFO] src.data.options.options_archive -   批次: 2026-11-20 ~ 2026-12-18 (2 个到期日)
+2026-03-14 12:19:46,976 [INFO] src.data.options.moomoo_data - US.GLD 期权链: 468 个合约 (2026-11-20 ~ 2026-12-18)
+2026-03-14 12:19:50,481 [INFO] src.data.options.options_archive -   批次: 2026-12-31 ~ 2027-01-15 (2 个到期日)
+2026-03-14 12:19:50,690 [INFO] src.data.options.moomoo_data - US.GLD 期权链: 760 个合约 (2026-12-31 ~ 2027-01-15)
+2026-03-14 12:19:54,194 [INFO] src.data.options.options_archive -   批次: 2027-03-19 ~ 2027-03-19 (1 个到期日)
+2026-03-14 12:19:54,324 [INFO] src.data.options.moomoo_data - US.GLD 期权链: 228 个合约 (2027-03-19 ~ 2027-03-19)
+2026-03-14 12:19:57,830 [INFO] src.data.options.options_archive -   批次: 2027-06-17 ~ 2027-06-17 (1 个到期日)
+2026-03-14 12:19:57,969 [INFO] src.data.options.moomoo_data - US.GLD 期权链: 328 个合约 (2027-06-17 ~ 2027-06-17)
+2026-03-14 12:20:01,472 [INFO] src.data.options.options_archive -   批次: 2028-01-21 ~ 2028-01-21 (1 个到期日)
+2026-03-14 12:20:01,521 [INFO] src.data.options.moomoo_data - US.GLD 期权链: 332 个合约 (2028-01-21 ~ 2028-01-21)
+2026-03-14 12:20:05,027 [INFO] src.data.options.options_archive -   批次: 2028-06-16 ~ 2028-06-16 (1 个到期日)
+2026-03-14 12:20:05,089 [INFO] src.data.options.moomoo_data - US.GLD 期权链: 270 个合约 (2028-06-16 ~ 2028-06-16)
+2026-03-14 12:20:08,594 [INFO] src.data.options.options_archive -   批次: 2028-12-15 ~ 2028-12-15 (1 个到期日)
+2026-03-14 12:20:08,652 [INFO] src.data.options.moomoo_data - US.GLD 期权链: 272 个合约 (2028-12-15 ~ 2028-12-15)
+2026-03-14 12:20:08,657 [INFO] src.data.options.options_archive - 期权链合计: 8960 个合约
+2026-03-14 12:20:08,658 [INFO] src.data.options.options_archive - 获取 8960 个合约的快照...
+2026-03-14 12:20:11,355 [INFO] src.data.options.moomoo_data - 期权快照: 8960 个合约
+2026-03-14 12:20:11,357 [INFO] src.data.options.options_archive - 完整快照: 8960 个合约, 35 个字段
+2026-03-14 12:20:11,414 [INFO] src.data.options.options_archive - 已保存 Parquet -> /Users/yhdong/Gold/data/raw/options_history/2026-03-14/eod_full.parquet
+2026-03-14 12:20:11,490 [INFO] src.data.options.options_archive - 已保存 CSV -> /Users/yhdong/Gold/data/raw/options_history/2026-03-14/eod_full.csv
+2026-03-14 12:20:11,496 [INFO] src.data.options.moomoo_data - 已关闭 Moomoo 连接

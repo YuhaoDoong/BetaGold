@@ -1,0 +1,18 @@
+{
+  "primary": "GC=F",
+  "seq_len": 24,
+  "hidden_size": 64,
+  "q_upper": 0.95,
+  "q_lower": 0.05,
+  "cal_target_cov": 0.9,
+  "n_ensemble": 3,
+  "horizons": [
+    19,
+    95
+  ],
+  "n_features": 58,
+  "horizon_labels": {
+    "19": "1day",
+    "95": "5day"
+  }
+}
