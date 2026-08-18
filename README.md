@@ -1,501 +1,138 @@
-# GoldDash — 贵金属交易决策系统
+**English** · [中文](README.zh-CN.md)
 
-基于宏观因子 + 深度学习的贵金属交易决策系统。支持黄金 (GLD) 和白银 (SLV)，三层模型 + S/A/B 信号 tier + per-tier 仓位管理 + 多窗口实证验证。
+# GoldDash
 
-**GitHub**: https://github.com/YuhaoDoong/BetaGold
+GoldDash is a research-oriented system for studying precious-metals signals across daily and intraday horizons. It combines market and macroeconomic features, machine-learning range estimates, volatility-aware filters, options strategy research, backtesting, and a Streamlit dashboard.
 
-## 当前 cfg 状态 (v3.7.209, 2026-05-15)
+> **Research use only.** GoldDash is an experimental research codebase, not a trading service or investment recommendation. Backtested results do not represent live performance and can be materially affected by data quality, transaction costs, model selection, and market-regime changes.
 
-### 信号过滤 (GLD)
-| 过滤 | 阈值 | 作用 |
-|---|---|---|
-| **rv_pctile_max** | 0.75 | rv ≥ 0.75 (高波动) 跳过, 避免接飞刀 |
-| **ret_20d_min** | −3% | 近20日跌幅 ≤ −3% 跳过, 拦下行段 |
-| **ma_trend_threshold** | 0.975 | MA20/MA50 < 0.975 (下行趋势) 跳过 |
-| **iv_filter_high_min** | 25 (GVZ) | 高IV: 浅破 (bp_low>0.10) 跳过, 深破强制 SP |
-| **min_dte** | 14d | 期权挑选, 拒绝末日期权 |
+## Project at a glance
 
-### S/A/B Tier 分级 (嵌套语义, GLD)
-| Tier | 准入 | 5y WR | 期货建议 |
-|---|---|---|---|
-| ⭐ S | rv<0.65 ∧ ret_20d>0 ∧ bp_low≤0.20 | 100% (20d) | lev=10× |
-| 🔵 A | rv<0.75 ∧ ret_20d>−1% ∧ bp_low≤0.20 (含S) | 96% | lev=10× |
-| ⚪ B | 通过所有硬过滤 (含S/A) | 88% | lev=5× |
+| Area | Current scope |
+|---|---|
+| Instruments | Gold and silver research, primarily through GLD, SLV, GC=F, and SI=F |
+| Forecasting | Multi-horizon range estimation using LSTM/Transformer-based experiments |
+| Signal research | Trend, realized-volatility, macro, regime, intraday-confirmation, and options-derived filters |
+| Strategy studies | Futures, long calls, put credit spreads, long straddles, and short-volatility structures |
+| Evaluation | Walk-forward analysis, multi-window backtests, calibration checks, and per-asset configuration |
+| Interface | Streamlit dashboard plus command-line research scripts |
 
-### 期货 cfg (FUTURES_GLD)
-| 参数 | 值 | grid 验证 (5y/3y/1y) |
-|---|---|---|
-| **leverage** | S/A=10× B=5× | per-tier lev=10 是天花板 (≥15 wick 爆仓) |
-| **hold_max_days** | **45** | 5y sum +7513 / 1y sum +2057 (vs 30d +65~110%) |
-| **sl_margin_pct** | 100% | spot −10% 兜底 (5y 未触发) |
-| **early_tp_locks** | () | 撤早平 (5y grid sum 翻 2.3x) |
-| **funding_rate_8h** | −0.00002 | Binance XAUUSDT 实测 long 净赚 |
+## Research workflow
 
-### 期权 cfg
-| 策略 | pt | sl | DTE | 验证 |
-|---|---|---|---|---|
-| **BUY CALL** | 2.5× premium | 0.3× | 30d | 5y BS+real sum +11851% (旧 1.5/0.5 仅 +4078%) |
-| **SELL PUT (GLD)** | 70% credit | 100% margin | 30d | 5y sum +1726% (旧 50% +1323%) |
-| **SELL PUT (SLV)** | 30% credit | 100% margin | 30d | per-asset (v3.7.184) |
-| **STRADDLE** | 2× | hold **14d** | 14d | v3.7.211 21→14 (BS grid 早平最优) |
-| **SHORT_VOL** | DISABLED | — | — | 实战 6% WR (v3.7.177 起停用) |
-
-详见 [docs/STRATEGIES.md](docs/STRATEGIES.md) 和 [docs/EXPERIMENTS.md](docs/EXPERIMENTS.md)
-
-## 详细文档
-
-| 文档 | 内容 |
-|------|------|
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 系统架构 — 三层模型, 数据流, 项目结构, Dashboard 模式 |
-| [docs/MODELS.md](docs/MODELS.md) | 模型架构 — LSTM+Transformer Ensemble, Conformal 校准, Regime 7 因子分类 |
-| [docs/STRATEGIES.md](docs/STRATEGIES.md) | 策略详解 — 完整策略矩阵, vega/delta 分析, 胜率定义, 工具映射 |
-| [docs/EXPERIMENTS.md](docs/EXPERIMENTS.md) | 实验记录 — 所有回测结果, 阈值调优, regime 分段, 期货 vs 期权对比 |
-
-## 快速入门
-
-```bash
-conda activate gold
-
-# 启动 Dashboard (= 部署服务) — 后台 ledger daemon 自动启动
-streamlit run app.py
-
-# 关闭 Dashboard = 停止部署 (Ctrl+C)
-# 不需要 cron / systemd, daemon thread 跟 process 绑定
-
-# 手动重建 positions ledger (single source of truth)
-python scripts/build_positions_ledger.py --days 90
-
-# 月度阈值重测 (建议月度跑)
-python scripts/monthly_retune.py              # 全部资产
-python scripts/tune_thresholds.py --asset GLD # 单个资产手动
-
-# 历史回填盘中触发 (首次或规则变更后)
-python scripts/backfill_intraday_signals.py --asset GLD --timeframe 60
-python scripts/backfill_intraday_signals.py --asset SLV --timeframe 60
-```
-
-## 架构 (v3.7.158-161 ledger 模式)
-
-```
-┌─────────────────────────────────────────────────────────┐
-│  build_positions_ledger.py                              │
-│  ledger_daemon (后台 thread, 5min 自动跑)               │
-│            ↓                                            │
-│  positions_ledger.json  ←── single source of truth     │
-│            ↓                                            │
-│  Dashboard (无状态, 仅读 JSON)                          │
-│  - 历史未平仓 section                                   │
-│  - 近一月已平 section                                   │
-│  - 主图 chart marker                                    │
-└─────────────────────────────────────────────────────────┘
-```
-
-dashboard 启动 = 服务部署. 关闭 = 停止部署. daemon thread `daemon=True` 随 process 退出. 网页端部署同样架构: 后台跑 ledger daemon + 前端读 JSON.
-
-任何信号 "不见" 问题, **先打开 `/Users/yhdong/Gold/data/positions_ledger.json` 查证**, 不再黑箱.
-
-
-
-### 月度自动调度 (macOS launchd)
-```bash
-cp scripts/com.golddash.retune.plist.example \
-   ~/Library/LaunchAgents/com.golddash.retune.plist
-# 修改文件中的 USERNAME 和 Python 路径
-launchctl load ~/Library/LaunchAgents/com.golddash.retune.plist
-```
-
-每月 1 号 04:00 SGT 自动跑全部资产 grid search, 输出到
-`data/tune_history/`, dashboard 侧边栏自动显示状态 (🟢🟡🔴).
-
-## 核心特点
-
-### 三层模型架构
-```
-日线层 (今日预测)    模型预测 → 5日区间 + bp030/bp090 阈值 ("开窗信号", 不是入场价)
+```text
+Market and macro data
         ↓
-盘中层 (盘中信号)    实时盘中: 价格在阈值外侧 + Stoch RSI/MACD/KDJ 确认
-        ↓ 写入 data/intraday_signal_log.parquet
-固化层 (历史代表价)  每日多触发取最差 (买:max / 卖:min) → 持仓/回测全部读这里
+Feature engineering and model estimates
+        ↓
+Daily candidate signals
+        ↓
+Regime, trend, volatility, and intraday confirmation
+        ↓
+Strategy candidates and risk parameters
+        ↓
+Backtest / paper-position ledger / dashboard
 ```
 
-### 完整策略矩阵 (v3.7.50 真实期权 18mo 实证)
+The repository separates the user interface from the research modules:
 
-| RV %tile | 方向性信号 | 推荐工具 | 波动率策略 |
-|----------|-----------|----------|------------|
-| < 切点 (低 IV) | BUY CALL 类 | **Buy Call** (期权便宜, delta gain) | tech-score ≥6 → Long Straddle |
-| ≥ 切点 (高 IV) | SELL PUT 类 | **Sell Put** (收 premium 替代 long call) | tech-score ≥6 → Long Straddle |
+- `core/` contains data access, feature logic, models, signal generation, calibration, and position-ledger code.
+- `scripts/` contains data preparation, training, backtesting, diagnostics, and parameter studies.
+- `tests/` contains offline unit and regression tests.
+- `docs/` contains the detailed architecture, model, strategy, and experiment notes.
 
-**切点** (BC↔SP 切换, 单切, per-asset 在 strategy_config 月度重训):
-- GLD: rv_pctile **0.45** (实证看涨 n=64, 切换合成胜率 59.4%)
-- SLV: rv_pctile **0.75** (实证看涨 n=69, 切换合成胜率 66.7%)
+## Main capabilities
 
-**STRADDLE tech-score** (v3.7.49 重构, 实证 score≥6 触发):
-- BBW pctile / ATR ratio / Donchian width / RV%tile / RV abs / RV momentum + 事件辅助
-- 18mo 真实期权胜率: GLD 73% (n=22) / **SLV 70% (n=53, 从 baseline 33% 反转)**
-- score 4-5 是噪音区 (17-33% 胜), 必须避开
+### Multi-source features
 
-**Sizing** (score 6=1× / 7=1.5× / 8+=2×): 累计收益 +125% vs 单切 +68%
+GoldDash combines price, volatility, macroeconomic, cross-asset, and market-structure inputs. The current research pipeline includes GLD/SLV and COMEX futures data, realized-volatility measures, GVZ and related volatility indicators, rates and dollar factors, technical indicators, and selected options/open-interest features.
 
-### 胜率定义 (按 vega/delta 实际盈亏)
+### Multi-horizon modelling
 
-| 策略 | 胜利条件 (动态 sigma_pct = RV × √h/252) |
-|------|-----------------------------------------|
-| BUY CALL | `max_up > 1σ` (横盘是亏) |
-| SELL PUT | `max_down < 1σ` (横盘+上涨都赢) |
-| STRADDLE | `max_move > 1σ` (双向移动 > premium) |
-| SHORT_VOL | `max_move < 1.6σ` (IC 短腿内) |
-| 期货多头 | `ret_5d > 0` (任何正向收盘) |
+The project includes daily and hourly modelling experiments. Range estimates are treated as inputs to a broader decision pipeline rather than as standalone price forecasts. Candidate signals pass through trend, volatility, regime, freshness, and intraday-confirmation checks.
 
-详见 [docs/STRATEGIES.md](docs/STRATEGIES.md)
+### Strategy and risk research
 
-## 关键实证结论 (近 5 年)
+The strategy layer maps filtered signals to instrument-specific research configurations. Position sizing, holding periods, exits, and option structures are evaluated separately by asset and regime. These modules are simulations; they do not place live orders.
 
-1. **方向性 RV 极值过滤**: 排除中位 50-85% 后, 胜率 78% → **81%**, Sharpe 0.53 → **0.61**
-2. **期货代替 BUY CALL 期权**: 胜率 73% → **96%**, Sharpe 0.23 → **1.16** (5 倍提升)
-3. **Iron Condor 严格时机**: 89% 胜率 (vs Short Strangle 40%), 翼锁定最大亏损
-4. **Regime 分段**: Bull 84% / Mixed 45% / Bear 30% — 现状已 regime-optimal
-5. **STRADDLE 完全 regime-agnostic**: Mixed 反而是最佳战场 (90%)
+### Auditability
 
-详见 [docs/EXPERIMENTS.md](docs/EXPERIMENTS.md)
+Signal histories, calibration records, dashboard snapshots, and position-ledger logic are designed to make a result traceable from source data to the displayed decision state.
 
-## 版本历史
+## Quick start
 
-| 版本 | 主题 |
-|------|------|
-| v1.0-v2.x | 日线 Band + 盘中触发 + 12h 止盈 + 3% 止损 |
-| v3.0-v3.4 | 白银扩展 + Qlib Alpha158 + Ensemble 模型 + 多周期 Stoch RSI + 伦敦金价位 |
-| v3.5 | 盘中触发模块: 参数化规则 (Stoch RSI/MACD/KDJ) + 持久 log + 历史回填 |
-| v3.6.x | 完整策略矩阵: 做多/做空波动率 + 方向性 RV 过滤 + 期货独立统计 + 工具映射 |
-| v3.7 | 模块化重构 (core/strategies/) + 4 文档拆分 + 持仓管理 SHORT_VOL |
-| v3.7.x | 修复持仓管理时间倒序 + 活跃持仓暴露 + 完整交易历史合并 |
-| v3.7.8 | 熔断 A/B 验证 + 默认关闭 (实证不提升胜率, 错杀赢面) |
-| v3.7.9 | 持仓管理加退出日 + 退出原因列 |
-| v3.7.10 | 修复 MIXED 优先级 bug (score≥6 单走 vol, 4-5 才 MIXED) |
-| v3.7.11-13 | IV crush 模块化 (core/iv_crush.py) + 用真实 GVZ 数据校准 |
-| v3.7.14 | IV crush 调整默认关闭 (GLD 实证不显著), 保留模块 + Dashboard 显示 IV/RV |
-| v3.7.15-25 | UI / 主图 1h 化 / 5 子图 sharex / 期权策略实时面板 / 持仓管理实时退出判定 / FOMC 日期修正 |
-| v3.7.26-28 | SLV 1h 数据兜底 / auto_refresh 补 SLV 1h / 主图横坐标 / 1-60 天 / 今日预测 sharex 合并 |
-| v3.7.29 | RV 阈值精细网格 (步长 0.025) GLD 优化 |
-| v3.7.30 | Per-Asset 校准: SLV 单独 grid search + 集中参数管理 core/strategy_config.py |
-| v3.7.31 | 月度自动重测系统: scripts/monthly_retune.py + 状态跟踪 + Dashboard 显示 + launchd 示例 |
-| v3.7.32 | STRADDLE 加 RV %tile < 0.50 过滤 (5y 实证 Sharpe +5%) |
-| **v3.7.33** | **RV %tile 精度统一 0.01 (GRID_PRECISION 集中管理) + GLD/SLV STRADDLE per-asset 校准: GLD 0.42 (Sharpe 0.922), SLV 0.20 (Sharpe 1.258); SLV STRADDLE 实际比 GLD 表现更好** |
-| v3.7.39-43 | 真实期权回测 (yfinance OCC) + 多 expiry DTE 适配 + 4 策略止损 + Moomoo fallback |
-| v3.7.44-46 | RV 阈值反复 (跟用户原 SELL_PUT 设计意图调和) — 单切 GLD 0.45 / SLV 0.75 |
-| v3.7.47-48 | 波动率技术指标重构 (vol_indicators.py BBW/ATR/Donchian/long_vol/short_vol score) |
-| v3.7.49 | events.py STRADDLE/SHORT_VOL 改 tech-score 主导 (事件 30%), score≥6 触发 |
-| **v3.7.50** | **真实期权 18mo 验证 STRADDLE 通过 (GLD 73%/SLV 70% 胜率), Dashboard sizing 显示, generate_signals 与 strategy_config 切点 unify** |
-| v3.7.51 | kline_db (本地 EOD 累积) 作为 yfinance/Moomoo 第三 fallback |
-| v3.7.52 | 数据腐败检测 (close 重复+量低 → 强制重拉); daily_eod_options.py 每日采集 cron |
-| v3.7.53-83 | UI 大量优化: 时区美东对齐 / 主图 5 子图重排 / K线精度可配 / dirty 数据过滤 / 自动 dedup |
-| v3.7.84-90 | 主图改 GC=F 期货源 (23h 全球夜盘) / 触发 confirm_mode 客观最优 / EXIT marker 单一来源 |
-| v3.7.91 | **kline_db 真实期权 OHLC + spot 比例插值 替代 BS+假IV (单日误差 <5%)** |
-| v3.7.92-95 | sig_df buy_type/vol 信号 detect 重构 / 历史未平仓+期权模拟 OPEN/CLOSED 分表 |
-| v3.7.96 | **真实期权退出规则: SELL PUT +50%/-100%/expiry · BUY CALL ±50%/100% · STRADDLE 14d · SHORT_VOL 30d** |
-| v3.7.97 | BUY CALL 单腿 vs 价差条件选 / SELL PUT 强制 put credit spread / 单腿价格显示 |
-| v3.7.98-101 | 触发 confirm_mode any/dedupe/分桶 (premarket vs RTH 独立) / stale 改交易日判 |
-| v3.7.102 | 全部 "伦敦金/伦敦银" → "纽约金/纽约银" (跟 GC=F/SI=F 数据源对齐) |
-| v3.7.103-105 | ETF live spot 直拉 + ratio 2h TTL + ETF prepost 16h (premarket+aftermarket) |
-| **v3.7.106** | **Range 模型重训用 GC=F 期货 23h 数据替代 GLD ETF 6.5h (tightness 持平 0.11, lower band 更紧)** |
-| v3.7.107-108 | 多策略并行持仓 (5-4 SELL PUT + SHORT_VOL + FUTURES 同日) / 状态栏字体缩小 |
-| **v3.7.109** | **Binance XAUUSDT 永续 20× 接入 (实时 mark/funding/liq 真值) + 双 scale ETF/GC=F + 5 项退出修** |
-| v3.7.110-115 | 全历史回测三阶段路由 + 真实期权回测 only + paired BC/SP 比较 (用户方法论) + SP PnL 改 margin 分母 |
-| v3.7.116-117 | IV × bp_low 深破过滤 grid + GVZ IV 三阶过滤 (低/中/高 IV 不同处理, 高 IV 强制 SP) |
-| v3.7.118-121 | dashboard 回测分析重写 + 多维 paired grid (9 维) + 4 个强力 SP 选择条件实证 |
-| v3.7.122 | 智能 DTE (尽量短期权代替 LEAPS, dte = max(base, days_since+30)) + 日线技术指标特征 (MACD/RSI/Stoch) |
-| **v3.7.123** | **sp_score 多因子选 BC vs SP — paired 验证: GLD acc 42% → 86%, SLV +725% 累计 PnL** |
-| v3.7.124 | dashboard 当日信号 metric 显示 sp_score 各因子命中明细 |
-| **v3.7.125** | **修今日触发表空 bug — detect+upsert 提前到 kline 加载即跑, 不再依赖 1h chart 视图** |
-| v3.7.125 retune | 月度 grid (5y, GLD/SLV 全维度) — 当前配置接近最优, 不切换. paired sp_score thr=3.5/2.5 仍最优 |
-| v3.7.126 | 三实验: 期货止损 -2%→-3% (wr +6-8pp), bp_low 不需更深破, sp_score 阈值维持 |
-| **v3.7.127** | **方向性入场加 ma_trend (MA20/MA50) 过滤 — 全链路累计 PnL +1400%** |
-| v3.7.128 | ma_trend 阈值 per-asset grid: GLD 0.99→0.975 (留边界信号 sum +41%), SLV 0.99 维持 |
-| **v3.7.129** | **期货 TP/SL/hold 3D grid: 3%/3%/5d → 8%/5%/15d, 杠杆累计 +4300% → +11220% (×2.6)** |
+### 1. Create an environment
 
-## v3.7.200-211 系统大优化 (信号过滤 + 多窗口验证 + 波动率)
+```bash
+git clone https://github.com/YuhaoDoong/BetaGold.git
+cd BetaGold
 
-### 一句话总结
-**5y/3y/1y 多窗口 grid 验证**, 把信号过滤 + 期货 cfg + 期权 cfg 全部重测一遍, 把 sum 从 +828% 提到 **+7513%** (5y, lev=10 hold=45 无早平)。
-
-### 关键改动
-
-#### v3.7.200-201: 信号双因子硬过滤
-**问题**: 2026Q1 模型连续 13 笔逆势 BUY (spot 5d WR 31%, mean -3.6%), BC 期权放大成 8% WR -85%
-**解决**: 加 `rv_pctile_max=0.75` + `ret_20d_min=-3%` 硬过滤
-**效果**: GLD 3y BUY 信号 143 → 82 (砍 43%), Q1 拦 19/20, 5/12-14 全拦
-
-#### v3.7.200: BC pick min_dte=14 (拒末日期权)
-**问题**: 5/12 BC 入场选了 C$430 5/15 (9 DTE on 信号日, 3 DTE on entry), 实质末日期权
-**根因**: kline_db strike gap, fallback 选到末日期权
-**解决**: `pick_liquid_monthly_option` 加 `min_dte=14` 硬下限
-
-#### v3.7.200: IV 三阶过滤 28→25
-**问题**: 5/12-14 GVZ 26-27 (中高 IV), 旧阈值 28 没拦, BC 被 IV crush -85%
-**5y grid**: 28→25 拦 5/12-14 全 3 笔, 10y 总损失 sum 仅 −2% (代价极小)
-
-#### v3.7.202: S/A/B Tier 嵌套分级
-- S: rv<0.65 ∧ ret_20d>0 ∧ bp_low≤0.20 (n=13, **WR 100% 20d**)
-- A: rv<0.75 ∧ ret_20d>-1 ∧ bp_low≤0.20 (含S, n=26, WR 96%)
-- B: 通过所有过滤 (含S/A, n=83, WR 90%)
-- v3.7.207: tier 计算延后到 IV filter 之后 (跟 buy_signal 最终状态一致)
-
-#### v3.7.203-204: 期货 per-tier leverage
-- S=10× / A=10× / B=5× (S 是 A 的子集, lev 必须 ≥ A)
-- 5y grid: lev=15+ 在 3 月 wick (-5.7%) 必爆仓
-- Binance XAUUSDT funding 校准: mean −0.002%/8h (long 净赚 ~2%/y, 旧 cfg 假设 long 付费严重高估成本)
-
-#### v3.7.205: 期权 BC/SP 5y grid 重测
-- **BC: pt 1.5→2.5, sl 0.5→0.3** (5y BS+real n=83: sum +4078 → **+11851**, WR 75 → 87%)
-- **SP GLD: pt 50→70** (5y sum +1323 → +1726, WR 略降但 sum +30%)
-- **反直觉**: SL 越紧 (0.3 = premium 跌 70% 才止损) WR 反而越高 — BC 杠杆 + theta, 早 SL 错过反弹
-
-#### v3.7.207: 修期货信号没传 gvz_series
-**问题**: `build_futures_signals` 没传 `gvz_series` → IV filter 对期货 sig 不生效 → 5/14 期货开仓但期权被拦
-**结果**: 期货/期权两边一致, 5/14 GLD 两边都被拦
-
-#### v3.7.208: 撤期货早平锁利 + IV filter 必要性
-**早平 grid 实证**: 旧 `early_tp_locks=(3,5)(7,3)(12,1)` sum +1331, 撤掉 sum +3065 (2.3x)
-**IV filter 必要性**: NO IV n=85 但 2 笔 wick 爆仓 -100%, WITH IV n=83 0 爆仓 — 期货虽然不怕 IV crush 但高 IV 是 wick risk 代理
-
-#### v3.7.209: hold_max 30 → 45 (多窗口验证)
-| 窗口 | hold=30 | hold=45 | 提升 |
-|---|---|---|---|
-| 5y | sum +4540 WR 88% | sum **+7513** WR **94%** | +65% |
-| 3y | sum +4564 WR 89% | sum +7563 WR 95% | +66% |
-| 1y | sum +981 WR 85% | sum +2057 WR 95% | **+110%** |
-
-**所有 cfg 在 5y/3y/1y 三窗口结论一致**, 黄金中期趋势稳定。
-
-### 工具脚本 (实测验证)
-
-| 脚本 | 用途 |
-|---|---|
-| `scripts/signal_filter_deep.py` | 信号 filter 单/双/三因子 grid |
-| `scripts/three_lever_grid.py` | regime / ma_trend / IV filter 联合 |
-| `scripts/futures_grid_5y.py` | 期货 5y GC=F leverage / TP / SL / hold |
-| `scripts/futures_early_tp_grid.py` | early_tp_lock 撤vs留 grid |
-| `scripts/futures_real_tp_grid.py` | pullback / signal_reversal / 硬 TP 对比 |
-| `scripts/options_5y_bs_proxy.py` | 期权 5y 统一 (kline_db 真实 + BS proxy) |
-| `scripts/options_sl_grid_5y.py` | BC/SP pt/sl 5y grid |
-| `scripts/multi_window_validate.py` | **所有 cfg × 5y/3y/1y/6m/3m 多窗口对比** |
-| `scripts/vol_signal_multi_window.py` | STRADDLE + SHORT_VOL 多窗口 grid |
-
-#### v3.7.210: 阈值显示透明化
-**问题**: 用户问 "为何阈值一天内变化" → 根因: live spot 每 5min 更新 csv + OI 修正实时偏移
-**改动**: chart + 状态栏加 "🔴 实时" 标记, 同时显示 EOD 锚定参照 (用昨日 close 算固定)
-**效果**: 用户能看清盘中阈值漂移幅度 (通常 < $1, 大波动日 $2-3)
-
-#### v3.7.211: 波动率信号多窗口 + SHORT_VOL 决策
-**STRADDLE**:
-- hold_max 21d → **14d** (BS grid: hold=14 等同 expiry, ROI 更高)
-- 3/17 GLD 实测: 旧 hold=21 **-24.5%** → 新 hold=14 **+10.5%** (避开 spot 反向)
-- 5y/3y/1y 各窗口都赚 (sum +918~+3615, WR 46-52%)
-- score≥6 现 cfg 各窗口稳健
-
-**SHORT_VOL (IC) 保持 DISABLED**:
-- 5y/3y 是赢的 (sum +1624/+787, WR 66-68%)
-- **1y/6m 大幅崩盘** (sum −408/−785, WR 33-51%) — 2026Q1 高波动期 IC 短腿被穿
-- 重启条件: GVZ 1y 平均回 22 以下
-
-**3 表格统一窗口**:
-- 历史未平仓 OPEN (3mo)
-- 近 3 个月已平仓 CLOSED (3mo)
-- 3 个月真实交易回测 (3mo)
-- 每表都加 caption 说明数据源差异 (实际触发 vs 历史信号全量)
-
-## v3.7.129 期货退出参数全网格优化 (核心)
-
-### 问题
-现行 TP=3% / SL=-3% / hold=5d 是 v3.7.109 拍脑袋值, 没做 grid. 实证发现:
-- 真信号常涨 8-12% (3% 止盈太早, 错过主升段)
-- 5d 太短 (好趋势会持续 10-15d)
-- -3% 止损过紧 (容忍 noise 能力弱)
-
-### 3D Grid 结果 (TP × SL × hold)
-
-| 资产 | 现行 (3/3/5) | 最优 (8/5/15) | 提升 |
-|---|---|---|---|
-| GLD spot sum | +203% / wr 70.9% | **+554% / wr 78.2%** | spot **+170%** |
-| GLD 20× lev sum | +4059% | **+11078%** | **×2.7** |
-| SLV spot sum | +157% / wr 61.4% | **+479% / wr 61.4%** | spot **+204%** |
-| SLV 20× lev sum | +3148% | **+9574%** | **×3.0** |
-
-### 实施
-
-```python
-# core/paper_positions.py + scripts/full_history_backtest.py
-if ret >= 8.0:  # +8% 止盈 (旧 3%)
-if ret <= -5.0:  # -5% 止损 (旧 -3%)
-if hold >= 15:  # 15d 持仓上限 (旧 5d)
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
 ```
 
-### 加仓机制 (维持现状)
+### 2. Prepare data
 
-`min_drop_pct=0.3%` 已经过 v3.7.81/83 grid 验证, 是平均 16 笔/日 → 2.18 笔/日 (压缩 7×) 的合理点. 改 0.5% 略稀但 PnL 影响小, 不调.
+The setup script downloads public market data, optionally retrieves FRED series, builds features, and can train the range model:
 
-### 期权退出 (维持)
+```bash
+# Market data and features only
+python scripts/setup_data.py --no-train
 
-- BC SL=-50% 触发率 9-19%, 不大改
-- SP profit_target=+50% credit 实证: 仅 30% 笔在 TP 早平区, 维持不变
-- BC SL grid 难重现 (没逐日期权 OHLC)
+# Include FRED data; obtain a key from https://fred.stlouisfed.org/
+python scripts/setup_data.py --fred-key YOUR_FRED_API_KEY --no-train
 
-## v3.7.127 ma_trend 入场过滤 (核心方向性优化)
-
-### 因子分析驱动 (entry_signal_factor_analysis.py)
-
-跑 13 个候选因子的 winner-vs-loser 分析, 发现 `ma_trend = MA20/MA50` 是最强单因子分化器:
-
-| 资产 | ma_trend < 0.99 (下行趋势) BC 胜率 |
-|---|---|
-| GLD | **0% (0/8 笔, 全输)** |
-| SLV | **12.5% (3/24 笔)** |
-
-### 原理
-
-**ma_trend 三档**:
-
-| 值 | 状态 | 价位结构 |
-|---|---|---|
-| `> 1.01` | 上行趋势 | 短均价 > 长均价 (多头排列) |
-| `0.99 ~ 1.01` | 横盘震荡 | 两均线缠绕 |
-| `< 0.99` | 下行趋势 | 死叉后 (空头排列) |
-
-**为什么下行趋势 BC 几乎全输**:
-1. **结构性下跌** — MA20 跌破 MA50 是趋势反转的滞后确认. 反弹概率 < 继续跌概率.
-2. **接飞刀效应** — `bp_low<0.30` 在下行趋势中只是"价格创新低", 不是 mean-revert 信号. Range 模型下沿会跟着下移.
-3. **vs 上行 pullback** — 同样的 `bp_low<0.30`, 在 `ma_trend > 1.01` 是健康回调, 80%+ 反弹; 在下行中是趋势延续, 多数继续跌.
-
-**阈值 0.99 而非 1.0** — 横盘 (0.99-1.01) 不过滤 (mean-revert 仍有效), 仅过滤明确下行 (MA20 比 MA50 低超过 1%).
-
-### 实施
-
-```python
-# core/signals_v2.py: generate_daily_signals 内
-ma_trend = close.rolling(20).mean() / close.rolling(50).mean()
-
-if buy_sig and ma_trend.get(d) < 0.99:
-    buy_sig = False  # MA20 < MA50 时跳过方向性入场
+# Train after data preparation
+python scripts/setup_data.py --train-only
 ```
 
-### 全链路回测对比
+The setup script writes to the repository-local `data/` directory. Set `data_root: "data"` in `config.yaml` for this layout. The tracked configuration currently reflects the maintainer's local research environment, so a fresh clone must update this value before launching the dashboard.
 
-| 资产 | 策略 | 改前 wr / 累计 | 改后 wr / 累计 | Δ累计 |
-|---|---|---|---|---|
-| GLD | BUY CALL | 64.0% / +2997% | **76.2% / +3421%** | +14% |
-| GLD | SELL PUT | 72.0% / +34% | **83.3% / +493%** | **+1349%** |
-| SLV | BUY CALL | 51.1% / +1611% | **91.3% / +2437%** | **+51%** |
-| SLV | SELL PUT | 52.8% / +289% | **83.3% / +449%** | +55% |
+### 3. Launch the dashboard
 
-**合计累计 PnL 提升 ~+1400%**, 单一过滤产生质变. sp_score 在 ma_trend 过滤后 GLD chosen wr **88.1%** / 累 **+3598%** (距完美上限 90.5% / +3945% 仅 2.4pp).
-
-### 五层过滤体系 (BC 入场完整链路)
-
-```
-1. bp_low < 0.30           — Range 模型下沿 (Range-bound 触发器)
-2. Bull regime             — 长期方向性环境 (年级)
-3. RV 极值过滤             — 排除中位温水区 (避免噪音方向)
-4. ma_trend ≥ 0.99 (新)    — 中期趋势方向 (5-10 周, 过滤接飞刀)
-5. sp_score 决定 BC vs SP  — 多因子选择最优工具
+```bash
+streamlit run app.py
 ```
 
-各层互补 — Bull regime 是年级方向, ma_trend 是中期 (5-10w), 触发器是日内. ma_trend 填补了 Bull regime 与日内触发之间的中间层.
+Some views require trained model artifacts, option-history files, or paper-position ledgers that are not distributed with the repository.
 
-### 完整重测 2026-05-06 结果
+## Validation and tests
 
-跑 `monthly_retune.py` (5y 全维度 grid, 步长 0.025) + `full_history_backtest.py` + `paired_score_validate.py`:
+Run the isolated test directory with:
 
-**Grid search 结论**: 当前 SHORT_VOL / STRADDLE / 方向性配置 **接近最优 (改进 < 5%)**, 不切换.
-- GLD SHORT_VOL: 0.45/0.80 → n=69 wr **91%** Sharpe **1.27**
-- SLV SHORT_VOL: 0.25/0.775 → n=81 wr **86%** Sharpe **0.72**
+```bash
+pytest -q tests
+```
 
-**Stage 路由实证** (最有价值发现):
+The suite mixes self-contained unit tests with regression checks tied to the maintainer's historical market snapshots. A fresh clone can therefore report missing-data failures until the corresponding local datasets are prepared. Experimental files under `scripts/` are intentionally excluded from automatic test discovery through `pytest.ini`.
 
-| Stage | GLD wr / avg | SLV wr / avg | 备注 |
-|---|---|---|---|
-| stage2_leaps_aux (90-365d) | **79.8% / +36.3%** | **82.3% / +32.0%** | LEAPS 主力 |
-| stage1_spot_only (>1y) | 61.1% / +0.5% | 53.4% / +0.4% | 仅期货代理 |
-| stage2_main_3m (<90d) | 27.6% / -24% | 36.3% / -6% | ⚠️ 近月波动大 |
+For research results, prefer walk-forward and multi-window validation over a single optimized backtest. Useful entry points include:
 
-→ **LEAPS (90-365d) 是收益主源**, 近月期权风险/收益比最差. 智能 DTE 系统已自动倾向 LEAPS.
+```bash
+python scripts/backtest_pipeline.py all
+python scripts/monthly_retune.py --dry-run
+python scripts/multi_window_validate.py
+```
 
-**sp_score 在新 CSV (20260506) 验证仍稳定**: GLD acc 86% 累 +3279% / SLV acc 67% 累 +762%.
+## Documentation
 
+- [Architecture](docs/ARCHITECTURE.md) — modules, data flow, and deployment model
+- [Models](docs/MODELS.md) — range models, calibration, and regime classification
+- [Strategies](docs/STRATEGIES.md) — strategy definitions and risk assumptions
+- [Experiments](docs/EXPERIMENTS.md) — research log and historical comparisons
 
-## v3.7.123 sp_score 系统 (核心 BC vs SP 决策)
+## Data and reproducibility notes
 
-替代单切 RV 阈值, 用 7 因子加权打分决定 BUY CALL 或 SELL PUT. **paired 同信号实证**:
+- Public sources can change schemas, revise observations, impose rate limits, or return delayed data.
+- Model artifacts, large datasets, private brokerage exports, and credentials are not committed.
+- Several legacy research scripts still assume the maintainer's local data layout. Treat them as experiment records unless their paths have been configured for your environment.
+- Reported win rates or returns are conditional on the documented sample, execution model, and costs; they must not be interpreted as expected future performance.
+- Any use with real capital requires independent validation, realistic slippage/fee modelling, position limits, and operational safeguards.
 
-| 资产 | 单切 RV 准确率 | sp_score 准确率 | 平均 PnL/笔 (RV → score) | 累计 PnL |
-|---|---|---|---|---|
-| GLD | 42% | **86%** (thr=3.5) | +22.2% → **+65.7%** | +1112% → +3284% |
-| SLV | 38% | **68%** (thr=2.5) | +3.1% → **+22.7%** | +113% → +862% |
+## Security
 
-**因子权重** (paired_grid_multi 9 维实证后):
+Do not commit credentials. `.env`, key files, and common secret-file names are excluded by `.gitignore`. Use environment variables or a local secret manager for brokerage credentials. The optional FRED key saved by `setup_data.py` is stored in `.fred_key`, which is also ignored.
 
-| 因子 | 权重 | 触发条件 | 说明 |
-|---|---|---|---|
-| RSI < 30 | **2.0** | 超卖 | ★最强 (paired 100% wr) |
-| IV-RV gap > 0 | 1.5 | IV > 实际波动率 | 卖贵 premium |
-| bp_low < 0.05 | 1.0 | 深破下沿 | 反弹概率高 |
-| bp_close < 0.30 | 1.0 | close 在 band 下沿 | 区间预测 |
-| GVZ ≥ 28 | 1.0 | 高 IV | 收 premium 替代 |
-| Stoch %K < 40 | 0.5 | 非超买 | 辅助确认 |
-| MACD hist < -0.5 | 0.5 | 空头动能 | 辅助确认 |
+## Project status
 
-`sp_score >= threshold` → SELL PUT (credit spread), 否则 BUY CALL.
-
-dashboard 信号 metric 实时显示 breakdown: `score 4.5 (RSI28*2.0 + IV-RV+5*1.5 + bp_low0.04*1.0)`.
-
-## v3.7.109 重大变更概览
-
-### 数据源统一 (v3.7.102-106)
-- ❌ **不再用** "伦敦金"/"伦敦银" 称谓 (LBMA spot 没接, 全局换 "纽约金"/"纽约银")
-- ✅ **GC=F (COMEX 黄金期货 23h)** = 价格显示主源 + Range 模型训练源
-- ✅ **GLD ETF (RTH 6.5h + prepost 16h)** = 期权底层 + 触发 detect 用
-- ✅ **Binance XAUUSDT 永续** = 期货策略真实 (公开 API, 无 key)
-- ✅ **kline_db EOD 期权 OHLC** (本地累积 ~48k 行) = 历史期权价插值源
-- ratio 自动 2h TTL 更新 (ETF premium/discount 漂移 ±0.3% 跟得上)
-
-### 期权回测精度提升 (v3.7.91+96)
-| 方法 | 误差 | 说明 |
-|---|---|---|
-| BS + IV=0.20 硬编码 (旧) | 权利金低估 ~20%, Greek 全错 | 不可靠 |
-| **kline_db OHLC + spot 比例插值 (新)** | **单日 spot <2% 移动 误差 <5%** | 接近真实成交 |
-
-退出规则 (simulate_option_exit):
-- SELL PUT credit spread: +50% 早平 / **-50% stop (1.5×entry)** / expiry
-- BUY CALL: +100% / -50% / expiry
-- STRADDLE long vol: +100% / 14d 定时 / expiry
-- SHORT_VOL credit: +50% / -50% / 30d / expiry
-- **FUTURES 期货多头 (新): 5d 持仓 / +3% 止盈 / -2% 止损**
-
-### 多策略并行持仓 (v3.7.107)
-单日可同时持有 5 类:
-1. **期货多头** (Binance XAUUSDT 20× perp, premarket 触发)
-2. **跨式期权 STRADDLE** (long ATM call + put)
-3. **BUY CALL** (单腿 ATM call OR bull call spread, IV 自适应)
-4. **SELL PUT credit spread** (-ATM put / +-5% put)
-5. **铁鹰 SHORT_VOL** (当前简化为 SELL PUT credit spread, 完整 4-leg IC 待后续)
-
-### Binance XAUUSDT 期货模拟 (core/binance_futures.py)
-- 公开 endpoint 无 API key
-- 实测 5-5: mark $4541.87, funding 0.0026%/8h, taker 0.05%
-- 20× long $4540 → margin $227, **liq $4335** (-4.5% 爆仓)
-- 含 funding 累积 + 双边 fee 真实计算
-
-### 持仓管理表新结构
-| 列 | 内容 |
-|---|---|
-| 信号日 / 策略 / 合约 | OCC ticker 或 期货 USDT 标识 |
-| **入场ETF / 入场GC=F** | 双 scale 触发时点 spot |
-| 入场期权 | 单腿价 → 组合 net (e.g. `-P$465@$22 / +P$445@$13 → 收$8.55`) |
-| 平/现ETF / 平/现GC=F | 平仓或 mark-to-market spot |
-| 平/现期权 | 单腿出场价 + 出场总值 |
-| P&L% / 出场原因 | 真实退出规则触发原因 (e.g. `+50% profit` / `-50% stop` / `expiry`) |
-
-## 用户偏好
-
-- 时区: 新加坡 SGT (UTC+8)
-- 信号基于金价，不限定交易品种 (期权/期货/现货)
-- 数据每天及时更新, 不用陈旧数据
-- 不偷工减料, 不用模拟数据
+GoldDash is an active personal research project. Interfaces and experiment scripts may change as datasets and validation protocols evolve. Contributions and reproducibility reports are welcome through GitHub issues.
